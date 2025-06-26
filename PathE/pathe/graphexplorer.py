@@ -1,8 +1,8 @@
 import torch
 import igraph as ig
-from dataloader import DataLoader
+from .dataloader import DataLoader
 import os
-import statics
+from . import statics
 
 
 class GraphExplorer:

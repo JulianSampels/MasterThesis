@@ -2,9 +2,9 @@ import copy
 import os
 
 import igraph as ig
-from kgloader import KgLoader
+from .kgloader import KgLoader
 import torch
-import statics
+from . import statics
 from typing import Dict, List
 from joblib import Parallel, delayed
 import numpy as np

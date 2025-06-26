@@ -13,18 +13,18 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
 
-import triple_lib
-from pather_models import PathEModel
-from pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset
-from data_utils import collate_multipaths, load_triple_tensors, \
-    load_corrupted_triples_from_dir, memmap_corrupted_triples_from_dir
-from callbacks import DatasetUpdater
-from corruption import CorruptHeadGenerator, CorruptTailGenerator, \
-    CorruptLinkGenerator
-from utils import stageprint, bundle_arguments, namespace_to_dict
-from wrappers import PathEModelWrapper
-from path_lib import encode_relcontext_freqs
-import data_utils as du
+from . import triple_lib
+from .pather_models import PathEModel
+from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset
+from .data_utils import collate_multipaths, load_triple_tensors, \
+    load_unrolled_setup, load_corrupted_triples_from_dir
+from .callbacks import DatasetUpdater
+from .corruption import CorruptHeadGenerator, CorruptTailGenerator, \
+    CorruptBothGenerator
+from .utils import stageprint, bundle_arguments, namespace_to_dict
+from .wrappers import PathEModelWrapper
+from .path_lib import encode_relcontext_freqs
+from . import data_utils as du
 
 logger = logging.getLogger(__name__)
 

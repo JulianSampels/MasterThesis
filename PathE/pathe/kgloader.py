@@ -7,7 +7,7 @@ from pykeen.triples import TriplesFactory
 # from ogb.linkproppred import LinkPropPredDataset
 import numpy as np
 
-import statics
+from . import statics
 
 
 class KgLoader:

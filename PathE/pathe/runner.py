@@ -8,10 +8,10 @@ import argparse
 
 import torch
 
-import pathe_trainer
-from utils import is_file, create_dir, set_random_seed
-from utils import resume_logging_setup, create_logging_setup, update_args
-from pathe_full_eval import run_full_eval
+from . import pathe_trainer
+from .utils import is_file, create_dir, set_random_seed
+from .utils import resume_logging_setup, create_logging_setup, update_args
+from .pathe_full_eval import run_full_eval
 
 
 def main():

@@ -8,14 +8,14 @@ from tqdm import tqdm
 
 import triple_lib
 import data_utils as du
-from pather_models import PathEModel
-from pathdata import EntityMultiPathDataset
-from wrappers import PathEModelWrapper
-from path_lib import encode_relcontext_freqs
-from data_utils import collate_multipaths, load_triple_tensors
-from corruption import CorruptLinkGeneratorEval, CorruptLinkGenerator
-from utils import stageprint, bundle_arguments, namespace_to_dict
-from pathe_ranking_metrics import EntityHitsAtK, EntityMRR, EntityMRR_debug
+from .pather_models import PathEModel
+from .pathdata import EntityMultiPathDataset
+from .wrappers import PathEModelWrapper
+from .path_lib import encode_relcontext_freqs
+from .data_utils import collate_multipaths, load_triple_tensors
+from .corruption import CorruptLinkGeneratorEval, CorruptLinkGenerator
+from .utils import stageprint, bundle_arguments, namespace_to_dict
+from .pathe_ranking_metrics import EntityHitsAtK, EntityMRR, EntityMRR_debug
 
 torch.backends.cuda.enable_mem_efficient_sdp(False)
 torch.backends.cuda.enable_flash_sdp(False)

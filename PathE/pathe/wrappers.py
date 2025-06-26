@@ -15,7 +15,7 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
 
-from pathe_ranking_metrics import (RelationMRR, RelationHitsAtK,
+from .pathe_ranking_metrics import (RelationMRR, RelationHitsAtK,
                                    EntityMRR, EntityHitsAtK)
 
 

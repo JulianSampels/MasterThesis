@@ -1,6 +1,6 @@
-import statics
-from graphinterface import Graph
-from kgloader import KgLoader
+from . import statics
+from .graphinterface import Graph
+from .kgloader import KgLoader
 from typing import Iterable, Set
 import copy
 import os

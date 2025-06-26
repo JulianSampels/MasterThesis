@@ -7,7 +7,7 @@ from typing import List
 
 from pytorch_lightning.callbacks import Callback
 
-from pathdata import PathDataset
+from .pathdata import PathDataset
 
 logger = logging.getLogger(__name__)
 

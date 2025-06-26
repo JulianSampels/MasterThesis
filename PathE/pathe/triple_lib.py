@@ -8,7 +8,7 @@ from collections import defaultdict, Counter
 import pandas as pd
 import torch
 
-from data_utils import listify_columns
+from .data_utils import listify_columns
 
 
 def get_class_weights(triples: torch.tensor, tokens_to_idxs):

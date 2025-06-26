@@ -11,7 +11,7 @@ from typing import List, Dict
 import torch
 import pandas as pd
 
-import data_utils as du
+from . import data_utils as du
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,8 @@
 import warnings
 import random
 from sys import getsizeof
-from handler import Handler
-from kgloader import KgLoader
+from .handler import Handler
+from .kgloader import KgLoader
 import torch
 import json
 import os
@@ -23,15 +23,18 @@ class PathDataset:
         @param parallel:  whether to use parallelization
         @type parallel: bool
         """
+        print("Initializing PathDataset...")
         self.dataset = dataset
         self.parallel = parallel
         self.num_paths_per_entity = num_paths_per_entity
         self.num_steps = num_steps
+        print("Creating graph handlers...")
         self.graph = {'train': Handler(dataloader=dataset, part='train'),
                       'val': Handler(dataloader=dataset,
                                      part='validation'),
                       'test': Handler(dataloader=dataset, part='test')
                       }
+        print("Initializing verbalizer...")
         self.verbalizer = Verbalizer(self.dataset)
         self.dataset_name = self.dataset.dataset
         self.dataset_dir = os.path.join(os.path.join(
@@ -49,11 +52,14 @@ class PathDataset:
         self.num_paths = None
         self.relational_context = None
         self.ht_relation = {}
+        print("Making relational context dataset...")
         self.make_relational_context_dataset()
         # self.make_path_between_dataset(num_paths=10)
+        print("Making random walk dataset...")
         self.make_random_walk_dataset(num_paths=self.num_paths_per_entity,
                                       num_steps=self.num_steps,
                                       parallel=self.parallel)
+        print("Creating target CSV...")
         self.create_target_csv()
         # self.verbalize_paths(5)  # fix add check that there are as many paths
 
@@ -178,6 +184,7 @@ class PathDataset:
         @rtype: None
         """
         for part in self.graph:
+            print(f"Generating random walks for split '{part}'...")
             graph = self.graph[part]
             if parallel:
                 self.paths[part] = graph.graph.get_parallel_random_walks(
@@ -191,9 +198,11 @@ class PathDataset:
                                                                 part=part,
                                                                 mixing_ratio=0.5,
                                                                 max_attempts=1000)
+            print(f"Saving random walk dataset for split '{part}'...")
             self.save_rnd_walk_dataset_in_path_csv(num_paths=num_paths,
                                                    num_steps=num_steps,
                                                    part=part)
+            print(f"Saving triple tensor and dicts for split '{part}'...")
             self.save_triple_tensor_and_dicts(part)
 
     def make_simple_path_dataset(self, batch_size_start: int = 1,
