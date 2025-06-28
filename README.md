@@ -1,6 +1,9 @@
-Install cuda 11.8
-Make sure cuda 11.8 is used by calling
+# Code for Master Thesis
+Install cuda 11.8 
+Make sure cuda 11.8 is used by calling 
    - `nvcc --version`
+Generate data by running 
+   - `./run.py`
 
 ## PathE: Leveraging Entity-Agnostic Paths for Parameter-Efficient Knowledge Graph Embeddings
 ### Model overview
