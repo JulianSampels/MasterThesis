@@ -38,8 +38,10 @@ class PathDataset:
         self.verbalizer = Verbalizer(self.dataset)
         self.dataset_name = self.dataset.dataset
         self.dataset_dir = os.path.join(os.path.join(
-            os.path.join(os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
-                         "data"), "path_datasets"), self.dataset_name)
+            # os.path.join(os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
+            #              "data"), "path_datasets"), self.dataset_name)
+            os.path.join(os.path.abspath(os.getcwd()),
+                    "data"), "path_datasets"), self.dataset_name)
         if not os.path.exists(self.dataset_dir):
             os.makedirs(self.dataset_dir)
         for part in self.graph:
@@ -857,11 +859,11 @@ class Verbalizer:
 # dataset_name = 'codex-medium'
 # dataset_name = 'codex-large'
 # dataset_name = 'wn18rr'
-dataset_name = 'yago'
+# dataset_name = 'yago'
 # dataset_name = 'wiki5m'
 # dataset_name = "test-dataset"
 # # dataset_name = 'ogb-wikikg2'
-dataset = KgLoader(dataset_name, add_inverse=False)
-path_handler = PathDataset(dataset=dataset, num_paths_per_entity=20,
-                           num_steps=10, parallel=True)
-print(f'datasets created successfuly in directory {path_handler.dataset_dir}.')
+# dataset = KgLoader(dataset_name, add_inverse=False)
+# path_handler = PathDataset(dataset=dataset, num_paths_per_entity=20,
+#                            num_steps=10, parallel=True)
+# print(f'datasets created successfuly in directory {path_handler.dataset_dir}.')
