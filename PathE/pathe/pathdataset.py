@@ -566,7 +566,7 @@ class PathDataset:
             torch.save(triples, os.path.join(dirname, 'triples.pt'))
             id2entity = self.dataset.triple_factory.factory_dict[
                 'training'].entity_id_to_label
-            id2relation = dataset.triple_factory.factory_dict[
+            id2relation = self.dataset.triple_factory.factory_dict[
                 'training'].relation_id_to_label
             with open(os.path.join(dirname, 'id2entity.json'), 'w') as f:
                 json.dump(id2entity, f)
@@ -591,7 +591,7 @@ class PathDataset:
             torch.save(triples, os.path.join(dirname, 'triples.pt'))
             id2entity = self.dataset.triple_factory.factory_dict[
                 'validation'].entity_id_to_label
-            id2relation = dataset.triple_factory.factory_dict[
+            id2relation = self.dataset.triple_factory.factory_dict[
                 'validation'].relation_id_to_label
             with open(os.path.join(dirname, 'id2entity.json'), 'w') as f:
                 json.dump(id2entity, f)

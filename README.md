@@ -1,6 +1,6 @@
 # Code for Master Thesis
-Install cuda 11.8 
-Make sure cuda 11.8 is used by calling 
+Install cuda 11.8  
+Make sure cuda 11.8 is used by calling  
    - `nvcc --version`
 Generate data by running 
    - `./run.py`
