@@ -193,7 +193,7 @@ class CorruptHeadGenerator:
         return torch.cat(corrupted_triples, dim=0)
 
 
-import data_utils as du
+from . import data_utils as du
 
 
 

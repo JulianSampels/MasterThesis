@@ -18,8 +18,8 @@ import torch
 from torch.utils.data import Dataset, Sampler
 from torchvision.transforms import RandomApply, RandomChoice, RandomOrder
 
-import data_utils as du
-import path_lib as plib
+from . import data_utils as du
+from . import path_lib as plib
 from .utils import sample_or_repeat
 from .corruption import generate_negative_triples, CorruptLinkGenerator
 

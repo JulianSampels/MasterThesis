@@ -19,8 +19,8 @@ from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir
 from .callbacks import DatasetUpdater
-from .corruption import CorruptHeadGenerator, CorruptTailGenerator, \
-    CorruptBothGenerator
+from .corruption import CorruptHeadGenerator, CorruptTailGenerator, CorruptLinkGenerator#, \
+    # CorruptBothGenerator
 from .utils import stageprint, bundle_arguments, namespace_to_dict
 from .wrappers import PathEModelWrapper
 from .path_lib import encode_relcontext_freqs

@@ -6,8 +6,8 @@ import torch
 import pandas as pd
 from tqdm import tqdm
 
-import triple_lib
-import data_utils as du
+from . import triple_lib
+from . import data_utils as du
 from .pather_models import PathEModel
 from .pathdata import EntityMultiPathDataset
 from .wrappers import PathEModelWrapper
