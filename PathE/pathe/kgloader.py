@@ -20,6 +20,11 @@ class KgLoader:
     train_triples: torch.Tensor
     val_triples: torch.Tensor
     test_triples: torch.Tensor
+
+    train_tuples: torch.Tensor
+    val_tuples: torch.Tensor
+    test_tuples: torch.Tensor
+
     load_success: bool
     num_nodes_total: int
     add_inverse: bool
@@ -48,6 +53,7 @@ class KgLoader:
         self.load_success = self.load_data()
         if not self.load_success:
             raise Exception("Unable to load the selected dataset.")
+        self.generate_tuples()
         self.get_unique_relations_and_entities()
         self.count_entity_stats()
         self.count_edge_stats()
@@ -196,6 +202,37 @@ class KgLoader:
             return True
         else:
             return False
+        
+    def generate_tuples(self):
+        """
+        Splits the triples in each dataset split (train, validation, test) into (head, relation) and (tail, relation) tuples.
+        Both sets of tuples are concatenated and stored in self.<split>_tuples.
+        :return: None
+        :rtype: Node
+        """
+        # Initialize empty tensors for tuples
+        self.train_tuples = torch.empty((0, 2), dtype=torch.long)
+        self.val_tuples = torch.empty((0, 2), dtype=torch.long)
+        self.test_tuples = torch.empty((0, 2), dtype=torch.long)
+        assert self.train_triples.type() == self.train_tuples.type()
+        assert self.val_triples.type() == self.val_tuples.type()
+        assert self.test_triples.type() == self.test_tuples.type()
+                                       
+        for part in ['train', 'validation', 'test']:
+            # print(f"Splitting triples into tuples for split '{part}'...")
+            if part == 'train':
+                triples = self.train_triples
+                tuples = self.train_tuples
+            elif part == 'val':
+                triples = self.val_triples
+                tuples = self.val_tuples
+            elif part == 'test':
+                triples = self.test_triples
+                tuples = self.test_tuples
+
+            head_tuples = triples[:, 0:2]
+            tail_tuples = torch.stack((triples[:, 2], triples[:, 1]), dim=1)
+            tuples = torch.cat((head_tuples, tail_tuples), dim=0)
 
     def count_and_save_edge_stats(self):
         """

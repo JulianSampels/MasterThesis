@@ -63,6 +63,64 @@ class PathDataset:
                                       parallel=self.parallel)
         print("Creating target CSV...")
         self.create_target_csv()
+        print("Saving tuple tensors...")
+        self.save_tuple_tensors()
+        # self.verbalize_paths(5)  # fix add check that there are as many paths
+
+    def test__init__(self, dataset: KgLoader, num_paths_per_entity: int, num_steps:
+    int,
+        parallel=False):
+        """
+        The constructor
+        @param dataset:  The object that contains the dataset triples
+        generation
+        @type dataset: KgLoader
+        @param parallel:  whether to use parallelization
+        @type parallel: bool
+        """
+        print("Initializing PathDataset...")
+        self.dataset = dataset
+        self.parallel = parallel
+        self.num_paths_per_entity = num_paths_per_entity
+        self.num_steps = num_steps
+        print("Creating graph handlers...")
+        self.graph = {'train': Handler(dataloader=dataset, part='train'),
+                      'val': Handler(dataloader=dataset,
+                                     part='validation'),
+                      'test': Handler(dataloader=dataset, part='test')
+                      }
+        if True:
+            print("Initializing verbalizer...")
+            self.verbalizer = Verbalizer(self.dataset)
+        self.dataset_name = self.dataset.dataset
+        self.dataset_dir = os.path.join(os.path.join(
+            # os.path.join(os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
+            #              "data"), "path_datasets"), self.dataset_name)
+            os.path.join(os.path.abspath(os.getcwd()),
+                    "data"), "path_datasets"), self.dataset_name)
+        if not os.path.exists(self.dataset_dir):
+            os.makedirs(self.dataset_dir)
+        for part in self.graph:
+            if not os.path.exists(os.path.join(self.dataset_dir, part)):
+                os.makedirs(os.path.join(self.dataset_dir, part))
+        # self.print_degree_distributions()
+        self.paths = {}
+        self.between_paths = {}
+        self.current_paths = None
+        self.num_paths = None
+        self.relational_context = None
+        self.ht_relation = {}
+        if False:
+            print("Making relational context dataset...")
+            self.make_relational_context_dataset()
+            self.make_path_between_dataset(num_paths=10)
+            print("Making random walk dataset...")
+            self.make_random_walk_dataset(num_paths=self.num_paths_per_entity,
+                                      num_steps=self.num_steps,
+                                      parallel=self.parallel)
+            print("Creating target CSV...")
+            # self.create_target_csv()
+        self.generate_and_save_tuple_tensor()
         # self.verbalize_paths(5)  # fix add check that there are as many paths
 
 
@@ -598,6 +656,41 @@ class PathDataset:
             with open(os.path.join(dirname, 'id2relation.json'), 'w') as f:
                 json.dump(id2relation, f)
 
+
+    def save_tuple_tensors(self):
+        """
+        A function that saves the tuples of each part of the dataset as
+        torch.tensors in tuples.pt
+        Parameters
+        -------
+
+        """
+        for part in self.graph:
+            print(f"Saving tuple tensor for split '{part}'...")
+            if part == 'train':
+                tuples = self.dataset.train_tuples
+            elif part == 'val':
+                tuples = self.dataset.val_tuples
+            elif part == 'test':
+                tuples = self.dataset.test_tuples
+
+            dirname = os.path.join(self.dataset_dir, part)
+            torch.save(tuples, os.path.join(dirname, 'tuples.pt'))
+        # print(triples)
+        # print(triples.shape)
+        # print(self.verbalizer.verbalize_triples(triples))
+        # print(triple[2].item())
+        # print(self.graph)
+        # trainHandler = self.graph['train']
+        # v = self.verbalizer.verbalize_entity(triple[0].item())
+        # print('verbalized:', v)
+        
+        # print(self.verbalizer.verbalize_relation(triple[1].item()))
+        # print('entity:', trainHandler.id_token(v, 'entity'))
+        # print('edge:', trainHandler.id_token(triple[1].item(), 'edge'))
+        # self.verbalize_paths(3)
+
+
     def create_target_csv(self):
         """
         Created the {'h,t' : k-hot encoded target torch vector} dict
@@ -820,6 +913,41 @@ class Verbalizer:
             return self.id2relation[relation_id]
         except KeyError:
             Exception("No such relation id in the dictionary.")
+    
+    def verbalize_triples(self, triples_tensor: torch.Tensor):
+        """
+        A function that verbalizes a tensor of triples
+        @param triples_tensor: The tensor of triples
+        @type triples_tensor: torch.Tensor
+        @return: The verbalized triples
+        @rtype: List[str]
+        """
+        if triples_tensor.dim() == 1 and triples_tensor.shape[0] == 3:
+            triples_tensor = triples_tensor[None, :]  # Convert to 2D tensor
+        verbalized_triples = []
+        for triple in triples_tensor:
+            h = self.verbalize_entity(triple[0].item())
+            r = self.verbalize_relation(triple[1].item())
+            t = self.verbalize_entity(triple[2].item())
+            verbalized_triples.append(f"{h} {r} {t}")
+        return verbalized_triples
+    
+    def verbalize_tuples(self, triples_tensor: torch.Tensor):
+        """
+        A function that verbalizes a tensor of tuples
+        @param triples_tensor: The tensor of tuples
+        @type triples_tensor: torch.Tensor
+        @return: The verbalized tuples
+        @rtype: List[str]
+        """
+        if triples_tensor.dim() == 1 and triples_tensor.shape[0] == 2:
+            triples_tensor = triples_tensor[None, :]  # Convert to 2D tensor
+        verbalized_triples = []
+        for triple in triples_tensor:
+            h = self.verbalize_entity(triple[0].item())
+            r = self.verbalize_relation(triple[1].item())
+            verbalized_triples.append(f"{h} {r}")
+        return verbalized_triples
 
     def verbalize_path(self, path, path_type: str = None):
         """
