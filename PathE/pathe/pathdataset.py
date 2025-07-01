@@ -54,6 +54,8 @@ class PathDataset:
         self.num_paths = None
         self.relational_context = None
         self.ht_relation = {}
+        print("Saving tuple tensors...")
+        self.save_tuple_tensors()
         print("Making relational context dataset...")
         self.make_relational_context_dataset()
         # self.make_path_between_dataset(num_paths=10)
@@ -63,8 +65,6 @@ class PathDataset:
                                       parallel=self.parallel)
         print("Creating target CSV...")
         self.create_target_csv()
-        print("Saving tuple tensors...")
-        self.save_tuple_tensors()
         # self.verbalize_paths(5)  # fix add check that there are as many paths
 
     def test__init__(self, dataset: KgLoader, num_paths_per_entity: int, num_steps:
