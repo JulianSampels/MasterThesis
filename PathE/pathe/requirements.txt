@@ -91,13 +91,13 @@ tensorboard-data-server==0.7.0
 tensorboard-plugin-wit==1.8.1
 texttable==1.6.7
 threadpoolctl==3.1.0
-torch==2.1.1+cu118
+torch==2.6
 torch-max-mem==0.0.4
 torch-ppr==0.0.8
 torch-scatter==2.1.2
-torchaudio==2.1.1+cu118
+torchaudio==2.6
 torchmetrics==1.2.1
-torchvision==0.16.1+cu118
+torchvision==0.21
 torchviz==0.0.2
 tqdm==4.64.1
 triton==2.1.0
