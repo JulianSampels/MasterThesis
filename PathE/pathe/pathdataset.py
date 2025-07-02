@@ -676,20 +676,6 @@ class PathDataset:
 
             dirname = os.path.join(self.dataset_dir, part)
             torch.save(tuples, os.path.join(dirname, 'tuples.pt'))
-        # print(triples)
-        # print(triples.shape)
-        # print(self.verbalizer.verbalize_triples(triples))
-        # print(triple[2].item())
-        # print(self.graph)
-        # trainHandler = self.graph['train']
-        # v = self.verbalizer.verbalize_entity(triple[0].item())
-        # print('verbalized:', v)
-        
-        # print(self.verbalizer.verbalize_relation(triple[1].item()))
-        # print('entity:', trainHandler.id_token(v, 'entity'))
-        # print('edge:', trainHandler.id_token(triple[1].item(), 'edge'))
-        # self.verbalize_paths(3)
-
 
     def create_target_csv(self):
         """

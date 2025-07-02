@@ -18,6 +18,7 @@ from .pather_models import PathEModel
 from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir
+from .data_utils import load_tuples_tensors
 from .callbacks import DatasetUpdater
 from .corruption import CorruptHeadGenerator, CorruptTailGenerator, CorruptLinkGenerator#, \
     # CorruptBothGenerator
