@@ -1,9 +1,4 @@
 # Code for Master Thesis
-Install cuda 11.8  
-Make sure cuda 11.8 is used by calling  
-   - `nvcc --version`
-Generate data by running 
-   - `./run.py`
 
 ## PathE: Leveraging Entity-Agnostic Paths for Parameter-Efficient Knowledge Graph Embeddings
 ### Model overview
@@ -11,7 +6,12 @@ Generate data by running
 
 ### Instructions:
 
-1. Install required dependencies by running `pip install -r requirements.txt` in the terminal
+1. Install cuda 11.8  
+2. Make sure cuda 11.8 is used by calling  
+   - `nvcc --version`
+3. Install required dependencies by running `pip install -r PathE/pathe/requirements.txt` in the terminal
+4. Generate data by running 
+   - `./run.py`
 
 #### Training 
 
