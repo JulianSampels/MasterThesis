@@ -206,10 +206,10 @@ class KgLoader:
     def generate_tuples(self):
         """
         Splits the triples in each dataset split (train, validation, test) into (head, relation) and (tail, relation) tuples.
-        Both sets of tuples are concatenated and stored in self.<split>_tuples.
         :return: None
         :rtype: Node
         """
+        assert self.add_inverse == True, "Tuples only make sense if inverse edges where added."
         # Initialize empty tensors for tuples
         self.train_tuples = torch.empty((0, 2), dtype=torch.long)
         self.val_tuples = torch.empty((0, 2), dtype=torch.long)
@@ -217,22 +217,15 @@ class KgLoader:
         assert self.train_triples.type() == self.train_tuples.type()
         assert self.val_triples.type() == self.val_tuples.type()
         assert self.test_triples.type() == self.test_tuples.type()
-                                       
-        for part in ['train', 'validation', 'test']:
-            # print(f"Splitting triples into tuples for split '{part}'...")
-            if part == 'train':
-                triples = self.train_triples
-                tuples = self.train_tuples
-            elif part == 'val':
-                triples = self.val_triples
-                tuples = self.val_tuples
-            elif part == 'test':
-                triples = self.test_triples
-                tuples = self.test_tuples
 
-            head_tuples = triples[:, 0:2]
-            tail_tuples = torch.stack((triples[:, 2], triples[:, 1]), dim=1)
-            tuples = torch.cat((head_tuples, tail_tuples), dim=0)
+        # print(f"Splitting triples into tuples")
+        self.train_tuples = self.train_triples[:, 0:2]
+        self.val_tuples = self.val_triples[:, 0:2]
+        self.test_tuples = self.test_triples[:, 0:2]
+        # do not need tail entities because inverse edges are assumed, also we would not learn directionality
+        # head_tuples = triples[:, 0:2]
+        # tail_tuples = torch.stack((triples[:, 2], triples[:, 1]), dim=1)
+        # tuples = torch.cat((head_tuples, tail_tuples), dim=0)
 
     def count_and_save_edge_stats(self):
         """
