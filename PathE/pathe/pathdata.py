@@ -1179,4 +1179,142 @@ class EntityMultiPathDataset(MultiPathDataset):
         # return self._getitem_separate(index)
         return self._getitem_combined(index)
 
+# first idea no working at the moment
+class SimplePathDatasetTuples(SimplePathDataset):
+    """
+    A dataset for (head, relation) tuples, for tasks such as predicting which relations match to which heads.
+    This is analogous to SimplePathDataset but expects (h, r) tuples instead of (h, r, t) triples.
+    """
+
+    def __init__(self,
+                 path_store: str,
+                 relcontext_store: str,
+                 tuple_store: torch.tensor,
+                 context_tuple_store: torch.tensor = None,
+                 tokens_to_idxs: Dict[int, int] = None,
+                 maximum_tuple_paths = 50,
+                 num_negatives: int = 0,
+                 tuple_corruptor = None,
+                 seed: int = 46,
+                 parallel = False,
+                 neg_tuple_store = None,
+                 ):
+        """
+        Parameters
+        ----------
+        path_store : str
+            Path to the CSV file storing paths.
+        relcontext_store : str
+            Path to the CSV file storing the relational context for each entity.
+        tuple_store : torch.tensor
+            A matrix holding (h, r) tuples.
+        context_tuple_store : torch.tensor
+            If provided, these tuples will be used for constructing paths.
+        tokens_to_idxs : Dict[int, int]
+            Mapping dictionary for encoding tokens to proper idxs.
+        maximum_tuple_paths : int
+            The maximum number of paths per tuple that will be returned.
+        num_negatives : int
+            Number of negative tuples per positive.
+        tuple_corruptor : object
+            Corruptor for generating negative tuples.
+        seed : int
+            Random seed.
+        parallel : bool
+            Whether to use parallel negative generation.
+        neg_tuple_store : torch.tensor
+            Precomputed negative tuples.
+        """
+        xtokens = ["MSK"]  # the special tokens that will be reserved
+        relcontext_df = pd.read_csv(relcontext_store)
+        du.listify_columns(relcontext_df, "edges") # space-sep rels --> lists
+
+        if isinstance(path_store, str):
+            pathstore_df = pd.read_csv(path_store)
+            print(f"Found {len(pathstore_df)} paths from {path_store}")
+            du.listify_columns(pathstore_df)  # space-separated vals --> lists
+            to_tensor = lambda x: [torch.IntTensor(t) for t in x]
+            self.relation_paths = to_tensor(pathstore_df["relation_path"])
+            self.entity_paths =  to_tensor(pathstore_df["entity_path"])
+            self.path_index = plib.create_path_indexing(self.entity_paths)
+        else:
+            self.relation_paths, self.entity_paths, self.path_index = path_store
+
+        if tokens_to_idxs is not None:
+            logger.info(f"Using given encoding: {len(tokens_to_idxs)} tokens")
+            if not check_vocabulary(relcontext_df["edges"], tokens_to_idxs.keys()):
+                raise InconsistentVocabulary("Missing tokens in vocabulary")
+            self.tokens_to_idxs = tokens_to_idxs
+        else:
+            logger.info(f"Creating new vocabulary from {path_store}")
+            relation_vocab, self.tokens_to_idxs = create_vocabulary(
+                list(relcontext_df["edges"]), xtokens=xtokens)
+        self.idxs_to_tokens = {idx: t for t, idx in self.tokens_to_idxs.items()}
+
+        self.num_pos, self.num_neg = len(tuple_store), num_negatives
+        if num_negatives > 0:
+            if neg_tuple_store is None:
+                # You may implement generate_negative_tuples if needed
+                raise NotImplementedError("Negative tuple generation not implemented for tuples.")
+            else:
+                tuple_store = neg_tuple_store
+                expected_dim = self.num_pos * (num_negatives + 1)
+                assert neg_tuple_store.shape[0] == expected_dim, \
+                    "Corrupted tuplestore dim does not match the tuplestore:"\
+                    f" got {neg_tuple_store.shape[0]}, expected {expected_dim}"
+
+        self.epoch = None
+        self.xtokens = xtokens
+        self.tuplestore = tuple_store
+        self.max_paths = maximum_tuple_paths
+        self.vocab_size = len(self.tokens_to_idxs)
+        self.context_tuple_store = context_tuple_store \
+              if context_tuple_store is not None else tuple_store
+        self.no_relations = self.vocab_size - len(xtokens) - 1  # 1 for PAD
+        self.seed = seed if seed is not None else torch.seed()
+
+    def __len__(self):
+        return len(self.tuplestore)
+
+    def set_epoch(self, epoch, **unused):
+        self.epoch = epoch
+
+    def encode_relations(self, relations):
+        if torch.is_tensor(relations):
+            relations =  relations.tolist()
+        return torch.IntTensor([self.tokens_to_idxs[r] for r in relations])
+
+    def encode_entities(self, entities):
+        if torch.is_tensor(entities):
+            entities =  entities.tolist()
+        return torch.IntTensor([r + len(self.xtokens) + 1 for r in entities])
+
+    def fetch_path_context(self, index: int, context_type: str):
+        if context_type == "path":
+            entities = self.entity_paths[index]
+            relations = self.relation_paths[index]
+        elif context_type == "tuple":
+            tuple_ = self.context_tuple_store[index]
+            entities = tuple_[[0]]
+            relations = tuple_[[1]]
+        else:
+            raise ValueError(f"{context_type} not a supported context type")
+        return entities, relations
+
+    def __getitem__(self, index) -> dict:
+        """
+        Returns a dictionary for the (h, r) tuple at the given index.
+        """
+        tuple_ = self.tuplestore[index]
+        head, relation = tuple_
+        # Optionally, fetch context paths or features as needed
+        # Here, just return the tuple and its encoded form
+        return {
+            "id": index,
+            "head": head,
+            "relation": relation,
+            "head_enc": self.encode_entities([head]),
+            "relation_enc": self.encode_relations([relation]),
+        }
+
 

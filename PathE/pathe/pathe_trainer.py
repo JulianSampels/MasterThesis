@@ -15,7 +15,7 @@ from pytorch_lightning import Trainer
 
 from . import triple_lib
 from .pather_models import PathEModel
-from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset
+from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, SimplePathDatasetTuples
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir
 from .data_utils import load_tuple_tensors
