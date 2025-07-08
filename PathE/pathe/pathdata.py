@@ -1254,7 +1254,7 @@ class SimplePathDatasetTuples(SimplePathDataset):
         self.num_pos, self.num_neg = len(tuple_store), num_negatives
         if num_negatives > 0:
             if neg_tuple_store is None:
-                # You may implement generate_negative_tuples if needed
+                # may implement generate_negative_tuples if needed
                 raise NotImplementedError("Negative tuple generation not implemented for tuples.")
             else:
                 tuple_store = neg_tuple_store

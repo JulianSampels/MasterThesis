@@ -64,9 +64,9 @@ def create_and_run_training_exp_tuples(args):
     # preserving the number of positive triples in case of H/T corruption
     tr_positives, va_positives, te_positives = \
         len(train_tuples), len(val_tuples), len(test_tuples)
-    triple_corruptor = None  # instantiated only if num_negatives > 0
+    tuple_corruptor = None  # instantiated only if num_negatives > 0
     if args.num_negatives:# > 0 and "r" in args.corruption:
-        triple_corruptor = CorruptRelationGeneratorTuples(map_head_to_relationsets_tuples, entities=unique_entities)
+        tuple_corruptor = CorruptRelationGeneratorTuples(map_head_to_relationsets_tuples, entities=unique_entities)
 
     parallel = True
     negatives = [None, None, None]  # assume no negative dumpset is available
@@ -83,51 +83,51 @@ def create_and_run_training_exp_tuples(args):
                         os.path.join(args.dump_dir, "test"))
 
     stageprint("Creating datasets and dataloaders...")
-    train_set = TripleEntityMultiPathDataset(
+    train_set = SimplePathDatasetTuples(
         path_store=paths,
         relcontext_store=relcon,
-        triple_store=train_triples,
-        context_triple_store=train_triples,
-        maximum_triple_paths=args.max_ppt,
+        tuple_store=train_tuples,
+        context_tuple_store=train_tuples,
+        maximum_tuple_paths=args.max_ppt,
         num_negatives=args.num_negatives,
-        triple_corruptor=triple_corruptor,
+        tuple_corruptor=tuple_corruptor,
         parallel=parallel,
-        neg_triple_store=negatives[0],
+        neg_tuple_store=negatives[0],
     )
     # Using shared data structures for valid and test
     tokens_to_idxs = train_set.tokens_to_idxs
     path_store = train_set.relation_paths, \
                  train_set.entity_paths, \
                  train_set.path_index
-    valid_set = TripleEntityMultiPathDataset(
+    valid_set = SimplePathDatasetTuples(
         path_store=path_store,
         relcontext_store=relcon,
-        triple_store=val_triples,
-        context_triple_store=train_triples,
-        maximum_triple_paths=args.max_ppt,
+        tuple_store=val_tuples,
+        context_tuple_store=train_tuples,
+        maximum_tuple_paths=args.max_ppt,
         tokens_to_idxs=tokens_to_idxs,
         num_negatives=args.val_num_negatives,
-        triple_corruptor=triple_corruptor,
+        tuple_corruptor=tuple_corruptor,
         parallel=parallel,
-        neg_triple_store=negatives[1],
+        neg_tuple_store=negatives[1],
     )
-    test_set = TripleEntityMultiPathDataset(
+    test_set = SimplePathDatasetTuples(
         path_store=path_store,
         relcontext_store=relcon,
-        triple_store=test_triples,
-        context_triple_store=train_triples,
-        maximum_triple_paths=args.max_ppt,
+        tuple_store=test_tuples,
+        context_tuple_store=train_tuples,
+        maximum_tuple_paths=args.max_ppt,
         tokens_to_idxs=tokens_to_idxs,
         num_negatives=args.val_num_negatives,
-        triple_corruptor=triple_corruptor,
+        tuple_corruptor=tuple_corruptor,
         parallel=parallel,
-        neg_triple_store=negatives[2],
+        neg_tuple_store=negatives[2],
     )
 
     if args.num_negatives > 0 and args.dump_negatives:
-        print(f"Dumping negative triples in {args.dump_dir}")
+        print(f"Dumping negative tuples in {args.dump_dir}")
         for n, d in zip(["tr", "va", "te"], [train_set, valid_set, test_set]):
-            negt = d.triplestore  # FIXME via the dump_negatives()
+            negt = d.tuplestore  # FIXME via the dump_negatives()
             torch.save(negt, os.path.join(args.dump_dir, f'{n}_negatives.pt'))
 
     print("Found {} samples in the dataset: Tr {}, Va {}, Te {}"
