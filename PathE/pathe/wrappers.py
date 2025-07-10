@@ -621,3 +621,61 @@ class PathEModelWrapper(LightningModule):
         if self.scheduler != "none":
             raise NotImplementedError()
         return opt_dict  # makes distinction among optimisers and schedulers
+
+class PathEModelWrapperTuples(PathEModelWrapper):
+    """
+    PL Wrapper for training PathE with tuples.
+
+    """
+
+    def __init__(self, pathe_model, filtration_dict, num_negatives=0,
+                 optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
+                 weight_decay=0, class_weights=None, label_smoothing=0.0,
+                 train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
+                 val_num_negatives=0, full_test=False, max_ppt=None,
+                 margin=10, nssa_alpha=1, lp_loss_fn="nssa",
+                 loss_weight: float = 0.5, **hparams):
+        super().__init__(pathe_model, filtration_dict, num_negatives,
+                         optimiser, scheduler, lr, momentum, weight_decay,
+                         class_weights, label_smoothing,
+                         train_sub_batch=train_sub_batch,
+                         val_sub_batch=val_sub_batch,
+                         test_sub_batch=test_sub_batch,
+                         val_num_negatives=val_num_negatives,
+                         full_test=full_test, max_ppt=max_ppt,
+                         margin=margin, nssa_alpha=nssa_alpha,
+                         lp_loss_fn=lp_loss_fn, loss_weight=loss_weight)
+        
+        self.model_forward = partial(
+            self.pathe_forward_step_tuples, model=self.model,
+            criterion=self.rp_criterion)
+    
+    @staticmethod
+    def pathe_forward_step_tuples(model, criterion, batch, **kwargs):
+        """
+        PathE forward function for multi-paths relation prediction.
+        """
+        # batch = debug_single_path(batch, trim_paths=False, override_pos=True)
+        ent_paths, rel_paths = \
+            batch["net_input"]["ent_paths"], batch["net_input"]["rel_paths"]
+        head_idxs = batch["net_input"]["head_idxs"]
+        # tail_idxs = batch["net_input"]["tail_idxs"]
+        entity_origin = batch["net_input"]["path_origins"]
+        pos = batch["net_input"]["pos"]
+        targets = batch["target"] - 2  # no PAD and MSK in the model output
+        # FIXME this is going to change with the actual head-tail idxs from dataset
+        head_idxs = head_idxs * 2
+        # tail_idxs = tail_idxs * 2
+        ppt = batch["ppt"]
+
+        logits_rp, logits_lp = model(
+            ent_paths=ent_paths,
+            rel_paths=rel_paths,
+            head_idxs=head_idxs,
+            # tail_idxs=tail_idxs,
+            ppt=ppt, pos=pos,
+            entity_origin=entity_origin,
+            targets=targets)
+        # loss_rp = criterion(logits_rp, batch["target"])
+        loss_rp = criterion(logits_rp, targets)
+        return logits_rp, loss_rp, logits_lp

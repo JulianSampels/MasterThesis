@@ -858,3 +858,148 @@ class PathEModel(nn.Module):
 
         return logits_rp, logits_link
 
+class PathEModelTuples(PathEModelTriples):
+    def __init__(self,
+                 vocab_size: int,
+                 relcontext_graph: tuple,
+                 padding_idx: int,
+                 d_model: int = 512,
+                 nhead: int = 8,
+                 num_encoder_layers: int = 6,
+                 dim_feedforward: int = 2048,
+                 dropout: float = 0.1,
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 layer_norm_eps: float = 1e-5,
+                 ent_aggregation : str = "avg",
+                 num_agg_heads : int = 1,
+                 num_agg_layers : int = 1,
+                 laf_units : int = 1,
+                 context_heads : int = 1,
+                 batch_first: bool = True,
+                 norm_first: bool = False,
+                 node_projector: str = "GCN",
+                 max_seqlen: int = None,
+                ) -> None:
+        
+        super().__init__(vocab_size, relcontext_graph, padding_idx, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, activation, layer_norm_eps, 
+                         ent_aggregation, num_agg_heads, num_agg_layers, laf_units, context_heads, batch_first, norm_first, node_projector, max_seqlen,
+                )
+        # correct aggregator class perhaps copy entire super init instead of fixing afterwards
+        if self.ent_aggregation == "avg":
+            # check if this works with tuples instead of triples
+            logger.info("Using average aggregation for entities")
+        else:  # assume contextual aggregation
+            self.aggregator = ContextualAggregatorTuples(
+                embedding_dim=self.d_model, aggregator=self.ent_aggregation,
+                num_agg_heads=num_agg_heads, num_agg_layers=num_agg_layers,
+                laf_units=laf_units, context_heads=context_heads,
+            )
+        
+        #adjust dimension because only heads and not heads and tails are used
+        self.relpredict_head_avg = nn.Linear(d_model * 1, vocab_size - 2)
+        self.link_predict_head1 = nn.Linear(d_model * 2, d_model)
+        self.link_predict_head2 = nn.Linear(d_model, 1)
+    
+    def select_separated_head_embeddings(self, memory, head_idxs, entity_origin):
+        # Isolate the embeddings for heads only from the tuples
+        # head_embed is (num_paths, d_model) after squeezing
+        # print(f"Memory {memory.shape}")
+        # head and tail selection with variable num paths for each
+        head_emb = memory[torch.arange(memory.shape[0]), head_idxs, :]
+        # when the number of tail and head embeddings is not the same
+        # and the entity_origin is available
+        head_idxs_mask = ~entity_origin.bool()
+        # head_indices = head_idxs[head_idxs_mask]
+        head_embed = head_emb[head_idxs_mask, :]
+        return head_embed
+
+# currently not usable because rel_idxs do not exist
+    def select_relation_embeddings(self, memory, rel_idxs):
+        # Selects relation embeddings from memory using rel_idxs
+        rel_emb = memory[torch.arange(memory.shape[0]), rel_idxs, :]
+        return rel_emb
+
+    def forward(self,
+                ent_paths: Tensor,
+                rel_paths: Tensor,
+                head_idxs: Tensor,
+                pos: Tensor,
+                entity_origin: Tensor,
+                targets: Tensor,
+                ppt: Optional[Tensor] = None,
+                source_mask: Optional[Tensor] = None):
+
+        assert self.batch_first == True, "Dev. code in batch-first mode"
+
+        # Get static relation embeddings for each relation in the batch
+        rel_embed = self.rel_embeddings(rel_paths)
+        # Get contextualized entity embeddings for each entity path
+        ent_embed = self.rcontext_projector(ent_paths)
+        # Interleave entity and relation embeddings to form the path representation
+        path_embed = self.interleave_embeddings(ent_embeddings=ent_embed,
+                                                rel_embeddings=rel_embed)
+        path_embed += self.pos_embeddings(pos)
+        # Masking and feeding the entity-relation path to the encoder
+        # Pass through the transformer encoder to get contextualized memory
+        source_pmask = None  # No padding mask used here
+        memory = self.encoder(path_embed,
+                              mask=source_mask,
+                              src_key_padding_mask=source_pmask)
+        # Select only the head embeddings from the contextualized memory
+        head_embed = self.select_separated_head_embeddings(memory=memory, head_idxs=head_idxs, entity_origin=entity_origin)
+        # Select relation embeddings from the contextualized memory (if needed)
+        # not working because of missing rel_idxs
+        # relation_embed = self.select_relation_embeddings(memory=memory, rel_idxs=rel_paths)
+
+        # Aggregate head embeddings (no tails in tuple mode)
+        if self.ent_aggregation != "avg":
+            head_padded = self.split_and_pad_embeddings_with_origin(
+                head_embed, origin=entity_origin, target=0)
+            # tail_padded = self.split_and_pad_embeddings_with_origin(
+            #     tail_embed, origin=entity_origin, target=1)
+            head_emb = self.aggregator(head_padded)
+            print(f"jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjHead padded {head_padded.shape}")
+            print(f"jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjhead_embed {head_embed.shape}")
+        else:  # use the average pooling otherwise
+            # tail_emb = self.average_embeddings_with_origin(
+            #     tail_embed, origin=entity_origin, target=1)
+            head_emb = self.average_embeddings_with_origin(
+                head_embed, origin=entity_origin, target=0)
+
+        print(f"jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjHead emb {head_emb.shape}")
+        print(f"head_emb.ndim: {head_emb.ndim}")
+        # Ensure head_emb has the correct shape
+        head_emb = head_emb.unsqueeze(0) if head_emb.ndim < 2 else head_emb
+        # tail_emb = tail_emb.unsqueeze(0) if tail_emb.ndim < 2 else tail_emb
+
+        # Predict relation logits using only the head embedding
+        logits_rp = self.predict_relation_from_h(head_emb)
+        # Predict link logits using only the head and relation embeddings (no tail)
+        logits_link = self.link_predict_from_h(head_emb, targets)
+
+        return logits_rp, logits_link
+
+    def predict_relation_from_h(self, head_emb):
+        # Predict relation class logits from head embedding only
+        predictions = self.relpredict_head_avg(head_emb)
+        return predictions
+
+    def link_predict_from_h(self, head_emb, targets):
+        # Get relation embeddings for the target relations
+        relations_emb = self.pred_link_embeddings(targets)
+        # Concatenate head and relation embeddings (no tail embedding)
+        print(f"Head emb {head_emb.shape}, Rel emb {relations_emb.shape}")
+        tuples = torch.cat((head_emb, relations_emb), dim=1)
+        # Pass through link prediction head
+        predictions = self.link_predict_head1(tuples)
+        predictions = nn.functional.relu(predictions)
+        predictions = self.link_predict_head2(predictions)
+        return predictions
+
+    # ---------------------------
+    # DIFFERENCE TO TRIPLES PREDICTION:
+    # - In triples prediction, the model uses (head, relation, tail) and concatenates all three embeddings for link prediction.
+    # - Here, only (head, relation) tuples are used: tail embeddings are not selected, aggregated, or concatenated.
+    # - The prediction heads (linear layers) are adjusted to accept only the concatenated head and relation embeddings (dimension d_model*2 instead of d_model*3).
+    # - All aggregation and selection logic is simplified to ignore tails.
+    # - This setup is suitable for tasks like predicting if a (head, relation) tuple is valid or for relation classification given only the head.

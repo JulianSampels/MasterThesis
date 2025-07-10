@@ -211,6 +211,7 @@ def main():
 
     # print(args)
     if args.model == "pathe":
+        pathe_trainer.create_and_run_training_exp_triples(args)
         pathe_trainer.create_and_run_training_exp_tuples(args)
 
 
