@@ -820,7 +820,7 @@ class MultiPathDataset(SimplePathDataset):
         """
         Adds methods and attributes to deal with multiple paths.
         """
-        super().__init__(path_store,relcontext_store, triple_store,
+        super().__init__(path_store, relcontext_store, triple_store,
                          context_triple_store, tokens_to_idxs,
                          maximum_triple_paths, num_negatives,
                          triple_corruptor, seed, parallel, neg_triple_store)
@@ -1180,7 +1180,7 @@ class EntityMultiPathDataset(MultiPathDataset):
         return self._getitem_combined(index)
 
 # first idea no working at the moment
-class SimplePathDatasetTuples(SimplePathDataset):
+class TupleEntityMultiPathDataset(MultiPathDataset):
     """
     A dataset for (head, relation) tuples, for tasks such as predicting which relations match to which heads.
     This is analogous to SimplePathDataset but expects (h, r) tuples instead of (h, r, t) triples.
@@ -1190,7 +1190,7 @@ class SimplePathDatasetTuples(SimplePathDataset):
                  path_store: str,
                  relcontext_store: str,
                  tuple_store: torch.tensor,
-                 context_tuple_store: torch.tensor = None,
+                 context_triple_store: torch.tensor = None,
                  tokens_to_idxs: Dict[int, int] = None,
                  maximum_tuple_paths = 50,
                  num_negatives: int = 0,
@@ -1208,8 +1208,8 @@ class SimplePathDatasetTuples(SimplePathDataset):
             Path to the CSV file storing the relational context for each entity.
         tuple_store : torch.tensor
             A matrix holding (h, r) tuples.
-        context_tuple_store : torch.tensor
-            If provided, these tuples will be used for constructing paths.
+        context_triple_store : torch.tensor
+            If provided, these triples will be used for constructing paths.
         tokens_to_idxs : Dict[int, int]
             Mapping dictionary for encoding tokens to proper idxs.
         maximum_tuple_paths : int
@@ -1225,33 +1225,41 @@ class SimplePathDatasetTuples(SimplePathDataset):
         neg_tuple_store : torch.tensor
             Precomputed negative tuples.
         """
-        xtokens = ["MSK"]  # the special tokens that will be reserved
-        relcontext_df = pd.read_csv(relcontext_store)
-        du.listify_columns(relcontext_df, "edges") # space-sep rels --> lists
+        super().__init__(
+            path_store, relcontext_store, tuple_store,
+            context_triple_store, tokens_to_idxs,
+            maximum_triple_paths=maximum_tuple_paths,
+            num_negatives=num_negatives, triple_corruptor=tuple_corruptor,
+            seed=seed, parallel=parallel, neg_triple_store=neg_tuple_store)
 
-        if isinstance(path_store, str):
-            pathstore_df = pd.read_csv(path_store)
-            print(f"Found {len(pathstore_df)} paths from {path_store}")
-            du.listify_columns(pathstore_df)  # space-separated vals --> lists
-            to_tensor = lambda x: [torch.IntTensor(t) for t in x]
-            self.relation_paths = to_tensor(pathstore_df["relation_path"])
-            self.entity_paths =  to_tensor(pathstore_df["entity_path"])
-            self.path_index = plib.create_path_indexing(self.entity_paths)
-        else:
-            self.relation_paths, self.entity_paths, self.path_index = path_store
 
-        if tokens_to_idxs is not None:
-            logger.info(f"Using given encoding: {len(tokens_to_idxs)} tokens")
-            if not check_vocabulary(relcontext_df["edges"], tokens_to_idxs.keys()):
-                raise InconsistentVocabulary("Missing tokens in vocabulary")
-            self.tokens_to_idxs = tokens_to_idxs
-        else:
-            logger.info(f"Creating new vocabulary from {path_store}")
-            relation_vocab, self.tokens_to_idxs = create_vocabulary(
-                list(relcontext_df["edges"]), xtokens=xtokens)
-        self.idxs_to_tokens = {idx: t for t, idx in self.tokens_to_idxs.items()}
+        # xtokens = ["MSK"]  # the special tokens that will be reserved
+        # relcontext_df = pd.read_csv(relcontext_store)
+        # du.listify_columns(relcontext_df, "edges") # space-sep rels --> lists
 
-        self.num_pos, self.num_neg = len(tuple_store), num_negatives
+        # if isinstance(path_store, str):
+        #     pathstore_df = pd.read_csv(path_store)
+        #     print(f"Found {len(pathstore_df)} paths from {path_store}")
+        #     du.listify_columns(pathstore_df)  # space-separated vals --> lists
+        #     to_tensor = lambda x: [torch.IntTensor(t) for t in x]
+        #     self.relation_paths = to_tensor(pathstore_df["relation_path"])
+        #     self.entity_paths =  to_tensor(pathstore_df["entity_path"])
+        #     self.path_index = plib.create_path_indexing(self.entity_paths)
+        # else:
+        #     self.relation_paths, self.entity_paths, self.path_index = path_store
+
+        # if tokens_to_idxs is not None:
+        #     logger.info(f"Using given encoding: {len(tokens_to_idxs)} tokens")
+        #     if not check_vocabulary(relcontext_df["edges"], tokens_to_idxs.keys()):
+        #         raise InconsistentVocabulary("Missing tokens in vocabulary")
+        #     self.tokens_to_idxs = tokens_to_idxs
+        # else:
+        #     logger.info(f"Creating new vocabulary from {path_store}")
+        #     relation_vocab, self.tokens_to_idxs = create_vocabulary(
+        #         list(relcontext_df["edges"]), xtokens=xtokens)
+        # self.idxs_to_tokens = {idx: t for t, idx in self.tokens_to_idxs.items()}
+
+        # self.num_pos, self.num_neg = len(tuple_store), num_negatives
         if num_negatives > 0:
             if neg_tuple_store is None:
                 # may implement generate_negative_tuples if needed
@@ -1263,58 +1271,67 @@ class SimplePathDatasetTuples(SimplePathDataset):
                     "Corrupted tuplestore dim does not match the tuplestore:"\
                     f" got {neg_tuple_store.shape[0]}, expected {expected_dim}"
 
-        self.epoch = None
-        self.xtokens = xtokens
+        # self.epoch = None
+        # self.xtokens = xtokens
         self.tuplestore = tuple_store
-        self.max_paths = maximum_tuple_paths
-        self.vocab_size = len(self.tokens_to_idxs)
-        self.context_tuple_store = context_tuple_store \
-              if context_tuple_store is not None else tuple_store
-        self.no_relations = self.vocab_size - len(xtokens) - 1  # 1 for PAD
-        self.seed = seed if seed is not None else torch.seed()
+        # self.max_paths = maximum_tuple_paths
+        # self.vocab_size = len(self.tokens_to_idxs)
+        # self.context_triple_store = context_triple_store
+        #     #   if context_triple_store is not None else tuple_store
+        # self.no_relations = self.vocab_size - len(xtokens) - 1  # 1 for PAD
+        # self.seed = seed if seed is not None else torch.seed()
 
     def __len__(self):
         return len(self.tuplestore)
-
-    def set_epoch(self, epoch, **unused):
-        self.epoch = epoch
-
-    def encode_relations(self, relations):
-        if torch.is_tensor(relations):
-            relations =  relations.tolist()
-        return torch.IntTensor([self.tokens_to_idxs[r] for r in relations])
-
-    def encode_entities(self, entities):
-        if torch.is_tensor(entities):
-            entities =  entities.tolist()
-        return torch.IntTensor([r + len(self.xtokens) + 1 for r in entities])
-
-    def fetch_path_context(self, index: int, context_type: str):
-        if context_type == "path":
-            entities = self.entity_paths[index]
-            relations = self.relation_paths[index]
-        elif context_type == "tuple":
-            tuple_ = self.context_tuple_store[index]
-            entities = tuple_[[0]]
-            relations = tuple_[[1]]
-        else:
-            raise ValueError(f"{context_type} not a supported context type")
-        return entities, relations
+    
+#fixJS maybe no override needed?
+    # def fetch_path_context(self, index: int, context_type: str):
+    #     if context_type == "path":
+    #         entities = self.entity_paths[index]
+    #         relations = self.relation_paths[index]
+    #     elif context_type == "tuple":
+    #         tuple_ = self.context_triple_store[index]
+    #         entities = tuple_[[0]]
+    #         relations = tuple_[[1]]
+    #     else:
+    #         raise ValueError(f"{context_type} not a supported context type")
+    #     return entities, relations
 
     def __getitem__(self, index) -> dict:
+        return self._getitem_combined(index)
+
+    # add here the idx relation value? perhaps already in relation key contained?
+    def _getitem_combined(self, index) -> dict:
         """
-        Returns a dictionary for the (h, r) tuple at the given index.
+        Get a multi-path contextualisation of the i-th triple in the dataset.
+        Paths are constructed using both incoming and outgoing context.
         """
-        tuple_ = self.tuplestore[index]
-        head, relation = tuple_
-        # Optionally, fetch context paths or features as needed
-        # Here, just return the tuple and its encoded form
+        tuple = torch.as_tensor(self.tuplestore[index])
+        head, rel = tuple
+        # Retrieving combined incoming and outgoing paths per entity
+        with du.local_seed(self.seed, self.epoch, index):
+            h_epaths, h_rpaths, h_idxs, h_erpos = \
+                self._create_inout_contextpaths(head)
+            # t_epaths, t_rpaths, t_idxs, t_erpos = \
+            #     self._create_inout_contextpaths(tail)
+        no_hpaths = len(h_epaths)
+        # no_tpaths = len(t_epaths)
+        # Record the origin of each path (0 for H, 1 for T) and update entixs
+        # path_ori = [0] * no_hpaths + [1] * no_tpaths
+        # h_idxs = h_idxs + [-1] * no_tpaths
+        # t_idxs = [-1] * no_hpaths + t_idxs
+        path_ori = [0] * no_hpaths
+        h_idxs = h_idxs
+        # print(f"ori_triple: {tuple}, \nh_epaths: {h_epaths}, \nh_rpaths: {h_rpaths}, \nh_idxs: {h_idxs}, \nh_erpos: {h_erpos}\n")
+
+        #JS: fix ori_triple where used? need to create ori_tuple?
         return {
             "id": index,
-            "head": head,
-            "relation": relation,
-            "head_enc": self.encode_entities([head]),
-            "relation_enc": self.encode_relations([relation]),
+            "pos": h_erpos, 
+            "ent_paths": h_epaths,
+            "rel_paths": h_rpaths,
+            "head_indexes": h_idxs,
+            "relation": self.tokens_to_idxs[rel.item()],
+            "ori_triple": tuple, "path_origins": path_ori,
         }
-
 

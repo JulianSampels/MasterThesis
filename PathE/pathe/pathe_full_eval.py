@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from . import triple_lib
 from . import data_utils as du
-from .pather_models import PathEModel
+from .pather_models import PathEModelTriples
 from .pathdata import EntityMultiPathDataset
 from .wrappers import PathEModelWrapper
 from .path_lib import encode_relcontext_freqs
@@ -129,11 +129,11 @@ def run_full_eval(args):
         )
         bundle = partial(bundle_arguments, exclude=["vocab_size"],
                          args=namespace_to_dict(args))
-        model = PathEModel(
+        model = PathEModelTriples(
             vocab_size=entity_dataset.vocab_size,
             padding_idx=entity_dataset.tokens_to_idxs["PAD"],
             relcontext_graph=relcontext_graph,
-            **bundle(target_class=PathEModel),
+            **bundle(target_class=PathEModelTriples),
         )
         args_dict = vars(args).copy()
         args_dict.pop("checkpoint")

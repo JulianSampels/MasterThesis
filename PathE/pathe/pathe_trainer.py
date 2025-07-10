@@ -14,8 +14,8 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
 
 from . import triple_lib
-from .pather_models import PathEModel
-from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, SimplePathDatasetTuples
+from .pather_models import PathEModelTriples, PathEModelTuples
+from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir
 from .data_utils import load_tuple_tensors
@@ -23,7 +23,7 @@ from .callbacks import DatasetUpdater
 from .corruption import CorruptHeadGenerator, CorruptRelationGeneratorTuples, CorruptTailGenerator, CorruptLinkGenerator#, \
     # CorruptBothGenerator
 from .utils import stageprint, bundle_arguments, namespace_to_dict
-from .wrappers import PathEModelWrapper
+from .wrappers import PathEModelWrapper, PathEModelWrapperTuples
 from .path_lib import encode_relcontext_freqs
 from . import data_utils as du
 
@@ -83,11 +83,11 @@ def create_and_run_training_exp_tuples(args):
                         os.path.join(args.dump_dir, "test"))
 
     stageprint("Creating datasets and dataloaders...")
-    train_set = SimplePathDatasetTuples(
+    train_set = TupleEntityMultiPathDataset(
         path_store=paths,
         relcontext_store=relcon,
         tuple_store=train_tuples,
-        context_tuple_store=train_tuples,
+        context_triple_store=train_tuples,
         maximum_tuple_paths=args.max_ppt,
         num_negatives=args.num_negatives,
         tuple_corruptor=tuple_corruptor,
@@ -99,11 +99,11 @@ def create_and_run_training_exp_tuples(args):
     path_store = train_set.relation_paths, \
                  train_set.entity_paths, \
                  train_set.path_index
-    valid_set = SimplePathDatasetTuples(
+    valid_set = TupleEntityMultiPathDataset(
         path_store=path_store,
         relcontext_store=relcon,
         tuple_store=val_tuples,
-        context_tuple_store=train_tuples,
+        context_triple_store=train_tuples,
         maximum_tuple_paths=args.max_ppt,
         tokens_to_idxs=tokens_to_idxs,
         num_negatives=args.val_num_negatives,
@@ -111,11 +111,11 @@ def create_and_run_training_exp_tuples(args):
         parallel=parallel,
         neg_tuple_store=negatives[1],
     )
-    test_set = SimplePathDatasetTuples(
+    test_set = TupleEntityMultiPathDataset(
         path_store=path_store,
         relcontext_store=relcon,
         tuple_store=test_tuples,
-        context_tuple_store=train_tuples,
+        context_triple_store=train_tuples,
         maximum_tuple_paths=args.max_ppt,
         tokens_to_idxs=tokens_to_idxs,
         num_negatives=args.val_num_negatives,
@@ -177,20 +177,20 @@ def create_and_run_training_exp_tuples(args):
     )
     bundle = partial(bundle_arguments, exclude=["vocab_size"],
                      args=namespace_to_dict(args))
-    model = PathEModel(
+    model = PathEModelTuples(
         vocab_size=train_set.vocab_size,
-        padding_idx=tokens_to_idxs["PAD"],
         relcontext_graph=relcontext_graph,
-        **bundle(target_class=PathEModel),
+        padding_idx=tokens_to_idxs["PAD"],
+        **bundle(target_class=PathEModelTuples),
     )
     # class_weights = triple_lib.get_class_weights(train_triples, tokens_to_idxs)
-    pl_model = PathEModelWrapper(
+    pl_model = PathEModelWrapperTuples(
         pathe_model=model,
-        filtration_dict=filtration_dict,  # FIXME
+        filtration_dict=map_head_to_relationsets_tuples,
         class_weights=class_weights,  # for rel imbalance
         **namespace_to_dict(args),  # model hparameters
     )
-    print(pl_model.model)  # keras-style model overview
+    print("pl_model.model type:", type(pl_model.model))  # keras-style model overview
     pl_model.model.to(torch.device(args.device))
 
     stageprint("Creating loggers, callbacks and setting up trainer")
@@ -424,11 +424,11 @@ def create_and_run_training_exp_triples(args):
     )
     bundle = partial(bundle_arguments, exclude=["vocab_size"],
                      args=namespace_to_dict(args))
-    model = PathEModel(
+    model = PathEModelTriples(
         vocab_size=train_set.vocab_size,
         padding_idx=tokens_to_idxs["PAD"],
         relcontext_graph=relcontext_graph,
-        **bundle(target_class=PathEModel),
+        **bundle(target_class=PathEModelTriples),
     )
     # class_weights = triple_lib.get_class_weights(train_triples, tokens_to_idxs)
     pl_model = PathEModelWrapper(

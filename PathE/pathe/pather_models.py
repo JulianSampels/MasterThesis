@@ -261,7 +261,7 @@ class DummyProjector(nn.Module):
 # PathE models
 ################################################################################
 
-class PathEModel(nn.Module):
+class PathEModelTriples(nn.Module):
     """
     Parameters
     ----------
@@ -327,11 +327,11 @@ class PathEModel(nn.Module):
         self.node_projector = node_projector
         self.ent_aggregation = ent_aggregation
         
-        if ent_aggregation == "avg":
+        if self.ent_aggregation == "avg":
             logger.info("Using average aggregation for entities")
         else:  # assume contextual aggregation
             self.aggregator = ContextualAggregator(
-                embedding_dim=d_model, aggregator=ent_aggregation,
+                embedding_dim=d_model, aggregator=self.ent_aggregation,
                 num_agg_heads=num_agg_heads, num_agg_layers=num_agg_layers,
                 laf_units=laf_units, context_heads=context_heads,
             )
