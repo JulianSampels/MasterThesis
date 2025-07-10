@@ -14,7 +14,7 @@ import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 
-from .aggregation import ContextualAggregator
+from .aggregation import ContextualAggregator, ContextualAggregatorTuples
 
 logger = logging.getLogger(__name__)
 
