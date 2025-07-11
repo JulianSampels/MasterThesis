@@ -1321,6 +1321,8 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
         # h_idxs = h_idxs + [-1] * no_tpaths
         # t_idxs = [-1] * no_hpaths + t_idxs
         path_ori = [0] * no_hpaths
+        # could als be known by head_indexes from ent_paths
+        heads = [head] * no_hpaths
         h_idxs = h_idxs
         # print(f"ori_triple: {tuple}, \nh_epaths: {h_epaths}, \nh_rpaths: {h_rpaths}, \nh_idxs: {h_idxs}, \nh_erpos: {h_erpos}\n")
 
