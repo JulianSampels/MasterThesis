@@ -947,6 +947,8 @@ class PathEModelTuples(PathEModelTriples):
                               src_key_padding_mask=source_pmask)
         # Select only the head embeddings from the contextualized memory
         head_embed = self.select_separated_head_embeddings(memory=memory, head_idxs=head_idxs, entity_origin=entity_origin)
+        heads = ent_paths[torch.arange(ent_paths.size(0)), head_idxs//2]
+        print(f"heads {heads.shape} {heads[:15]}\n\n")
         # Select relation embeddings from the contextualized memory (if needed)
         # not working because of missing rel_idxs
         # relation_embed = self.select_relation_embeddings(memory=memory, rel_idxs=rel_paths)
