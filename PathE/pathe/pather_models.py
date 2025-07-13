@@ -640,6 +640,32 @@ class PathEModelTriples(nn.Module):
         # convert list tp tensor by padding
         padded_embs = nn.utils.rnn.pad_sequence(entity_embeds, batch_first=True)
         return padded_embs
+    
+    def split_and_pad_embeddings_with_origin_and_entities(self, embeddings, origin, target, entities):
+        """
+        A function that averages the embeddings in a table for each triple
+        Parameters
+        ----------
+        embeddings : The emebeddings of shape (num_entities, dim)
+        ppt : The paths per triple
+        idxs : The idxs of the entities in each path
+
+        Returns
+        -------
+        A single embedding table of shape (num triples, dim)
+        """
+
+        output, inverse, counts = torch.unique_consecutive(entities, return_inverse=True, return_counts=True)
+        # calculate paths per entity based on target origin
+        start_indices = torch.cumsum(counts, dim=0) - counts
+        origin_grouped = origin[start_indices]
+        count_selection_mask = (origin_grouped == target)
+        paths_per_entity = counts[count_selection_mask]
+        # split the embeddings based on the existing number of paths per entity
+        entity_embeds = torch.split(embeddings, paths_per_entity.tolist(), dim=0)
+        # convert list tp tensor by padding
+        padded_embs = nn.utils.rnn.pad_sequence(entity_embeds, batch_first=True)
+        return padded_embs
 
     def sum_embeddings_with_origin(self, embeddings, origin, target):
         """
@@ -831,6 +857,10 @@ class PathEModelTriples(nn.Module):
         memory = self.encoder(path_embed,
                               mask=source_mask,
                               src_key_padding_mask=source_pmask)
+        # would be needed for grouping without entity_origin
+        # entity_idxs = torch.where(head_idxs >= 0, head_idxs, tail_idxs)
+        # heads = ent_paths[torch.arange(ent_paths.size(0)), entity_idxs//2]
+
         # Isolate the embeddings for head and tails only from the triples
         head_embed, tail_embed = (
             self.select_separated_head_and_tail_embeddings(memory=memory,
@@ -947,29 +977,27 @@ class PathEModelTuples(PathEModelTriples):
                               src_key_padding_mask=source_pmask)
         # Select only the head embeddings from the contextualized memory
         head_embed = self.select_separated_head_embeddings(memory=memory, head_idxs=head_idxs, entity_origin=entity_origin)
+
         heads = ent_paths[torch.arange(ent_paths.size(0)), head_idxs//2]
-        print(f"heads {heads.shape} {heads[:15]}\n\n")
         # Select relation embeddings from the contextualized memory (if needed)
         # not working because of missing rel_idxs
         # relation_embed = self.select_relation_embeddings(memory=memory, rel_idxs=rel_paths)
 
         # Aggregate head embeddings (no tails in tuple mode)
         if self.ent_aggregation != "avg":
-            head_padded = self.split_and_pad_embeddings_with_origin(
-                head_embed, origin=entity_origin, target=0)
+            # print(f"head_idxs {head_idxs.shape} {head_idxs[:5]} \nent_paths {ent_paths.shape} {ent_paths[:15]}\n pos {pos.shape} {pos[:5]}\n entity_origin {entity_origin.shape} {entity_origin[:5]}")
+            # head_padded = self.split_and_pad_embeddings_with_origin(
+            #     head_embed, origin=entity_origin, target=0)
+            head_padded = self.split_and_pad_embeddings_with_origin_and_entities(head_embed, origin=entity_origin, target=0, entities=heads)
             # tail_padded = self.split_and_pad_embeddings_with_origin(
             #     tail_embed, origin=entity_origin, target=1)
             head_emb = self.aggregator(head_padded)
-            print(f"jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjHead padded {head_padded.shape}")
-            print(f"jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjhead_embed {head_embed.shape}")
         else:  # use the average pooling otherwise
             # tail_emb = self.average_embeddings_with_origin(
             #     tail_embed, origin=entity_origin, target=1)
             head_emb = self.average_embeddings_with_origin(
                 head_embed, origin=entity_origin, target=0)
 
-        print(f"jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjHead emb {head_emb.shape}")
-        print(f"head_emb.ndim: {head_emb.ndim}")
         # Ensure head_emb has the correct shape
         head_emb = head_emb.unsqueeze(0) if head_emb.ndim < 2 else head_emb
         # tail_emb = tail_emb.unsqueeze(0) if tail_emb.ndim < 2 else tail_emb
