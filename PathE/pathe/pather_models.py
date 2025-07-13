@@ -654,7 +654,7 @@ class PathEModelTriples(nn.Module):
         -------
         A single embedding table of shape (num triples, dim)
         """
-
+        raise NotImplementedError("This function may not work correctly and should not be needed since the ppt function exists.")
         output, inverse, counts = torch.unique_consecutive(entities, return_inverse=True, return_counts=True)
         # calculate paths per entity based on target origin
         start_indices = torch.cumsum(counts, dim=0) - counts
@@ -663,6 +663,30 @@ class PathEModelTriples(nn.Module):
         paths_per_entity = counts[count_selection_mask]
         # split the embeddings based on the existing number of paths per entity
         entity_embeds = torch.split(embeddings, paths_per_entity.tolist(), dim=0)
+        # convert list tp tensor by padding
+        padded_embs = nn.utils.rnn.pad_sequence(entity_embeds, batch_first=True)
+        return padded_embs
+    
+    def split_and_pad_embeddings_with_ppt(self, embeddings, ppt):
+        """
+        Splits and pads entity embeddings according to the number of paths per tuple or triple.
+
+        Given a tensor of entity embeddings and a tensor specifying the number of paths per tuple/triple (ppt),
+        this function splits the embeddings accordingly and pads them to create a uniform batch.
+
+        embeddings : torch.Tensor
+            Tensor of shape (num_entities, dim) containing the entity embeddings.
+        ppt : torch.Tensor
+            1D tensor of shape (num_tuples_or_triples,) specifying the number of paths per tuple/triple.
+
+        Returns
+        -------
+        torch.Tensor
+            A padded tensor of shape (num_tuples_or_triples, max_num_paths, dim), where max_num_paths is the maximum
+            in ppt. Shorter sequences are padded with zeros.
+        """
+        # split the embeddings based on the existing number of paths per tuple
+        entity_embeds = torch.split(embeddings, ppt.tolist(), dim=0)
         # convert list tp tensor by padding
         padded_embs = nn.utils.rnn.pad_sequence(entity_embeds, batch_first=True)
         return padded_embs
@@ -986,13 +1010,11 @@ class PathEModelTuples(PathEModelTriples):
         # Aggregate head embeddings (no tails in tuple mode)
         if self.ent_aggregation != "avg":
             # print(f"head_idxs {head_idxs.shape} {head_idxs[:5]} \nent_paths {ent_paths.shape} {ent_paths[:15]}\n pos {pos.shape} {pos[:5]}\n entity_origin {entity_origin.shape} {entity_origin[:5]}")
-            # head_padded = self.split_and_pad_embeddings_with_origin(
-            #     head_embed, origin=entity_origin, target=0)
-            head_padded = self.split_and_pad_embeddings_with_origin_and_entities(head_embed, origin=entity_origin, target=0, entities=heads)
-            # tail_padded = self.split_and_pad_embeddings_with_origin(
-            #     tail_embed, origin=entity_origin, target=1)
+            head_padded = self.split_and_pad_embeddings_with_ppt(head_embed, ppt)
             head_emb = self.aggregator(head_padded)
         else:  # use the average pooling otherwise
+            raise NotImplementedError(
+                "Average aggregation for tuples is not implemented yet. Needs function using ppe like in 'avg' case.")
             # tail_emb = self.average_embeddings_with_origin(
             #     tail_embed, origin=entity_origin, target=1)
             head_emb = self.average_embeddings_with_origin(
