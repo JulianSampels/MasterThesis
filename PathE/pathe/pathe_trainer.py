@@ -23,7 +23,7 @@ from .callbacks import DatasetUpdater
 from .corruption import CorruptHeadGenerator, CorruptRelationGeneratorTuples, CorruptTailGenerator, CorruptLinkGenerator#, \
     # CorruptBothGenerator
 from .utils import stageprint, bundle_arguments, namespace_to_dict
-from .wrappers import PathEModelWrapper, PathEModelWrapperTuples
+from .wrappers import PathEModelWrapperTriples, PathEModelWrapperTuples
 from .path_lib import encode_relcontext_freqs
 from . import data_utils as du
 
@@ -431,7 +431,7 @@ def create_and_run_training_exp_triples(args):
         **bundle(target_class=PathEModelTriples),
     )
     # class_weights = triple_lib.get_class_weights(train_triples, tokens_to_idxs)
-    pl_model = PathEModelWrapper(
+    pl_model = PathEModelWrapperTriples(
         pathe_model=model,
         filtration_dict=filtration_dict,  # FIXME
         class_weights=class_weights,  # for rel imbalance
