@@ -1057,7 +1057,6 @@ class PathEModelTuples(PathEModelTriples):
         # Get relation embeddings for the target relations
         relations_emb = self.pred_link_embeddings(targets)
         # Concatenate head and relation embeddings (no tail embedding)
-        print(f"Head emb {head_emb.shape}, Rel emb {relations_emb.shape}")
         tuples = torch.cat((head_emb, relations_emb), dim=1)
         # Pass through link prediction head
         predictions = self.link_predict_head1(tuples)
