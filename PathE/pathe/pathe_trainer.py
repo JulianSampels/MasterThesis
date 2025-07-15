@@ -228,12 +228,12 @@ def create_and_run_training_exp_tuples(args):
     tr_limit, va_limit = (.1, .2) if args.debug else (1., 1.)
     accelerator = "gpu" if args.device == "cuda" else "cpu"
 
-    logger=[tb_logger] + ([wb_logger] if wb_logger else [])
+    logger_tmp = [tb_logger] + ([wb_logger] if wb_logger else [])
     trainer = Trainer(
         max_epochs=args.max_epochs, gradient_clip_val=1.0,
         accelerator=accelerator, devices=args.num_devices, num_nodes=1,
         limit_train_batches=tr_limit, limit_val_batches=va_limit,
-        logger=logger, log_every_n_steps=5,
+        logger=logger_tmp, log_every_n_steps=5,
         val_check_interval=args.val_check_interval,
         gradient_clip_algorithm='norm',  # CHANGED THIS
         accumulate_grad_batches=args.accumulate_gradient,
@@ -475,12 +475,12 @@ def create_and_run_training_exp_triples(args):
     tr_limit, va_limit = (.1, .2) if args.debug else (1., 1.)
     accelerator = "gpu" if args.device == "cuda" else "cpu"
 
-    logger=[tb_logger] + ([wb_logger] if wb_logger else [])
+    logger_tmp = [tb_logger] + ([wb_logger] if wb_logger else [])
     trainer = Trainer(
         max_epochs=args.max_epochs, gradient_clip_val=1.0,
         accelerator=accelerator, devices=args.num_devices, num_nodes=1,
         limit_train_batches=tr_limit, limit_val_batches=va_limit,
-        logger=logger, log_every_n_steps=5,
+        logger=logger_tmp, log_every_n_steps=5,
         val_check_interval=args.val_check_interval,
         gradient_clip_algorithm='norm',  # CHANGED THIS
         accumulate_grad_batches=args.accumulate_gradient,

@@ -1754,7 +1754,11 @@ def generate_negative_triples(triplestore, num_negatives, triple_corruptor,
     negative_triples = negative_triples.reshape(-1, 3)
     assert len(negative_triples) == num_positives * num_negatives \
            or len(negative_triples) == num_positives * num_negatives * 2
-    assert torch.all(positive_triples.unique(dim=0) == triplestore)
+    # # if the order does not match use this:
+    # set1 = set(map(tuple, positive_triples.unique(dim=0).cpu().numpy()))
+    # set2 = set(map(tuple, triplestore.cpu().numpy()))
+    # assert set1 == set2, "Positive triples do not match the triplestore"
+    assert torch.all(positive_triples.unique(dim=0) == triplestore.unique(dim=0)), "Positive triples do not match the triplestore perhaps check for different order."
 
     return torch.concat([positive_triples, negative_triples])
 
@@ -1789,6 +1793,6 @@ def generate_negative_batches(triplestore, num_negatives, triple_corruptor,
     negative_triples = negative_triples.reshape(-1, 3)
     assert len(negative_triples) == num_positives * num_negatives \
            or len(negative_triples) == num_positives * num_negatives * 2
-    assert torch.all(positive_triples.unique(dim=0) == triplestore)
+    assert torch.all(positive_triples.unique(dim=0) == triplestore.unique(dim=0)), "Positive triples do not match the triplestore perhaps check for different order."
 
     return corruptions
