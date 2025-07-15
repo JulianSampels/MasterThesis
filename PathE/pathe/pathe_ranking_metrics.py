@@ -8,7 +8,7 @@ from collections import defaultdict
 SMALLEST_FLOAT = -torch.finfo(torch.float32).max
 
 
-class RelationMRR(Metric):
+class RelationMRRTriples(Metric):
     """
     A torchmetric implementation of the Mean Reciprocal Rank for relation
     prediction in Knowledge Graphs
@@ -66,8 +66,7 @@ class RelationMRR(Metric):
         # equal score are placed behind the currently considered. Hence, the
         # rank is the number of options with better scores, plus one, as the
         # rank is one-based.
-        true_scores = scores[torch.arange(scores.size()[0]),
-        target_relations].unsqueeze(1)
+        true_scores = scores[torch.arange(scores.size()[0]), target_relations].unsqueeze(1)
         optimistic_rank = (scores > true_scores).sum(dim=1) + 1
 
         # The pessimistic rank is the rank when assuming all options with an
@@ -101,6 +100,78 @@ class RelationMRR(Metric):
 
     def compute(self):
         return self.reciprocal_ranks / self.total
+
+class RelationMRRTuples(RelationMRRTriples):
+    """
+    A torchmetric implementation of the Mean Reciprocal Rank for relation prediction with tuples (head, relation).
+    """
+    def __init__(self, filter_dict: Dict):
+        """
+        The constructor
+        Parameters
+        ----------
+        filter_dict : The dictionary mapping between the (h) entities and its relations to filter false negatives
+        """
+        super().__init__(filter_dict)
+    
+    def update(self, triples
+               : torch.IntTensor, scores: torch.tensor):
+        """
+        Update ranking metrics based on model predictions and target relations.
+
+        Parameters
+        ----------
+        triples : torch.IntTensor
+            Tensor of shape (num_samples, 2) containing (head, relation) tuple pairs just named triples instead of tuples for compatibility.
+        scores : torch.Tensor
+            Tensor of shape (num_samples, num_relations) containing the model's scores
+            for each possible relation for each (head, relation) pair.
+
+        Returns
+        -------
+        None
+        """
+        tuples = triples
+
+        # Filter out all relations that may be true but are not the one we are predicting
+        # This prevents false negatives from affecting the rank of the correct answer
+        for i in range(scores.size(0)):
+            head = tuples[i, 0].item()
+            relation = tuples[i, 1].item()
+            for j in self.all_relations[head] - {relation}:
+                scores[i, j] = SMALLEST_FLOAT
+
+        # Get the target relation indices for each sample
+        target_relations = tuples[:, 1]
+        # Gather the score assigned by the model to the true relation for each sample
+        true_scores = scores[torch.arange(scores.size(0)), target_relations].unsqueeze(1)
+        
+        # computing ranks
+
+        # The optimistic rank is the rank when assuming all options with an
+        # equal score are placed behind the currently considered. Hence, the
+        # rank is the number of options with better scores, plus one, as the
+        # rank is one-based.
+        optimistic_rank = (scores > true_scores).sum(dim=1) + 1
+
+        # The pessimistic rank is the rank when assuming all options with an
+        # equal score are placed in front of the currently considered. Hence,
+        # the rank is the number of options which have at least the same score
+        # minus one (as the currently considered option in included in all
+        # options). As the rank is one-based, we have to add 1, which nullifies
+        # the "minus 1" from before.
+        pessimistic_rank = (scores >= true_scores).sum(dim=1)
+
+        # The realistic rank is the average of the optimistic and pessimistic
+        # rank, and hence the expected rank over all permutations of the elements
+        # with the same score as the currently considered option.
+        realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
+
+        # Update the sum of reciprocal ranks for all samples in the batch
+        self.reciprocal_ranks += torch.sum(1.0 / realistic_rank, dtype=torch.float)
+        # Update the total number of samples processed
+        self.total += realistic_rank.numel()
+
 
 
 class RelationMR(Metric):
@@ -171,7 +242,7 @@ class RelationMR(Metric):
         return self.ranks / self.total
 
 
-class RelationHitsAtK(Metric):
+class RelationHitsAtKTriples(Metric):
     """
     A torchmetric implementation of Hits@K for relation
     prediction in Knowledge Graphs
@@ -188,8 +259,7 @@ class RelationHitsAtK(Metric):
         k : The rank beyond which the score is ranked at zero
         """
         super().__init__()
-        self.add_state("hits", default=torch.tensor(0, dtype=
-        torch.float),
+        self.add_state("hits", default=torch.tensor(0, dtype= torch.float),
                        dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
         self.all_relations = filter_dict
@@ -235,8 +305,7 @@ class RelationHitsAtK(Metric):
         # equal score are placed behind the currently considered. Hence, the
         # rank is the number of options with better scores, plus one, as the
         # rank is one-based.
-        true_scores = scores[torch.arange(scores.size()[0]),
-        target_relations].unsqueeze(1)
+        true_scores = scores[torch.arange(scores.size()[0]), target_relations].unsqueeze(1)
         optimistic_rank = (scores > true_scores).sum(dim=1) + 1
 
         # The pessimistic rank is the rank when assuming all options with an
@@ -273,7 +342,39 @@ class RelationHitsAtK(Metric):
         return self.hits / self.total
 
 
-class EntityMRR(Metric):
+class RelationHitsAtKTuples(RelationHitsAtKTriples):
+    """
+    A torchmetric implementation of Hits@K for relation prediction with tuples (head, relation).
+    """
+    def __init__(self, filter_dict: Dict, k: int):
+        super().__init__(filter_dict, k)
+
+    def update(self, triples: torch.IntTensor, scores: torch.tensor):
+        """
+        Parameters
+        ----------
+        triples : torch.IntTensor of shape (num_samples, 2) containing (head, relation) tuple pairs. Named triples instead of tuples for compatibility.
+        scores : torch.Tensor of shape (num_samples, num_relations)
+        """
+        tuples = triples
+
+        # Filter out all relations that may be true but are not the one we are predicting
+        # This prevents false negatives from affecting the rank of the correct answer
+        for i in range(scores.size(0)):
+            head = tuples[i, 0].item()
+            relation = tuples[i, 1].item()
+            for j in self.all_relations[head] - {relation}:
+                scores[i, j] = SMALLEST_FLOAT
+
+        target_relations = tuples[:, 1]
+        true_scores = scores[torch.arange(scores.size(0)), target_relations].unsqueeze(1)
+        optimistic_rank = (scores > true_scores).sum(dim=1) + 1
+        pessimistic_rank = (scores >= true_scores).sum(dim=1)
+        realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
+        self.hits += torch.sum((realistic_rank <= self.k), dtype=torch.float)
+        self.total += realistic_rank.numel()
+
+class EntityMRRTriples(Metric):
     """
     A torchmetric implementation of the Mean Reciprocal Rank for relation
     prediction in Knowledge Graphs
@@ -377,7 +478,47 @@ class EntityMRR(Metric):
         return self.reciprocal_ranks / self.total
 
 
-class EntityHitsAtK(Metric):
+class EntityMRRTuples(EntityMRRTriples):
+    """
+    A torchmetric implementation of the Mean Reciprocal Rank for entity prediction with tuples.
+    """
+    def __init__(self):
+        raise NotImplementedError("EntityMRRTuples was not tested yet. And is perhaps not even needed.")
+        super().__init__()
+
+    def update(self, triples: torch.IntTensor, scores: torch.tensor, num_entities_per_sample: int):
+        """
+        Parameters
+        ----------
+        num_entities_per_sample : The number of negative head or tail entities sampled for each test or val triple
+        triples : The tuples the model is being evaluated on, torch.Tensor of shape (num_triples,2) containing one h,r tuple per row. Named triples for compatibility.
+        scores : The scores produced by the model, a torch.Tensor of shape (
+        num_triples, num_relations) or (num-triples, 1) if link prediction
+        """
+        tuples = triples
+
+        scores = scores.squeeze()
+        tuples_per_sample = num_entities_per_sample + 1
+        unstacked_tuples = tuples.reshape(tuples.size(0) // tuples_per_sample, tuples_per_sample, -1)
+
+        # Reshape scores to match tuples
+        if scores.ndim > 1:
+            scores_unpacked = scores.reshape(tuples.size(0) // tuples_per_sample, tuples_per_sample, -1)
+            tuple_scores = scores_unpacked[torch.arange(scores_unpacked.size(0)), :, unstacked_tuples[:, 0, 1]]
+        else:
+            tuple_scores = scores.reshape(tuples.size(0) // tuples_per_sample, tuples_per_sample)
+
+        # Compute ranks for the true entity
+        true_scores = tuple_scores[:, 0].unsqueeze(1)
+        optimistic_rank = (tuple_scores > true_scores).sum(dim=1) + 1
+        pessimistic_rank = (tuple_scores >= true_scores).sum(dim=1)
+        realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
+
+        self.reciprocal_ranks += torch.sum(1.0 / realistic_rank, dtype=torch.float)
+        self.total += realistic_rank.numel()
+
+
+class EntityHitsAtKTriples(Metric):
     """
     A torchmetric implementation of the hits@K for entity
     prediction in Knowledge Graphs
@@ -432,9 +573,7 @@ class EntityHitsAtK(Metric):
             # (h,r,t)|(h,t) is the score of the head and the correct relation.
             # Thus, the score for each triple is the score produced by the
             # relation predictor for the relation.
-            triple_scores = scores_unpacked[torch.arange(scores_unpacked.size()[
-                                                             0]), :,
-                            unstacked_triples[:, 0, 1]]  ##### 2 for other
+            triple_scores = scores_unpacked[torch.arange(scores_unpacked.size()[0]), :, unstacked_triples[:, 0, 1]]  ##### 2 for other
             # format
         else:
             triple_scores = scores.reshape(triples.size()[
@@ -461,8 +600,7 @@ class EntityHitsAtK(Metric):
         # with the same score as the currently considered option.
         realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
 
-        self.hits += torch.sum((realistic_rank <= self.k),
-                                           dtype=torch.float)
+        self.hits += torch.sum((realistic_rank <= self.k), dtype=torch.float)
         self.total += realistic_rank.numel()
 
         # sort the scores and get the indices
@@ -479,6 +617,58 @@ class EntityHitsAtK(Metric):
 
     def compute(self):
         return self.hits / self.total
+
+
+class EntityHitsAtKTuples(EntityHitsAtKTriples):
+    """
+    A torchmetric implementation of Hits@K for entity prediction with tuples.
+    """
+    def __init__(self, k: int):
+        raise NotImplementedError("EntityHitsAtKTuples was not tested yet. And is perhaps not even needed.")
+        super().__init__(k)
+
+    def update(self, triples: torch.IntTensor, scores: torch.tensor, num_entities_per_sample: int):
+        """
+        Parameters
+        ----------
+        num_entities_per_sample : The number of negative head or tail entities
+        sampled
+        for each test or val triple
+        triples : The tuples the model is being evaluated on, torch.Tensor of shape (num_triples,2) containing one h,r tuple per row
+        scores : The scores produced by the model, a torch.Tensor of shape (num_tuples, num_relations) or (num_tuples, 1) if link prediction
+        """
+        tuples = triples
+
+        # Remove any singleton dimensions from scores for consistent processing
+        scores = scores.squeeze()
+        # Each sample consists of the true entity plus num_entities_per_sample negatives
+        tuples_per_sample = num_entities_per_sample + 1
+        # Group tuples into batches: shape (num_samples, tuples_per_sample, tuple_dim)
+        unstacked_tuples = tuples.reshape(tuples.size(0) // tuples_per_sample, tuples_per_sample, -1)
+
+        # Reshape scores to match the grouped tuples
+        if scores.ndim > 1:
+            # Reshape scores to (num_samples, tuples_per_sample, score_dim)
+            scores_unpacked = scores.reshape(tuples.size(0) // tuples_per_sample, tuples_per_sample, -1)
+            # Select the scores for the correct entity index for each tuple
+            tuple_scores = scores_unpacked[torch.arange(scores_unpacked.size(0)), :, unstacked_tuples[:, 0, 1]]
+        else:
+            # If scores are 1D, just reshape to (num_samples, tuples_per_sample)
+            tuple_scores = scores.reshape(tuples.size(0) // tuples_per_sample, tuples_per_sample)
+
+        # Compute the score of the true entity for each sample (always at position 0)
+        true_scores = tuple_scores[:, 0].unsqueeze(1)
+        # Optimistic rank: count how many scores are strictly greater than the true score, then add 1 (1-based rank)
+        optimistic_rank = (tuple_scores > true_scores).sum(dim=1) + 1
+        # Pessimistic rank: count how many scores are greater or equal to the true score (includes ties)
+        pessimistic_rank = (tuple_scores >= true_scores).sum(dim=1)
+        # Realistic rank: average of optimistic and pessimistic ranks (handles ties fairly)
+        realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
+
+        # Count how many times the true entity is ranked in the top k (Hits@K)
+        self.hits += torch.sum((realistic_rank <= self.k), dtype=torch.float)
+        # Update the total number of evaluated samples
+        self.total += realistic_rank.numel()
 
 
 class EntityMRR_debug(Metric):

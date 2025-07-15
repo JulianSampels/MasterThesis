@@ -15,8 +15,8 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
 
-from .pathe_ranking_metrics import (RelationMRR, RelationHitsAtK,
-                                   EntityMRR, EntityHitsAtK)
+from .pathe_ranking_metrics import (RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
+                                   EntityMRRTriples, EntityHitsAtKTriples)
 
 
 logger = logging.getLogger(__name__)
@@ -92,9 +92,9 @@ def pathe_forward_step(model, criterion, batch, **kwargs):
     return logits_rp, loss_rp, logits_lp
 
 
-class PathEModelWrapper(LightningModule):
+class PathEModelWrapperTriples(LightningModule):
     """
-    PL Wrapper for training PathE.
+    PL Wrapper for training PathE for triples.
 
     """
 
@@ -139,31 +139,31 @@ class PathEModelWrapper(LightningModule):
         self.label_smoothing = label_smoothing
         # [List of metrics we will be watching on validation and test sets]
         # Relation prediction metrics: always watched
-        self.val_relationMRR = RelationMRR(filtration_dict)
-        self.val_relationHitsAt1 = RelationHitsAtK(filtration_dict, k=1)
-        self.val_relationHitsAt3 = RelationHitsAtK(filtration_dict, k=3)
-        self.val_relationHitsAt5 = RelationHitsAtK(filtration_dict, k=5)
-        self.val_relationHitsAt10 = RelationHitsAtK(filtration_dict, k=10)
-        self.test_relationMRR = RelationMRR(filtration_dict)
-        self.test_relationHitsAt1 = RelationHitsAtK(filtration_dict, k=1)
-        self.test_relationHitsAt3 = RelationHitsAtK(filtration_dict, k=3)
-        self.test_relationHitsAt5 = RelationHitsAtK(filtration_dict, k=5)
-        self.test_relationHitsAt10 = RelationHitsAtK(filtration_dict, k=10)
+        self.val_relationMRR = RelationMRRTriples(filtration_dict)
+        self.val_relationHitsAt1 = RelationHitsAtKTriples(filtration_dict, k=1)
+        self.val_relationHitsAt3 = RelationHitsAtKTriples(filtration_dict, k=3)
+        self.val_relationHitsAt5 = RelationHitsAtKTriples(filtration_dict, k=5)
+        self.val_relationHitsAt10 = RelationHitsAtKTriples(filtration_dict, k=10)
+        self.test_relationMRR = RelationMRRTriples(filtration_dict)
+        self.test_relationHitsAt1 = RelationHitsAtKTriples(filtration_dict, k=1)
+        self.test_relationHitsAt3 = RelationHitsAtKTriples(filtration_dict, k=3)
+        self.test_relationHitsAt5 = RelationHitsAtKTriples(filtration_dict, k=5)
+        self.test_relationHitsAt10 = RelationHitsAtKTriples(filtration_dict, k=10)
         # self.save_hyperparameters(ignore=['pathe_model'])
 
         loss_reduction = "mean"
         if self.val_num_negatives > 0:  # watch link prediction metrics
             loss_reduction = 'none'
-            self.val_linkMRR = EntityMRR()
-            self.val_linkHitsAt1 = EntityHitsAtK(k=1)
-            self.val_linkHitsAt3 = EntityHitsAtK(k=3)
-            self.val_linkHitsAt5 = EntityHitsAtK(k=5)
-            self.val_linkHitsAt10 = EntityHitsAtK(k=10)
-            self.test_linkMRR = EntityMRR()
-            self.test_linkHitsAt1 = EntityHitsAtK(k=1)
-            self.test_linkHitsAt3 = EntityHitsAtK(k=3)
-            self.test_linkHitsAt5 = EntityHitsAtK(k=5)
-            self.test_linkHitsAt10 = EntityHitsAtK(k=10)
+            self.val_linkMRR = EntityMRRTriples()
+            self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+            self.val_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+            self.val_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+            self.val_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+            self.test_linkMRR = EntityMRRTriples()
+            self.test_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+            self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+            self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+            self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
         # Defining losses for CLS objectives
         self.rp_criterion = nn.CrossEntropyLoss(
@@ -621,3 +621,90 @@ class PathEModelWrapper(LightningModule):
         if self.scheduler != "none":
             raise NotImplementedError()
         return opt_dict  # makes distinction among optimisers and schedulers
+
+class PathEModelWrapperTuples(PathEModelWrapperTriples):
+    """
+    PL Wrapper for training PathE with tuples.
+
+    """
+
+    def __init__(self, pathe_model, filtration_dict, num_negatives=0,
+                 optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
+                 weight_decay=0, class_weights=None, label_smoothing=0.0,
+                 train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
+                 val_num_negatives=0, full_test=False, max_ppt=None,
+                 margin=10, nssa_alpha=1, lp_loss_fn="nssa",
+                 loss_weight: float = 0.5, **hparams):
+        super().__init__(pathe_model, filtration_dict, num_negatives,
+                         optimiser, scheduler, lr, momentum, weight_decay,
+                         class_weights, label_smoothing,
+                         train_sub_batch=train_sub_batch,
+                         val_sub_batch=val_sub_batch,
+                         test_sub_batch=test_sub_batch,
+                         val_num_negatives=val_num_negatives,
+                         full_test=full_test, max_ppt=max_ppt,
+                         margin=margin, nssa_alpha=nssa_alpha,
+                         lp_loss_fn=lp_loss_fn, loss_weight=loss_weight)
+
+        # override the metrics set in the parent class to now evaluate tuples
+        # [List of metrics we will be watching on validation and test sets]
+        self.val_relationMRR = RelationMRRTuples(filtration_dict)
+        self.val_relationHitsAt1 = RelationHitsAtKTuples(filtration_dict, k=1)
+        self.val_relationHitsAt3 = RelationHitsAtKTuples(filtration_dict, k=3)
+        self.val_relationHitsAt5 = RelationHitsAtKTuples(filtration_dict, k=5)
+        self.val_relationHitsAt10 = RelationHitsAtKTuples(filtration_dict, k=10)
+        self.test_relationMRR = RelationMRRTuples(filtration_dict)
+        self.test_relationHitsAt1 = RelationHitsAtKTuples(filtration_dict, k=1)
+        self.test_relationHitsAt3 = RelationHitsAtKTuples(filtration_dict, k=3)
+        self.test_relationHitsAt5 = RelationHitsAtKTuples(filtration_dict, k=5)
+        self.test_relationHitsAt10 = RelationHitsAtKTuples(filtration_dict, k=10)
+
+        loss_reduction = "mean"
+        if self.val_num_negatives > 0:  # watch link prediction metrics
+            raise NotImplementedError("check whether tuples versions are needed to be used. ")
+            loss_reduction = 'none'
+            self.val_linkMRR = EntityMRRTriples()
+            self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+            self.val_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+            self.val_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+            self.val_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+            self.test_linkMRR = EntityMRRTriples()
+            self.test_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+            self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+            self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+            self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+
+        # override the forward step function to use the tuples
+        self.model_forward = partial(
+            self.pathe_forward_step_tuples, model=self.model,
+            criterion=self.rp_criterion)
+    
+    @staticmethod
+    def pathe_forward_step_tuples(model, criterion, batch, **kwargs):
+        """
+        PathE forward function for multi-paths relation prediction.
+        """
+        # batch = debug_single_path(batch, trim_paths=False, override_pos=True)
+        ent_paths, rel_paths = \
+            batch["net_input"]["ent_paths"], batch["net_input"]["rel_paths"]
+        head_idxs = batch["net_input"]["head_idxs"]
+        # tail_idxs = batch["net_input"]["tail_idxs"]
+        entity_origin = batch["net_input"]["path_origins"]
+        pos = batch["net_input"]["pos"]
+        targets = batch["target"] - 2  # no PAD and MSK in the model output
+        # FIXME this is going to change with the actual head-tail idxs from dataset
+        head_idxs = head_idxs * 2
+        # tail_idxs = tail_idxs * 2
+        ppt = batch["ppt"]
+
+        logits_rp, logits_lp = model(
+            ent_paths=ent_paths,
+            rel_paths=rel_paths,
+            head_idxs=head_idxs,
+            # tail_idxs=tail_idxs,
+            ppt=ppt, pos=pos,
+            entity_origin=entity_origin,
+            targets=targets)
+        # loss_rp = criterion(logits_rp, batch["target"])
+        loss_rp = criterion(logits_rp, targets)
+        return logits_rp, loss_rp, logits_lp

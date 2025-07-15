@@ -79,6 +79,47 @@ class ContextualAggregator(nn.Module):
             tails_agg = tails_agg + tails_contextualised.squeeze(1)
 
         return heads_agg, tails_agg
+    
+class ContextualAggregatorTuples(nn.Module):
+    """
+    # 1. From num_embeddings to 1 embedding vector applying stage-1 aggregation
+    # 2. From 1 embedding we attend to all the other embeddings with stage-2 to yield the context vector
+    # 3. Finally, we sum the stage-1 embedding vector with the context vector
+    """
+
+    def __init__(self, embedding_dim, aggregator: str, context_heads=0,
+                 context_dropout=.0, **kwargs):
+        super().__init__()
+        if aggregator == "recurrent":
+            aggregator = RecurrentAggregator(
+                embedding_dim=embedding_dim, **kwargs)
+        elif aggregator == "transformer":
+            aggregator = TransformerAggregator(
+                embedding_dim=embedding_dim, **kwargs)
+        elif aggregator == "single_query":
+            aggregator = SingleQueryAggregator(
+                embedding_dim=embedding_dim, **kwargs)
+        else:
+            raise ValueError("Invalid aggregator type")
+        self.aggregator = aggregator  # Stage-1 aggregator
+        # Stage-2 aggregators, for the contextualisation embeddings
+
+        self.context_heads = context_heads
+        if context_heads > 0 and aggregator != "transformer":
+            self.head2rel_contextualiser = torch.nn.MultiheadAttention(
+                embed_dim=embedding_dim, num_heads=context_heads,
+                dropout=context_dropout, batch_first=True
+            )
+
+    def forward(self, embed_heads: Tensor, embed_rels: Tensor = None):
+        # Stage-1 aggregation
+        heads_agg = self.aggregator(embed_heads)
+        # Stage-2: Optionally contextualize with relation candidates
+        if self.context_heads > 0 and embed_rels is not None:
+            raise NotImplementedError("Contextualisation for tuples is not implemented yet or at least might work unexpected.")
+            heads_contextualised, _ = self.head2rel_contextualiser(heads_agg.unsqueeze(1), embed_rels, embed_rels)
+            heads_agg = heads_agg + heads_contextualised.squeeze(1)
+        return heads_agg
 
 
 class RecurrentAggregator(nn.Module):

@@ -196,3 +196,5 @@ cython_debug/
 # CUDA installers and repositories
 cuda_11.8*
 cuda-repo-wsl*
+
+/logs/*

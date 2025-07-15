@@ -257,6 +257,66 @@ def make_relation_filter_dict(train_triples: torch.tensor,
             tokens_to_idxs[all_triples[i, 1].item()])
     return filter_dict
 
+def make_relation_filter_dict_no_sp_tokens_tuples(train_tuples: torch.Tensor,
+                                                      val_tuples: torch.Tensor,
+                                                      test_tuples: torch.Tensor):
+    """
+    Creates a dictionary which maps each head to a set of the
+    ground truth relations it appears with, based on (h, r) tuples.
+    To be used for filtering during metric calculation.
+
+    Parameters
+    ----------
+    train_tuples : torch.Tensor
+        Training tuples of shape (N, 2) with (h, r).
+    val_tuples : torch.Tensor
+        Validation tuples of shape (N, 2) with (h, r).
+    test_tuples : torch.Tensor
+        Test tuples of shape (N, 2) with (h, r).
+
+    Returns
+    -------
+    filter_dict : defaultdict(set)
+        Dictionary mapping head entity to set of relations.
+    """
+    filter_dict = defaultdict(set)
+    all_tuples = torch.cat((train_tuples, val_tuples, test_tuples), dim=0)
+    for i in range(all_tuples.size(0)):
+        head = all_tuples[i, 0].item()
+        relation = all_tuples[i, 1].item()
+        filter_dict[head].add(relation)
+    return filter_dict
+
+def make_head_filter_dict_no_sp_tokens_tuples(train_tuples: torch.Tensor,
+                                              val_tuples: torch.Tensor,
+                                              test_tuples: torch.Tensor):
+    """
+    Creates a dictionary which maps each relation to a set of the
+    ground truth heads it appears with, based on (h, r) tuples.
+    To be used for filtering during metric calculation.
+
+    Parameters
+    ----------
+    train_tuples : torch.Tensor
+        Training tuples of shape (N, 2) with (h, r).
+    val_tuples : torch.Tensor
+        Validation tuples of shape (N, 2) with (h, r).
+    test_tuples : torch.Tensor
+        Test tuples of shape (N, 2) with (h, r).
+
+    Returns
+    -------
+    filter_dict : defaultdict(set)
+        Dictionary mapping relation to set of head entities.
+    """
+
+    filter_dict = defaultdict(set)
+    all_tuples = torch.cat((train_tuples, val_tuples, test_tuples), dim=0)
+    for i in range(all_tuples.size(0)):
+        head = all_tuples[i, 0].item()
+        relation = all_tuples[i, 1].item()
+        filter_dict[relation].add(head)
+    return filter_dict
 
 def make_relation_filter_dict_no_sp_tokens(train_triples: torch.tensor,
                                            val_triples: torch.tensor,

@@ -199,179 +199,222 @@ from . import data_utils as du
 
 def corrupt_entities(triples, max_starting_index, k, shuffled,
                      head_filter_dict, tail_filter_dict, max_index):
-    # The maximum index that we can start sampling from the shuffled
-    # tensor and still get k entities
+    # Save the initial shuffled tensor for later comparison
     shuffled_init = shuffled.copy()
-    max_starting_index = max_starting_index
     corrupted_triples = []
     for i in tqdm(range(triples.size()[0])):
         triple = triples[i, :]
         head = triple[0].item()
         relation = triple[1].item()
         tail = triple[2].item()
-        ##################################
-        # Make the tail corruptions #####
-        ##################################
-        # entities_to_filter = tail_filter_dict[(head, relation)]
-        # entities = set(range(max_starting_index))
-        # filtered = entities - entities_to_filter
-        # candidate_tails_np = np.random.choice(np.array(list(
-        #     filtered)), size=k, replace=False).astype(np.int32)
+
+        # --- Tail corruption ---
+        # Randomly select k candidate tails from shuffled entities
         tensor_ind = random.randint(0, shuffled.shape[0] - 1)
         initial = shuffled[tensor_ind, :].copy()
-        # check if initial is a copy
-        # assert initial.base is None
-        # get a random starting index to get the k entities
-        # start = np.random.randint(low=0, high=max_starting_index + 1)
         start = random.randint(0, max_starting_index)
         candidate_tails = shuffled[tensor_ind, start:start + k].copy()
-        # assert candidate_tails.base is None
-        # find if the true tail was sampled or any of the tails that need
-        # to be filtered
+
+        # Remove true tails and filtered entities from candidates
         entities_to_filter = tail_filter_dict[(head, relation)].copy()
-        # in_d = entities_to_filter.copy()
-        tails_to_filter = candidate_tails
         zero_indices_list = []
         for entity in entities_to_filter:
-            tails_to_filter_entity = tails_to_filter - entity
-            zero_indices_list.append(
-                (tails_to_filter_entity == 0).nonzero()[0])
-            # if (tails_to_filter_entity == 0).nonzero()[0].shape[0] > 0:
-            #     assert entity == candidate_tails.item((
-            #                                                   tails_to_filter_entity == 0).nonzero()[
-            #                                               0].item())
+            tails_to_filter_entity = candidate_tails - entity
+            zero_indices_list.append((tails_to_filter_entity == 0).nonzero()[0])
         zero_indices = np.concatenate(zero_indices_list, axis=0)
-        # replace the entities
-        # if the starting index was towards the end of the shuffled
-        # tensor start sampling replacement candidates before it else
-        # start sampling replacements after it
+
+        # Replace filtered entities with new random entities
         if start > max_starting_index // 2:
             remaining = zero_indices.shape[0]
             while remaining > 0:
                 idx = random.randint(0, start - 1)
-                # idx = np.random.randint(0, start)
                 sample_entity = shuffled.item((tensor_ind, idx))
                 if sample_entity not in entities_to_filter:
-                    candidate_tails[
-                        zero_indices[remaining - 1]] = sample_entity
+                    candidate_tails[zero_indices[remaining - 1]] = sample_entity
                     entities_to_filter.add(sample_entity)
                     remaining -= 1
         else:
             remaining = zero_indices.shape[0]
             while remaining > 0:
                 idx = random.randint(start + k, max_index - 1)
-                # idx = np.random.randint(start + k, max_index)
                 sample_entity = shuffled.item((tensor_ind, idx))
                 if sample_entity not in entities_to_filter:
-                    candidate_tails[
-                        zero_indices[remaining - 1]] = sample_entity
+                    candidate_tails[zero_indices[remaining - 1]] = sample_entity
                     entities_to_filter.add(sample_entity)
                     remaining -= 1
-        # assert in_d == tail_filter_dict[(head, relation)]
-        candidate_tails = torch.from_numpy(candidate_tails)
-        # assert (torch.unique(candidate_tails).size()[0] ==
-        #         candidate_tails.size()[0])
-        # once the corruption entities have been sampled
-        # get the head and relation of the triple
-        hr = triple[0:2]
-        # repeat it k times and shape appropriately
-        hr_repeated = hr.unsqueeze(0).unsqueeze(1) \
-            .repeat(1, k, 1).transpose(2, 1).squeeze()
-        # combine with the corrupted tails
-        combined_t = torch.cat((hr_repeated, candidate_tails.unsqueeze(0)),
-                               dim=0)
-        combined_t = combined_t.transpose(1, 0)
-        # add the uncorrupted triple in the beginning
-        complete_t = torch.cat((triples[i, :].unsqueeze(0), combined_t),
-                               dim=0).unsqueeze(0)
-        # append to the list
-        corrupted_triples.append(complete_t)
-        # assert np.array_equal(shuffled[tensor_ind, :], initial)
 
-        #################################
-        # Create Head Corruptions ########
-        ##################################
-        # entities_to_filter = head_filter_dict[(relation, tail)]
-        # entities = set(range(max_starting_index))
-        # filtered = entities - entities_to_filter
-        # candidate_heads_np = np.random.choice(np.array(list(
-        #     filtered)), size=k, replace=False).astype(np.int32)
+        candidate_tails = torch.from_numpy(candidate_tails)
+        # Build corrupted triples with new tails
+        hr = triple[0:2]
+        hr_repeated = hr.unsqueeze(0).unsqueeze(1).repeat(1, k, 1).transpose(2, 1).squeeze()
+        combined_t = torch.cat((hr_repeated, candidate_tails.unsqueeze(0)), dim=0)
+        combined_t = combined_t.transpose(1, 0)
+        # Add the original triple at the start
+        complete_t = torch.cat((triples[i, :].unsqueeze(0), combined_t), dim=0).unsqueeze(0)
+        corrupted_triples.append(complete_t)
+
+        # --- Head corruption ---
+        # Randomly select k candidate heads from shuffled entities
         tensor_ind = random.randint(0, shuffled.shape[0] - 1)
         initial2 = shuffled[tensor_ind, :].copy()
-        # assert initial.base is None
-        # get a random starting index to get the k entities
         start = random.randint(0, max_starting_index)
-        # start = np.random.randint(0, max_starting_index + 1)
         candidate_heads = shuffled[tensor_ind, start:start + k].copy()
-        # assert candidate_heads.base is None
-        # find if the true tail was sampled or any of the tails that need
-        # to be filtered
+
+        # Remove true heads and filtered entities from candidates
         entities_to_filter = head_filter_dict[(relation, tail)].copy()
-        # in_d = entities_to_filter.copy()
-        heads_to_filter = candidate_heads
         zero_indices_list = []
         for entity in entities_to_filter:
-            heads_to_filter_entity = heads_to_filter - entity
-            zero_indices_list.append(
-                (heads_to_filter_entity == 0).nonzero()[0])
-            # if (heads_to_filter_entity == 0).nonzero()[0].shape[0] > 0:
-            #     # assert entity == int(candidate_heads.item((
-            #     #         heads_to_filter_entity == 0).nonzero()[0].item(
-            #     #
-            #     # ))), str(entity) + " " + str(candidate_heads.item((
-            #     #         heads_to_filter_entity == 0).nonzero()[0].item(
-            #     #
-            #     # )))
+            heads_to_filter_entity = candidate_heads - entity
+            zero_indices_list.append((heads_to_filter_entity == 0).nonzero()[0])
         zero_indices = np.concatenate(zero_indices_list, axis=0)
-        # replace the entities
-        # if the starting index was towards the end of the shuffled
-        # tensor start sampling replacement candidates before it else
-        # start sampling replacements after it
+
+        # Replace filtered entities with new random entities
         if start > max_starting_index // 2:
             remaining = zero_indices.shape[0]
             while remaining > 0:
                 idx = random.randint(0, start - 1)
-                # idx = np.random.randint(0, start)
                 sample_entity = shuffled.item((tensor_ind, idx))
                 if sample_entity not in entities_to_filter:
-                    candidate_heads[
-                        zero_indices[remaining - 1]] = sample_entity
+                    candidate_heads[zero_indices[remaining - 1]] = sample_entity
                     entities_to_filter.add(sample_entity)
                     remaining -= 1
         else:
             remaining = zero_indices.shape[0]
             while remaining > 0:
                 idx = random.randint(start + k, max_index - 1)
-                # idx = np.random.randint(start + k, max_index)
                 sample_entity = shuffled.item((tensor_ind, idx))
                 if sample_entity not in entities_to_filter:
-                    candidate_heads[
-                        zero_indices[remaining - 1]] = sample_entity
+                    candidate_heads[zero_indices[remaining - 1]] = sample_entity
                     entities_to_filter.add(sample_entity)
                     remaining -= 1
-        # assert in_d == head_filter_dict[(relation, tail)]
+
         candidate_heads = torch.from_numpy(candidate_heads)
-        # assert (torch.unique(candidate_heads).size()[0] ==
-        #         candidate_heads.size()[0])
-        # once the corruption entities have been sampled
-        # get the head and relation of the triple
+        # Build corrupted triples with new heads
         rt = triple[1:3]
-        # repeat it k times and shape appropriately
-        rt_repeated = rt.unsqueeze(0).unsqueeze(1) \
-            .repeat(1, k, 1).transpose(2, 1).squeeze()
-        # combine with the corrupted heads
-        combined_h = torch.cat((candidate_heads.unsqueeze(0), rt_repeated),
-                               dim=0)
+        rt_repeated = rt.unsqueeze(0).unsqueeze(1).repeat(1, k, 1).transpose(2, 1).squeeze()
+        combined_h = torch.cat((candidate_heads.unsqueeze(0), rt_repeated), dim=0)
         combined_h = combined_h.transpose(1, 0)
-        # add the uncorrupted triple in the beginning
-        complete_h = torch.cat((triples[i, :].unsqueeze(0), combined_h),
-                               dim=0).unsqueeze(0)
-        # append to the list
+        # Add the original triple at the start
+        complete_h = torch.cat((triples[i, :].unsqueeze(0), combined_h), dim=0).unsqueeze(0)
         corrupted_triples.append(complete_h)
-        # assert np.array_equal(shuffled[tensor_ind, :], initial2)
+
+    # Check that shuffled tensor was not changed
     assert np.array_equal(shuffled, shuffled_init)
 
+    # Return all corrupted triples
     return torch.cat(corrupted_triples, dim=0)
+
+
+def corrupt_relation_in_hr_tuples( tuples: torch.Tensor, k, shuffled: np.ndarray, tuple_filter_dict: Dict[int, set], max_index):
+    """
+    Corrupts (head, relation) pairs by replacing the relation with random relations,
+    avoiding filtered relations for the given head and the original relation.
+
+    Args:
+        tuples (torch.Tensor): Tensor of shape (N, 2) containing (h, r) pairs.
+        max_starting_index (int): Maximum index for sampling.
+        k (int): Number of corruptions per pair.
+        shuffled (np.ndarray): Array for sampling relations.
+        tuple_filter_dict (dict): Dictionary mapping head (h) to set of filtered relations.
+        max_index (int): Maximum index for sampling.
+
+    Returns:
+        torch.Tensor: Tensor of shape (N, k+1, 2) containing original and corrupted (h, r) pairs.
+    """
+    shuffled_init = shuffled.copy()
+    corrupted_pairs = []
+
+    for i in tqdm(range(tuples.size(0)), desc="Corrupting relations in (h, r) pairs"):
+        h, r = tuples[i, 0].item(), tuples[i, 1].item()
+        relations_to_filter:set = tuple_filter_dict.get(h, set()).copy()
+        relations_to_filter.add(r)  # Avoid the original relation
+
+        # Sample k candidate relations
+        tensor_ind = random.randint(0, shuffled.shape[0] - 1)
+        start = random.randint(0, max_index - k)
+        candidate_relations = shuffled[tensor_ind, start:start + k].copy()
+
+        # Filter out invalid candidates
+        valid_candidates = []
+        for candidate_relation in candidate_relations:
+            if candidate_relation not in relations_to_filter:
+                valid_candidates.append([h, candidate_relation])
+                relations_to_filter.add(candidate_relation)
+            if len(valid_candidates) == k:
+                break
+
+        # If not enough valid candidates, sample more
+        while len(valid_candidates) < k:
+            idx = random.randint(0, max_index - 1)
+            candidate_relation = shuffled[tensor_ind, idx]
+            if candidate_relation not in relations_to_filter:
+                valid_candidates.append([h, candidate_relation])
+                relations_to_filter.add(candidate_relation)
+
+        # Add the original (h, r) pair at the beginning
+        original_pair = torch.tensor([[h, r]])
+        corrupted = torch.tensor(valid_candidates)
+        all_pairs = torch.cat((original_pair, corrupted), dim=0).unsqueeze(0)
+        corrupted_pairs.append(all_pairs)
+
+    assert np.array_equal(shuffled, shuffled_init)
+    return torch.cat(corrupted_pairs, dim=0)
+
+# at the moment assumes the wrong formated tuple_filter_dict need to fix
+def corrupt_head_in_hr_tuples(tuples: torch.Tensor, max_starting_index, k, shuffled: np.ndarray, tuple_filter_dict, max_index):
+    """
+    Corrupts (head, relation) pairs by replacing the head entity with random entities,
+    avoiding filtered pairs and the original pair.
+
+    Args:
+        tuples (torch.Tensor): Tensor of shape (N, 2) containing (h, r) pairs.
+        max_starting_index (int): Maximum index for sampling.
+        k (int): Number of corruptions per pair.
+        shuffled (np.ndarray): Array for sampling entities.
+        tuple_filter_dict (dict): Dictionary mapping (h, r) to set of filtered pairs.
+        max_index (int): Maximum index for sampling.
+
+    Returns:
+        torch.Tensor: Tensor of shape (N, k+1, 2) containing original and corrupted (h, r) pairs.
+    """
+    shuffled_init = shuffled.copy()
+    corrupted_pairs = []
+
+    for i in tqdm(range(tuples.size(0)), desc="Corrupting (h, r) pairs"):
+        h, r = tuples[i, 0].item(), tuples[i, 1].item()
+        pairs_to_filter = tuple_filter_dict.get((h, r), set()).copy()
+        pairs_to_filter.add((h, r))  # Avoid the original pair
+
+        # Sample k candidate heads
+        tensor_ind = random.randint(0, shuffled.shape[0] - 1)
+        start = random.randint(0, max_starting_index)
+        candidate_heads = shuffled[tensor_ind, start:start + k].copy()
+
+        # Filter out invalid candidates
+        valid_candidates = []
+        for candidate_head in candidate_heads:
+            if (candidate_head, r) not in pairs_to_filter:
+                valid_candidates.append([candidate_head, r])
+                pairs_to_filter.add((candidate_head, r))
+            if len(valid_candidates) == k:
+                break
+
+        # If not enough valid candidates, sample more
+        while len(valid_candidates) < k:
+            idx = random.randint(0, max_index - 1)
+            candidate_head = shuffled[tensor_ind, idx]
+            if (candidate_head, r) not in pairs_to_filter:
+                valid_candidates.append([candidate_head, r])
+                pairs_to_filter.add((candidate_head, r))
+
+        # Add the original (h, r) pair at the beginning
+        original_pair = torch.tensor([[h, r]])
+        corrupted = torch.tensor(valid_candidates)
+        all_pairs = torch.cat((original_pair, corrupted), dim=0).unsqueeze(0)
+        corrupted_pairs.append(all_pairs)
+
+    assert np.array_equal(shuffled, shuffled_init)
+    return torch.cat(corrupted_pairs, dim=0)
 
 
 def corrupt_entities_set(triples, max_starting_index, k, shuffled,
@@ -439,8 +482,6 @@ def corrupt_entities_set(triples, max_starting_index, k, shuffled,
 
 
 
-
-
 def plot_unique_counts(indices, title):
     unique_values, counts = torch.unique(torch.tensor(indices,
                                                       dtype=torch.int32),
@@ -450,6 +491,76 @@ def plot_unique_counts(indices, title):
     plt.title(title)
     plt.savefig(title + ".png", format='png')
     plt.close()
+
+
+class CorruptRelationGeneratorTuples:
+
+    def __init__(self, relation_filter_dict: Dict, entities: torch.tensor, num_shuffled: int = 10):
+        """
+        Initialize the generator with filter dict and entity list.
+
+        Args:
+            relation_filter_dict (Dict): Maps h to sets of true relations.
+            entities (torch.tensor): Tensor of entity indices.
+            num_shuffled (int): Number of shuffled permutations to use for sampling.
+        """
+        # Store filter dict and entities for later use
+        self.relation_filter_dict = relation_filter_dict
+        self.entities = np.asarray(entities)
+        self.num_shuffled = num_shuffled
+        # Random generator for reproducibility
+        self.random_gen = np.random.default_rng()
+        # Will be set in get_shuffled_indices_tensors()
+        self.max_index = None
+        self.shuffled = None
+        # Prepare shuffled indices for sampling
+
+        """
+        Prepare multiple shuffled arrays of entity indices for efficient parallel random sampling.
+        Each row in self.shuffled is a different permutation of entity indices.
+        """
+        self.max_index = len(self.entities)
+        # self.max_index = np.max(self.entities).astype(np.int32) + 1
+        self.shuffled = np.zeros((self.num_shuffled, self.max_index), dtype=np.int32)
+        for i in range(self.num_shuffled):
+            # Fill each row with a random permutation of entity indices
+            self.shuffled[i, :] = self.random_gen.permutation(self.max_index)
+
+    def get_parallel_filtered_corrupted_tuples(self, tuples: torch.Tensor, k, num_workers=None):
+        """
+        Generate corrupted tuples in parallel, avoiding filtered relations.
+
+        Args:
+            tuples (torch.Tensor): Input tuples to corrupt.
+            k (int): Number of corruptions per tuple.
+            num_workers (int, optional): Number of parallel workers.
+
+        Returns:
+            torch.Tensor: Corrupted tuples of shape (2 * num_tuples, k+1, 3).
+        """
+        # Determine number of workers and slice size for parallel processing
+        if num_workers is None:
+            num_workers = os.cpu_count() // 2
+
+        indices_split = np.array_split(np.arange(tuples.size(0)), num_workers)
+        corrupted_triples = Parallel(n_jobs=num_workers, backend="loky")(
+            delayed(corrupt_relation_in_hr_tuples)(
+                tuples[idx, :],
+                k,
+                self.shuffled,
+                self.relation_filter_dict,
+                self.max_index
+            )
+            for idx in indices_split if len(idx) > 0
+        )
+        return torch.cat(corrupted_triples, dim=0)
+
+    def get_filtered_corrupted_tuples(self, tuples: torch.Tensor, k):
+        """
+        Non-parallel version of get_parallel_filtered_corrupted_tuples.
+        Calls the parallel version with num_workers=1.
+        """
+        return self.get_parallel_filtered_corrupted_tuples(tuples, k, num_workers=1)
 
 
 class CorruptLinkGenerator:
@@ -1575,7 +1686,11 @@ def generate_negative_triples(triplestore, num_negatives, triple_corruptor,
     negative_triples = negative_triples.reshape(-1, 3)
     assert len(negative_triples) == num_positives * num_negatives \
            or len(negative_triples) == num_positives * num_negatives * 2
-    assert torch.all(positive_triples.unique(dim=0) == triplestore)
+    # # if the order does not match use this:
+    # set1 = set(map(tuple, positive_triples.unique(dim=0).cpu().numpy()))
+    # set2 = set(map(tuple, triplestore.cpu().numpy()))
+    # assert set1 == set2, "Positive triples do not match the triplestore"
+    assert torch.all(positive_triples.unique(dim=0) == triplestore.unique(dim=0)), "Positive triples do not match the triplestore perhaps check for different order."
 
     return torch.concat([positive_triples, negative_triples])
 
@@ -1610,6 +1725,6 @@ def generate_negative_batches(triplestore, num_negatives, triple_corruptor,
     negative_triples = negative_triples.reshape(-1, 3)
     assert len(negative_triples) == num_positives * num_negatives \
            or len(negative_triples) == num_positives * num_negatives * 2
-    assert torch.all(positive_triples.unique(dim=0) == triplestore)
+    assert torch.all(positive_triples.unique(dim=0) == triplestore.unique(dim=0)), "Positive triples do not match the triplestore perhaps check for different order."
 
     return corruptions

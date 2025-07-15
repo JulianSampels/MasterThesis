@@ -8,14 +8,14 @@ from tqdm import tqdm
 
 from . import triple_lib
 from . import data_utils as du
-from .pather_models import PathEModel
+from .pather_models import PathEModelTriples
 from .pathdata import EntityMultiPathDataset
-from .wrappers import PathEModelWrapper
+from .wrappers import PathEModelWrapperTriples
 from .path_lib import encode_relcontext_freqs
 from .data_utils import collate_multipaths, load_triple_tensors
 from .corruption import CorruptLinkGeneratorEval, CorruptLinkGenerator
 from .utils import stageprint, bundle_arguments, namespace_to_dict
-from .pathe_ranking_metrics import EntityHitsAtK, EntityMRR, EntityMRR_debug
+from .pathe_ranking_metrics import EntityHitsAtKTriples, EntityMRRTriples, EntityMRR_debug
 
 torch.backends.cuda.enable_mem_efficient_sdp(False)
 torch.backends.cuda.enable_flash_sdp(False)
@@ -129,17 +129,17 @@ def run_full_eval(args):
         )
         bundle = partial(bundle_arguments, exclude=["vocab_size"],
                          args=namespace_to_dict(args))
-        model = PathEModel(
+        model = PathEModelTriples(
             vocab_size=entity_dataset.vocab_size,
             padding_idx=entity_dataset.tokens_to_idxs["PAD"],
             relcontext_graph=relcontext_graph,
-            **bundle(target_class=PathEModel),
+            **bundle(target_class=PathEModelTriples),
         )
         args_dict = vars(args).copy()
         args_dict.pop("checkpoint")
 
         # XXX Loading the model and overwriting waits with the checkpoint
-        pl_model = PathEModelWrapper.load_from_checkpoint(
+        pl_model = PathEModelWrapperTriples.load_from_checkpoint(
             **args_dict,
             checkpoint_path=args.checkpoint,
             pathe_model=model,
@@ -159,10 +159,10 @@ def run_full_eval(args):
             tail_filter_dict=tail_filter_dict,
             entities=unique_entities, num_tensor=10)
 
-        linkHitsAt1 = EntityHitsAtK(k=1)
-        linkHitsAt3 = EntityHitsAtK(k=3)
-        linkHitsAt5 = EntityHitsAtK(k=5)
-        linkHitsAt10 = EntityHitsAtK(k=10)
+        linkHitsAt1 = EntityHitsAtKTriples(k=1)
+        linkHitsAt3 = EntityHitsAtKTriples(k=3)
+        linkHitsAt5 = EntityHitsAtKTriples(k=5)
+        linkHitsAt10 = EntityHitsAtKTriples(k=10)
         if DEBUG:
             MRR = EntityMRR_debug()
             test_triples = torch.load(
@@ -172,7 +172,7 @@ def run_full_eval(args):
                                                     0] // ((2 * NUM_NEGS) + 2),
                                                 (2 * NUM_NEGS) + 2, 3)
         else:
-            MRR = EntityMRR()
+            MRR = EntityMRRTriples()
 
         stageprint("Creating Embedding Table")
 

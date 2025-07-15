@@ -169,7 +169,7 @@ def create_protopaths(head, tail, path_index, triples):
     return protopaths
 
 
-def create_contextpaths(entity, path_index, triples):
+def create_contextpaths(entity, path_index, context_triples):
     """
     Given an entity, this function grabs incoming and outgoing paths. When paths
     are not found, triples are inserted as len-1 paths. Note that full paths are
@@ -181,7 +181,7 @@ def create_contextpaths(entity, path_index, triples):
         if entity in path_index[ctype]:  # choose paths, if available
             icontext = [(idx, "path") for idx in path_index[ctype][entity]]
         else: # retrieve all incoming triples if no path is found
-            icontext = [(idx, "triple") for idx in to_list((triples[:,
+            icontext = [(idx, "triple") for idx in to_list((context_triples[:,
                                                         i] == entity)\
                         .nonzero().squeeze().tolist())]
         return icontext

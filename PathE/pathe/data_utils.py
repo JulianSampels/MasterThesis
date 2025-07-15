@@ -478,7 +478,7 @@ def load_triple_tensors(train_path, val_path, test_path):
     test_triples = torch.load(os.path.join(test_path, 'triples.pt'))
     return train_triples, val_triples, test_triples
 
-def load_tuples_tensors(train_path, val_path, test_path):
+def load_tuple_tensors(train_path, val_path, test_path):
     """
     A function that loads the tuple tensors
 
