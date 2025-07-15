@@ -16,10 +16,3 @@
 1. FB15k-237
    - `python runner.py full_eval pathe --log_dir [YOUR LOG DIR] --expname [YUR EXP NAME] --wandb_project fb15k237 --train_paths [PATH TO TRAIN DATA] --valid_paths [PATH TO VALID DATA] --test_paths [PATH TO TEST DATA] --max_ppt 8 --batch_size 4096 --nhead 2 --num_encoder_layers 1 --dim_feedforward 256 --embedding_dim 64 --num_negatives 99 --monitor valid_link_mrr --patience 5 --dropout 0.1 --lrate 1e-3 --device cuda --num_devices 1 --val_num_negatives 99 --num_workers 8 --ent_aggregation transformer --lp_loss_fn ce --accumulate_gradient 8 --label_smoothing 0.01 --node_projector dummy --path_setup 20_10 --num_agg_layers 1 --seed 7 --checkpoint [PATH TO MODEL CHECKPOINT]`
 
-## Currently working commands wip
-1. small-codex with wandb
-   - `python -m PathE.pathe.runner train pathe --log_dir ./logs --expname test1codex-small --wandb_project codex-small --train_paths ./data/path_datasets/codex-small/train/ --valid_paths ./data/path_datasets/codex-small/val/ --test_paths ./data/path_datasets/codex-small/test/ --max_ppt 8 --batch_size 4096 --nhead 2 --num_encoder_layers 1 --dim_feedforward 256 --embedding_dim 64 --num_negatives 0 --monitor valid_link_mrr --patience 5 --dropout 0.1 --lrate 1e-3 --device cuda --num_devices 1 --val_num_negatives 0 --num_workers 8 --ent_aggregation transformer --lp_loss_fn ce --accumulat
-e_gradient 8 --label_smoothing 0.01 --node_projector dummy --path_setup 20_10 --num_agg_layers 1 --seed 7`
-
-2. small-codex without wandb
-   - `python -m PathE.pathe.runner train pathe --log_dir ./logs --expname test1codex-small --train_paths ./data/path_datasets/codex-small/train/ --valid_paths ./data/path_datasets/codex-small/val/ --test_paths ./data/path_datasets/codex-small/test/ --max_ppt 8 --batch_size 4096 --nhead 2 --num_encoder_layers 1 --dim_feedforward 256 --embedding_dim 64 --num_negatives 0 --monitor valid_link_mrr --patience 5 --dropout 0.1 --lrate 1e-3 --device cuda --num_devices 1 --val_num_negatives 0 --num_workers 8 --ent_aggregation transformer --lp_loss_fn ce --accumulate_gradient 8 --label_smoothing 0.01 --node_projector dummy --path_setup 20_10 --num_agg_layers 1 --seed 7`
