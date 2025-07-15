@@ -955,6 +955,23 @@ class PathEModelTuples(PathEModelTriples):
         self.link_predict_head2 = nn.Linear(d_model, 1)
     
     def select_separated_head_embeddings(self, memory, head_idxs, entity_origin):
+        """
+        Selects and returns the head entity embeddings from the memory tensor for tuples.
+
+        Parameters
+        ----------
+        memory : torch.Tensor
+            The contextualized memory tensor output from the encoder, of shape (batch_size, seq_len, d_model).
+        head_idxs : torch.Tensor
+            Tensor of indices indicating the positions of head entities in the sequence, of shape (batch_size,).
+        entity_origin : torch.Tensor
+            Tensor indicating the origin of each entity (e.g., 0 for head, 1 for tail), of shape (batch_size,).
+
+        Returns
+        -------
+        torch.Tensor
+            The selected head entity embeddings, filtered by entity_origin, of shape (num_heads, d_model).
+        """
         # Isolate the embeddings for heads only from the tuples
         # head_embed is (num_paths, d_model) after squeezing
         # print(f"Memory {memory.shape}")

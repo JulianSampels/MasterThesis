@@ -24,7 +24,7 @@ def main():
 
     parser.add_argument('cmd', choices=['train', 'resume', 'test', 'full_eval'],
                         help='A supported command to execute.')
-    parser.add_argument('model', choices=['pathe'],
+    parser.add_argument('model', choices=['pathe', 'patheTuples'],
                         help='The name of the PathE model to use.')
     parser.add_argument('--path_type', choices=['unrolled'],
                         default='unrolled', help='unrolled')
@@ -212,6 +212,7 @@ def main():
     # print(args)
     if args.model == "pathe":
         pathe_trainer.create_and_run_training_exp_triples(args)
+    elif args.model == "patheTuples":
         pathe_trainer.create_and_run_training_exp_tuples(args)
 
 

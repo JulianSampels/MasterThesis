@@ -1179,7 +1179,6 @@ class EntityMultiPathDataset(MultiPathDataset):
         # return self._getitem_separate(index)
         return self._getitem_combined(index)
 
-# first idea no working at the moment
 class TupleEntityMultiPathDataset(MultiPathDataset):
     """
     A dataset for (head, relation) tuples, for tasks such as predicting which relations match to which heads.
