@@ -1234,7 +1234,10 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
             maximum_triple_paths=maximum_tuple_paths,
             num_negatives=num_negatives, triple_corruptor=tuple_corruptor,
             seed=seed, parallel=parallel, num_workers=num_workers, neg_triple_store=neg_tuple_store)
-
+        # Distributing path budget across entities (H, T) and contexts (in, out)
+        self.ppe = maximum_tuple_paths  # paths per entity not divided by two as we have tuples and not triples (only one entity which needs paths)
+        self.ppc = self.ppe // 2  # paths per entity context (in/out)
+        
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved
         # relcontext_df = pd.read_csv(relcontext_store)
