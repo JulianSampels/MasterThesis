@@ -659,6 +659,7 @@ class SimplePathDataset(Dataset):
                  triple_corruptor = None,
                  seed: int = 46,
                  parallel = False,
+                 num_workers: int = 0,
                  neg_triple_store = None,
                  ):
         """
@@ -724,7 +725,7 @@ class SimplePathDataset(Dataset):
             if neg_triple_store is None:  # create new negatives
                 triple_store = generate_negative_triples(
                     triple_store, num_negatives,
-                    triple_corruptor=triple_corruptor, parallel=parallel)
+                    triple_corruptor=triple_corruptor, parallel=parallel, num_workers=num_workers)
             else:  # attempting to reuse precomputed negatives
                 triple_store = neg_triple_store  # FIXME
                 expected_dim = (self.num_pos * 2) * (num_negatives + 1)
@@ -815,6 +816,7 @@ class MultiPathDataset(SimplePathDataset):
                  triple_corruptor = None,
                  seed: int = 46,
                  parallel=False,
+                 num_workers: int = 0,
                  neg_triple_store = None,
                 ):
         """
@@ -823,7 +825,7 @@ class MultiPathDataset(SimplePathDataset):
         super().__init__(path_store, relcontext_store, triple_store,
                          context_triple_store, tokens_to_idxs,
                          maximum_triple_paths, num_negatives,
-                         triple_corruptor, seed, parallel, neg_triple_store)
+                         triple_corruptor, seed, parallel, num_workers, neg_triple_store)
         # Distributing path budget across entities (H, T) and contexts (in, out)
         self.ppe = maximum_triple_paths // 2  # paths per entity
         self.ppc = self.ppe // 2  # paths per entity context (in/out)
@@ -989,6 +991,7 @@ class TripleEntityMultiPathDataset(MultiPathDataset):
                  triple_corruptor = None,
                  seed: int = 46,
                  parallel=False,
+                 num_workers: int = 0,
                  neg_triple_store = None,
                 ):
         """
@@ -1001,7 +1004,7 @@ class TripleEntityMultiPathDataset(MultiPathDataset):
         super().__init__(path_store,relcontext_store, triple_store,
                          context_triple_store, tokens_to_idxs,
                          maximum_triple_paths, num_negatives,
-                         triple_corruptor, seed, parallel, neg_triple_store)
+                         triple_corruptor, seed, parallel, num_workers, neg_triple_store)
 
     def _getitem_separate(self, index) -> dict:
         """
@@ -1196,6 +1199,7 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
                  tuple_corruptor = None,
                  seed: int = 46,
                  parallel = False,
+                 num_workers: int = 0,
                  neg_tuple_store = None,
                  ):
         """
@@ -1229,7 +1233,7 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
             context_triple_store, tokens_to_idxs,
             maximum_triple_paths=maximum_tuple_paths,
             num_negatives=num_negatives, triple_corruptor=tuple_corruptor,
-            seed=seed, parallel=parallel, neg_triple_store=neg_tuple_store)
+            seed=seed, parallel=parallel, num_workers=num_workers, neg_triple_store=neg_tuple_store)
 
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved

@@ -538,8 +538,8 @@ class CorruptRelationGeneratorTuples:
         Returns:
             torch.Tensor: Corrupted tuples of shape (2 * num_tuples, k+1, 3).
         """
-        # Determine number of workers and slice size for parallel processing
-        if num_workers is None:
+        # Determine number of workers
+        if num_workers is None or num_workers <= 0:
             num_workers = os.cpu_count() // 2
 
         indices_split = np.array_split(np.arange(tuples.size(0)), num_workers)
@@ -617,12 +617,17 @@ class CorruptLinkGenerator:
         # The maximum index that we can start sampling from the shuffled
         # tensor and still get k entities
         max_starting_index = self.max_index - k
-        num_workers = os.cpu_count() // 2 if num_workers is None else num_workers
+
+        # Determine number of workers and slice size for parallel processing
+        if num_workers is None or num_workers <= 0:
+            num_workers = os.cpu_count() // 2
         if num_workers > 1:
             slice_size = triples.size()[0] // (num_workers - 1) \
                 if (num_workers <= triples.size()[0]) else 1
         else:
             slice_size = triples.size()[0]
+
+        # Use Parallel to process slices of triples in parallel
         corrupted_triples = Parallel(n_jobs=num_workers, backend="loky") \
             (delayed(corrupt_entities)(triples[i:i + slice_size, :],
                                        max_starting_index, k, self.shuffled,
@@ -872,12 +877,17 @@ class CorruptLinkGeneratorEval:
         # The maximum index that we can start sampling from the shuffled
         # tensor and still get k entities
         max_starting_index = self.max_index - k
-        num_workers = os.cpu_count() // 2 if num_workers is None else num_workers
+
+        # Determine number of workers and slice size for parallel processing
+        if num_workers is None or num_workers <= 0:
+            num_workers = os.cpu_count() // 2
         if num_workers > 1:
             slice_size = triples.size()[0] // (num_workers - 1) \
                 if (num_workers <= triples.size()[0]) else 1
         else:
             slice_size = triples.size()[0]
+
+        # Use Parallel to process slices of triples in parallel
         corrupted_triples = Parallel(n_jobs=num_workers, backend="loky") \
             (delayed(corrupt_entities)(triples[i:i + slice_size, :],
                                        max_starting_index, k, self.shuffled,
