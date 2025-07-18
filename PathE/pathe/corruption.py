@@ -561,6 +561,8 @@ class CorruptRelationGeneratorTuples:
         Calls the parallel version with num_workers=1.
         """
         return self.get_parallel_filtered_corrupted_tuples(tuples, k, num_workers=1)
+    
+    
 
 
 class CorruptLinkGenerator:

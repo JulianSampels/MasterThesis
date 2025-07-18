@@ -128,10 +128,11 @@ def create_and_run_training_exp_tuples(args):
     )
 
     if args.num_negatives > 0 and args.dump_negatives:
+        raise NotImplementedError("Dumping negative tuples is not implemented yet or at least may not work as expected. Needs to get checked")
         print(f"Dumping negative tuples in {args.dump_dir}")
         for n, d in zip(["tr", "va", "te"], [train_set, valid_set, test_set]):
             negt = d.tuplestore  # FIXME via the dump_negatives()
-            torch.save(negt, os.path.join(args.dump_dir, f'{n}_negatives.pt'))
+            torch.save(negt, os.path.join(args.dump_dir, f'{n}_tuple_negatives.pt'))
 
     print("Found {} samples in the dataset: Tr {}, Va {}, Te {}"
           .format(len(train_set) + len(valid_set) + len(test_set),
