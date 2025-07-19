@@ -21,7 +21,7 @@ from torchvision.transforms import RandomApply, RandomChoice, RandomOrder
 from . import data_utils as du
 from . import path_lib as plib
 from .utils import sample_or_repeat
-from .corruption import generate_negative_triples, CorruptLinkGenerator
+from .corruption import CorruptRelationGeneratorTuples, generate_negative_triples, CorruptLinkGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -1196,7 +1196,7 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
                  tokens_to_idxs: Dict[int, int] = None,
                  maximum_tuple_paths = 50,
                  num_negatives: int = 0,
-                 tuple_corruptor = None,
+                 tuple_corruptor: CorruptRelationGeneratorTuples = None,
                  seed: int = 46,
                  parallel = False,
                  num_workers: int = 0,
@@ -1266,11 +1266,16 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
         # self.idxs_to_tokens = {idx: t for t, idx in self.tokens_to_idxs.items()}
 
         # self.num_pos, self.num_neg = len(tuple_store), num_negatives
+
+
+        self.num_pos, self.num_neg = len(tuple_store), num_negatives
         if num_negatives > 0:
             if neg_tuple_store is None:
+                triple_store = tuple_corruptor.generate_negative_tuples(
+                    triple_store, num_negatives, parallel=parallel, num_workers=num_workers)
                 # may implement generate_negative_tuples if needed
-                raise NotImplementedError("Negative tuple generation not implemented for tuples.")
-            else:
+                raise NotImplementedError("Negative tuple generation not implemented for tuples or needs some checks.")
+            else: # attempting to reuse precomputed negatives
                 tuple_store = neg_tuple_store
                 expected_dim = self.num_pos * (num_negatives + 1)
                 assert neg_tuple_store.shape[0] == expected_dim, \

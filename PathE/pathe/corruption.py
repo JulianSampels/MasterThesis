@@ -562,7 +562,48 @@ class CorruptRelationGeneratorTuples:
         """
         return self.get_parallel_filtered_corrupted_tuples(tuples, k, num_workers=1)
     
+    def generate_negative_tuples(self, tuple_store, num_negatives,
+                                parallel, num_workers=None):
+        """
+        Generates a batched tensor of interleaved positive and negative (h, r) tuples using the given corruptor.
     
+        Parameters
+        ----------
+        tuple_store : torch.tensor
+            A tensor of shape (num_tuples, 2) holding the positive (h, r) tuples.
+        num_negatives : int
+            The number of negatives per positive tuple to generate.
+        parallel : bool
+            Whether to use parallel processing.
+        num_workers : int, optional
+            Number of parallel workers.
+    
+        Returns
+        -------
+        torch.Tensor
+            A tensor of shape (num_tuples * (1 + num_negatives), 2) containing positive and negative tuples.
+        """
+        num_positives = len(tuple_store)
+        if num_negatives <= 0:
+            raise ValueError(f"Cannot generate {num_negatives} negatives")
+        logger.info(f"Creating {num_negatives} negs per {num_positives} tuples")
+        if not parallel:
+            corruptions = self.get_filtered_corrupted_tuples(tuple_store, num_negatives)
+        else:
+            corruptions = self.get_parallel_filtered_corrupted_tuples(tuple_store, num_negatives, num_workers)
+        positive_tuples = corruptions[:, 0, :]
+        negative_tuples = corruptions[:, 1:, :]
+        negative_tuples = negative_tuples.reshape(-1, 2)
+        # not sure if these asserts are where correctly taken over from triples version
+        assert len(negative_tuples) == num_positives * num_negatives \
+               or len(negative_tuples) == num_positives * num_negatives * 2
+        # If the order does not match, use set comparison:
+        # set1 = set(map(tuple, positive_tuples.unique(dim=0).cpu().numpy()))
+        # set2 = set(map(tuple, tuple_store.cpu().numpy()))
+        # assert set1 == set2, "Positive tuples do not match the tuple_store"
+        assert torch.all(positive_tuples.unique(dim=0) == tuple_store.unique(dim=0)), "Positive tuples do not match the tuple_store, perhaps check for different order."
+    
+        return torch.cat([positive_tuples, negative_tuples])
 
 
 class CorruptLinkGenerator:
