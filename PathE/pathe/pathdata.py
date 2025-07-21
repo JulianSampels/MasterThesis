@@ -1314,7 +1314,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
     # add here the idx relation value? perhaps already in relation key contained?
     def _getitem_combined(self, index) -> dict:
         """
-        Get a multi-path contextualisation of the i-th triple in the dataset.
+        Get a multi-path contextualisation of the i-th tuple in the dataset.
         Paths are constructed using both incoming and outgoing context.
         """
         tuple = torch.as_tensor(self.tuplestore[index])

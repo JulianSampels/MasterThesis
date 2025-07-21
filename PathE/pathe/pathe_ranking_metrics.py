@@ -491,9 +491,8 @@ class EntityMRRTuples(EntityMRRTriples):
         Parameters
         ----------
         num_entities_per_sample : The number of negative head or tail entities sampled for each test or val triple
-        triples : The tuples the model is being evaluated on, torch.Tensor of shape (num_triples,2) containing one h,r tuple per row. Named triples for compatibility.
-        scores : The scores produced by the model, a torch.Tensor of shape (
-        num_triples, num_relations) or (num-triples, 1) if link prediction
+        triples : The tuples the model is being evaluated on, torch.Tensor of shape (num_tuples,2) containing one h,r tuple per row. Named triples for compatibility.
+        scores : The scores produced by the model, a torch.Tensor of shape (num_tuples, num_relations) or (num-tuples, 1) if link prediction
         """
         tuples = triples
 
@@ -634,7 +633,7 @@ class EntityHitsAtKTuples(EntityHitsAtKTriples):
         num_entities_per_sample : The number of negative head or tail entities
         sampled
         for each test or val triple
-        triples : The tuples the model is being evaluated on, torch.Tensor of shape (num_triples,2) containing one h,r tuple per row
+        triples : The tuples the model is being evaluated on, torch.Tensor of shape (num_triples,2) containing one h,r tuple per row, named triples instead of tuples for compatibility.
         scores : The scores produced by the model, a torch.Tensor of shape (num_tuples, num_relations) or (num_tuples, 1) if link prediction
         """
         tuples = triples
