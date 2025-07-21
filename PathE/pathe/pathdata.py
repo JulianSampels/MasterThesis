@@ -646,7 +646,7 @@ class NegativeTripleSampler(Sampler[int]):
 # Multi-path datasets
 # ------------------------------------------------------------------------------
 
-class SimplePathDataset(Dataset):
+class SimplePathDatasetTriples(Dataset):
 
     def __init__(self,
                  path_store: str,
@@ -803,7 +803,7 @@ class SimplePathDataset(Dataset):
         self.triple_store = torch.vstack([self.triple_store, negatives])
 
 
-class MultiPathDataset(SimplePathDataset):
+class MultiPathDatasetTriples(SimplePathDatasetTriples):
 
     def __init__(self,
                  path_store: str,
@@ -874,7 +874,7 @@ class MultiPathDataset(SimplePathDataset):
         return ent_paths, rel_paths, ht_idxs, er_pos
 
 
-class ProtopathDataset(SimplePathDataset):
+class ProtopathDataset(SimplePathDatasetTriples):
 
     def __init__(self,
                  path_store: str,
@@ -978,7 +978,7 @@ class ProtopathDataset(SimplePathDataset):
         }
 
 
-class TripleEntityMultiPathDataset(MultiPathDataset):
+class TripleEntityMultiPathDataset(MultiPathDatasetTriples):
 
     def __init__(self,
                  path_store: str,
@@ -1097,7 +1097,7 @@ class TripleEntityMultiPathDataset(MultiPathDataset):
         return self._getitem_combined(index)
 
 
-class EntityMultiPathDataset(MultiPathDataset):
+class EntityMultiPathDataset(MultiPathDatasetTriples):
 
     def __init__(self,
                  path_store: str,
@@ -1182,7 +1182,7 @@ class EntityMultiPathDataset(MultiPathDataset):
         # return self._getitem_separate(index)
         return self._getitem_combined(index)
 
-class TupleEntityMultiPathDataset(MultiPathDataset):
+class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
     """
     A dataset for (head, relation) tuples, for tasks such as predicting which relations match to which heads.
     This is analogous to SimplePathDataset but expects (h, r) tuples instead of (h, r, t) triples.
@@ -1232,7 +1232,7 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
             path_store, relcontext_store, tuple_store,
             context_triple_store, tokens_to_idxs,
             maximum_triple_paths=maximum_tuple_paths,
-            num_negatives=num_negatives, triple_corruptor=tuple_corruptor,
+            num_negatives=0, triple_corruptor=tuple_corruptor, #set num_negatives to 0 as we do not need negative triples
             seed=seed, parallel=parallel, num_workers=num_workers, neg_triple_store=neg_tuple_store)
         # Distributing path budget across entities (H, T) and contexts (in, out)
         self.ppe = maximum_tuple_paths  # paths per entity not divided by two as we have tuples and not triples (only one entity which needs paths)
@@ -1271,10 +1271,10 @@ class TupleEntityMultiPathDataset(MultiPathDataset):
         self.num_pos, self.num_neg = len(tuple_store), num_negatives
         if num_negatives > 0:
             if neg_tuple_store is None:
-                triple_store = tuple_corruptor.generate_negative_tuples(
-                    triple_store, num_negatives, parallel=parallel, num_workers=num_workers)
+                tuple_store = tuple_corruptor.generate_negative_tuples(
+                    tuple_store, num_negatives, parallel=parallel, num_workers=num_workers)
                 # may implement generate_negative_tuples if needed
-                raise NotImplementedError("Negative tuple generation not implemented for tuples or needs some checks.")
+                # raise NotImplementedError("Negative tuple generation not implemented for tuples or needs some checks.")
             else: # attempting to reuse precomputed negatives
                 tuple_store = neg_tuple_store
                 expected_dim = self.num_pos * (num_negatives + 1)
