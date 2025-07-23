@@ -305,7 +305,7 @@ def corrupt_entities(triples, max_starting_index, k, shuffled,
     return torch.cat(corrupted_triples, dim=0)
 
 
-def corrupt_relation_in_hr_tuples( tuples: torch.Tensor, k, shuffled: np.ndarray, tuple_filter_dict: Dict[int, set], max_index):
+def corrupt_relation_in_hr_tuples(tuples: torch.Tensor, k, shuffled: np.ndarray, tuple_filter_dict: Dict[int, set], max_index):
     """
     Corrupts (head, relation) pairs by replacing the relation with random relations,
     avoiding filtered relations for the given head and the original relation.
@@ -511,15 +511,13 @@ class CorruptRelationGeneratorTuples:
         self.num_shuffled = num_shuffled
         # Random generator for reproducibility
         self.random_gen = np.random.default_rng()
-        # Will be set in get_shuffled_indices_tensors()
-        self.max_index = None
-        self.shuffled = None
         # Prepare shuffled indices for sampling
 
         """
         Prepare multiple shuffled arrays of entity indices for efficient parallel random sampling.
         Each row in self.shuffled is a different permutation of entity indices.
         """
+        #left from entity corruptor
         self.max_index = len(self.entities)
         max_index_test = np.max(self.entities).astype(np.int32) + 1
         assert self.max_index == max_index_test, "Max index does not match entities max index, perhaps because of duplicates in entities?."
