@@ -305,7 +305,7 @@ def corrupt_entities(triples, max_starting_index, k, shuffled,
     return torch.cat(corrupted_triples, dim=0)
 
 
-def corrupt_relation_in_hr_tuples( tuples: torch.Tensor, k, shuffled: np.ndarray, tuple_filter_dict: Dict[int, set], max_index):
+def corrupt_relation_in_hr_tuples(tuples: torch.Tensor, k, shuffled: np.ndarray, tuple_filter_dict: Dict[int, set], max_index):
     """
     Corrupts (head, relation) pairs by replacing the relation with random relations,
     avoiding filtered relations for the given head and the original relation.
@@ -495,7 +495,7 @@ def plot_unique_counts(indices, title):
 
 class CorruptRelationGeneratorTuples:
 
-    def __init__(self, relation_filter_dict: Dict, entities: torch.tensor, num_shuffled: int = 10):
+    def __init__(self, relation_filter_dict: Dict, entities: torch.tensor, relations: torch.tensor, num_shuffled: int = 10):
         """
         Initialize the generator with filter dict and entity list.
 
@@ -507,20 +507,22 @@ class CorruptRelationGeneratorTuples:
         # Store filter dict and entities for later use
         self.relation_filter_dict = relation_filter_dict
         self.entities = np.asarray(entities)
+        self.relations = np.asarray(relations)
         self.num_shuffled = num_shuffled
         # Random generator for reproducibility
         self.random_gen = np.random.default_rng()
-        # Will be set in get_shuffled_indices_tensors()
-        self.max_index = None
-        self.shuffled = None
         # Prepare shuffled indices for sampling
 
         """
         Prepare multiple shuffled arrays of entity indices for efficient parallel random sampling.
         Each row in self.shuffled is a different permutation of entity indices.
         """
+        #left from entity corruptor
         self.max_index = len(self.entities)
-        # self.max_index = np.max(self.entities).astype(np.int32) + 1
+        max_index_test = np.max(self.entities).astype(np.int32) + 1
+        assert self.max_index == max_index_test, "Max index does not match entities max index, perhaps because of duplicates in entities?."
+        #as we are corrupting relations, we need to permutate relations not the entities
+        self.max_index = len(self.relations)
         self.shuffled = np.zeros((self.num_shuffled, self.max_index), dtype=np.int32)
         for i in range(self.num_shuffled):
             # Fill each row with a random permutation of entity indices

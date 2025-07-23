@@ -57,6 +57,8 @@ def create_and_run_training_exp_tuples(args):
         train_triples, val_triples, test_triples)
     unique_entities = triple_lib.get_unique_entities(
         train_triples, val_triples, test_triples)
+    unique_relations = triple_lib.get_unique_relations(
+        train_triples, val_triples, test_triples)
     class_weights = triple_lib.get_class_weights_without_special_tokens(
         train_triples) if args.class_weigths else None
 
@@ -66,7 +68,7 @@ def create_and_run_training_exp_tuples(args):
         len(train_tuples), len(val_tuples), len(test_tuples)
     tuple_corruptor = None  # instantiated only if num_negatives > 0
     if args.num_negatives:# > 0 and "r" in args.corruption:
-        tuple_corruptor = CorruptRelationGeneratorTuples(map_head_to_relationsets_tuples, entities=unique_entities)
+        tuple_corruptor = CorruptRelationGeneratorTuples(map_head_to_relationsets_tuples, entities=unique_entities, relations=unique_relations)
 
     parallel = True
     negatives = [None, None, None]  # assume no negative dumpset is available

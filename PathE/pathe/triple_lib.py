@@ -383,6 +383,27 @@ def get_unique_entities(train_triples: torch.tensor,
                                   dim=0).unique(sorted=True)
     return unique_entities
 
+def get_unique_relations(train_triples: torch.tensor,
+                         val_triples: torch.tensor,
+                         test_triples: torch.tensor):
+    """
+    Returns all the unique relations in the KG sorted in ascending order.
+
+    Parameters
+    ----------
+    train_triples : the train triples in torch.tensor format [h,r,t]
+    val_triples : the validation triples in torch.tensor format [h,r,t]
+    test_triples : the test triples in torch.tensor format [h,r,t]
+
+    Returns
+    -------
+    unique_relations : torch.Tensor
+        1D tensor of unique relation IDs, sorted ascending.
+    """
+    all_triples = torch.cat((train_triples, val_triples, test_triples), dim=0)
+    unique_relations = all_triples[:, 1].unique(sorted=True)
+    return unique_relations
+
 
 def get_dead_ends(relcontext_path):
     """
