@@ -92,6 +92,7 @@ def create_and_run_training_exp_tuples(args):
         num_negatives=args.num_negatives,
         tuple_corruptor=tuple_corruptor,
         parallel=parallel,
+        num_workers=args.num_workers,
         neg_tuple_store=negatives[0],
     )
     # Using shared data structures for valid and test
@@ -109,6 +110,7 @@ def create_and_run_training_exp_tuples(args):
         num_negatives=args.val_num_negatives,
         tuple_corruptor=tuple_corruptor,
         parallel=parallel,
+        num_workers=args.num_workers,
         neg_tuple_store=negatives[1],
     )
     test_set = TupleEntityMultiPathDataset(
@@ -121,14 +123,16 @@ def create_and_run_training_exp_tuples(args):
         num_negatives=args.val_num_negatives,
         tuple_corruptor=tuple_corruptor,
         parallel=parallel,
+        num_workers=args.num_workers,
         neg_tuple_store=negatives[2],
     )
 
     if args.num_negatives > 0 and args.dump_negatives:
+        raise NotImplementedError("Dumping negative tuples is not implemented yet or at least may not work as expected. Needs to get checked")
         print(f"Dumping negative tuples in {args.dump_dir}")
         for n, d in zip(["tr", "va", "te"], [train_set, valid_set, test_set]):
             negt = d.tuplestore  # FIXME via the dump_negatives()
-            torch.save(negt, os.path.join(args.dump_dir, f'{n}_negatives.pt'))
+            torch.save(negt, os.path.join(args.dump_dir, f'{n}_tuple_negatives.pt'))
 
     print("Found {} samples in the dataset: Tr {}, Va {}, Te {}"
           .format(len(train_set) + len(valid_set) + len(test_set),
@@ -339,6 +343,7 @@ def create_and_run_training_exp_triples(args):
         num_negatives=args.num_negatives,
         triple_corruptor=triple_corruptor,
         parallel=parallel,
+        num_workers=args.num_workers,
         neg_triple_store=negatives[0],
     )
     # Using shared data structures for valid and test
@@ -356,6 +361,7 @@ def create_and_run_training_exp_triples(args):
         num_negatives=args.val_num_negatives,
         triple_corruptor=triple_corruptor,
         parallel=parallel,
+        num_workers=args.num_workers,
         neg_triple_store=negatives[1],
     )
     test_set = TripleEntityMultiPathDataset(
@@ -368,6 +374,7 @@ def create_and_run_training_exp_triples(args):
         num_negatives=args.val_num_negatives,
         triple_corruptor=triple_corruptor,
         parallel=parallel,
+        num_workers=args.num_workers,
         neg_triple_store=negatives[2],
     )
 

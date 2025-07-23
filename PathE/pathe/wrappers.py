@@ -661,7 +661,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         loss_reduction = "mean"
         if self.val_num_negatives > 0:  # watch link prediction metrics
-            raise NotImplementedError("check whether tuples versions are needed to be used. ")
+            # raise NotImplementedError("check whether tuples versions are needed to be used. ")
             loss_reduction = 'none'
             self.val_linkMRR = EntityMRRTriples()
             self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
