@@ -412,14 +412,12 @@ class EntityMRRTriples(Metric):
         """
         scores = scores.squeeze()
         triples_per_sample = num_entities_per_sample + 1
-        unstacked_triples = triples.reshape(triples.size()[
-                                                0] // triples_per_sample,
+        unstacked_triples = triples.reshape(triples.size()[0] // triples_per_sample,
                                             triples_per_sample, -1)
 
         if scores.ndim > 1:
 
-            scores_unpacked = scores.reshape(triples.size()[
-                                                 0] // triples_per_sample,
+            scores_unpacked = scores.reshape(triples.size()[0] // triples_per_sample,
                                              triples_per_sample, -1)
 
             # get the scores of the correct relation for each triple. For each h,r
@@ -427,8 +425,7 @@ class EntityMRRTriples(Metric):
             # (h,r,t)|(h,t) is the score of the head and the correct relation.
             # Thus, the score for each triple is the score produced by the
             # relation predictor for the relation.
-            triple_scores = scores_unpacked[torch.arange(scores_unpacked.size()[
-                                                             0]), :,
+            triple_scores = scores_unpacked[torch.arange(scores_unpacked.size()[0]), :,
                             unstacked_triples[:, 0, 1]]  ##### 2 for other
             # format
         else:

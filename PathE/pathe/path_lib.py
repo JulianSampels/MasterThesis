@@ -181,9 +181,7 @@ def create_contextpaths(entity, path_index, context_triples):
         if entity in path_index[ctype]:  # choose paths, if available
             icontext = [(idx, "path") for idx in path_index[ctype][entity]]
         else: # retrieve all incoming triples if no path is found
-            icontext = [(idx, "triple") for idx in to_list((context_triples[:,
-                                                        i] == entity)\
-                        .nonzero().squeeze().tolist())]
+            icontext = [(idx, "triple") for idx in to_list((context_triples[:,i] == entity).nonzero().squeeze().tolist())]
         return icontext
 
     if torch.is_tensor(entity):
