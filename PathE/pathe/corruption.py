@@ -360,7 +360,7 @@ def corrupt_relation_in_hr_tuples(tuples: torch.Tensor, k, shuffled: np.ndarray,
     assert np.array_equal(shuffled, shuffled_init)
     return torch.cat(corrupted_pairs, dim=0)
 
-# at the moment assumes the wrong formated tuple_filter_dict need to fix
+# at the moment assumes the wrong formatted tuple_filter_dict need to fix
 def corrupt_head_in_hr_tuples(tuples: torch.Tensor, max_starting_index, k, shuffled: np.ndarray, tuple_filter_dict, max_index):
     """
     Corrupts (head, relation) pairs by replacing the head entity with random entities,
@@ -606,6 +606,62 @@ class CorruptRelationGeneratorTuples:
         assert torch.all(positive_tuples.unique(dim=0) == tuple_store.unique(dim=0)), "Positive tuples do not match the tuple_store, perhaps check for different order."
     
         return torch.cat([positive_tuples, negative_tuples])
+
+class CorruptHeadGeneratorTuples(CorruptRelationGeneratorTuples):
+    def __init__(self, head_filter_dict: Dict, entities: torch.tensor, relations: torch.tensor, num_shuffled: int = 10):
+        """
+        Initialize the generator with filter dict and entity/relation lists.
+
+        Args:
+            head_filter_dict (Dict): Maps (h, r) to sets of true heads.
+            entities (torch.tensor): Tensor of entity indices.
+            relations (torch.tensor): Tensor of relation indices.
+            num_shuffled (int): Number of shuffled permutations to use for sampling.
+        """
+        raise NotImplementedError("This class is not tested yet. ")
+        super().__init__(relation_filter_dict=head_filter_dict, entities=entities, relations=relations, num_shuffled=num_shuffled)
+        # For head corruption, we want to permute entities, not relations
+        self.max_index = len(self.entities)
+        self.shuffled = np.zeros((self.num_shuffled, self.max_index), dtype=np.int32)
+        for i in range(self.num_shuffled):
+            self.shuffled[i, :] = self.random_gen.permutation(self.max_index)
+
+    def get_parallel_filtered_corrupted_tuples(self, tuples: torch.Tensor, k, num_workers=None):
+        """
+        Generate corrupted (h, r) tuples in parallel, corrupting the head entity.
+
+        Args:
+            tuples (torch.Tensor): Input tuples to corrupt.
+            k (int): Number of corruptions per tuple.
+            num_workers (int, optional): Number of parallel workers.
+
+        Returns:
+            torch.Tensor: Corrupted tuples of shape (N, k+1, 2).
+        """
+        if num_workers is None or num_workers <= 0:
+            num_workers = os.cpu_count() // 2
+
+        indices_split = np.array_split(np.arange(tuples.size(0)), num_workers)
+        corrupted_pairs = Parallel(n_jobs=num_workers, backend="loky")(
+            delayed(corrupt_head_in_hr_tuples)(
+                tuples[idx, :],
+                self.max_index - k,
+                k,
+                self.shuffled,
+                self.relation_filter_dict,  # actually head_filter_dict here
+                self.max_index
+            )
+            for idx in indices_split if len(idx) > 0
+        )
+        return torch.cat(corrupted_pairs, dim=0)
+
+    #cant we just use the funktion from the super class?
+    def get_filtered_corrupted_tuples(self, tuples: torch.Tensor, k):
+        """
+        Non-parallel version of get_parallel_filtered_corrupted_tuples.
+        Calls the parallel version with num_workers=1.
+        """
+        return self.get_parallel_filtered_corrupted_tuples(tuples, k, num_workers=1)
 
 
 class CorruptLinkGenerator:
