@@ -20,7 +20,7 @@ from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir
 from .data_utils import load_tuple_tensors
 from .callbacks import DatasetUpdater
-from .corruption import CorruptHeadGenerator, CorruptRelationGeneratorTuples, CorruptTailGenerator, CorruptLinkGenerator#, \
+from .corruption import CorruptHeadGenerator, CorruptHeadGeneratorTuples, CorruptRelationGeneratorTuples, CorruptTailGenerator, CorruptLinkGenerator#, \
     # CorruptBothGenerator
 from .utils import stageprint, bundle_arguments, namespace_to_dict
 from .wrappers import PathEModelWrapperTriples, PathEModelWrapperTuples
@@ -67,8 +67,14 @@ def create_and_run_training_exp_tuples(args):
     tr_positives, va_positives, te_positives = \
         len(train_tuples), len(val_tuples), len(test_tuples)
     tuple_corruptor = None  # instantiated only if num_negatives > 0
-    if args.num_negatives:# > 0 and "r" in args.corruption:
-        tuple_corruptor = CorruptRelationGeneratorTuples(map_head_to_relationsets_tuples, entities=unique_entities, relations=unique_relations)
+    if args.num_negatives:# > 0 and 
+        if "r" in args.corruption:
+            tuple_corruptor = CorruptRelationGeneratorTuples(map_head_to_relationsets_tuples, entities=unique_entities, relations=unique_relations)
+        elif "e" in args.corruption:
+            tuple_corruptor = CorruptHeadGeneratorTuples(map_relation_to_headsets_tuples, entities=unique_entities, relations=unique_relations)
+        else:
+            print(f"Unknown corruption type {args.corruption}, using default relation corruption.")
+            tuple_corruptor = CorruptRelationGeneratorTuples(map_head_to_relationsets_tuples, entities=unique_entities, relations=unique_relations)
 
     parallel = True
     negatives = [None, None, None]  # assume no negative dumpset is available
