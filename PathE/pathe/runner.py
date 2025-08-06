@@ -154,7 +154,7 @@ def main():
     parser.add_argument('--full_test', action='store_true', default=False,
                         help='Whether running a full test with all negatives. '
                              'This overrides val_num_negatives for test set.')
-    parser.add_argument('--corruption', choices=['h', 't', 'all'], default="all",
+    parser.add_argument('--corruption', choices=['h', 't', 'all', 'r', 'e'], default="all",
                         help='Triple corruption strategy for link prediction; '
                              'head (h), tail (t), or both merged (all).')
     parser.add_argument('--dump_negatives', action='store_true', default=False,
