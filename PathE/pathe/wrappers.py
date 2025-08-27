@@ -18,6 +18,8 @@ from pytorch_lightning import Trainer
 from .pathe_ranking_metrics import (RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples)
 
+from .pather_models import PathEModelTriples, PathEModelTuples
+
 
 logger = logging.getLogger(__name__)
 
@@ -628,7 +630,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
     """
 
-    def __init__(self, pathe_model, filtration_dict, num_negatives=0,
+    def __init__(self, pathe_model: PathEModelTuples, filtration_dict, num_negatives=0,
                  optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
                  weight_decay=0, class_weights=None, label_smoothing=0.0,
                  train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
