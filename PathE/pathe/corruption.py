@@ -334,7 +334,7 @@ def corrupt_relation_in_hr_tuples(tuples: torch.Tensor, k, shuffled: np.ndarray,
         start = random.randint(0, max_index - k)
         candidate_relations = shuffled[tensor_ind, start:start + k].copy()
 
-        # Filter out invalid candidates
+        # Filter out candidates which are true
         valid_candidates = []
         for candidate_relation in candidate_relations:
             if candidate_relation not in relations_to_filter:

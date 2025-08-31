@@ -202,7 +202,7 @@ def create_and_run_training_exp_tuples(args):
         class_weights=class_weights,  # for rel imbalance
         **namespace_to_dict(args),  # model hparameters
     )
-    print(pl_model.model)  # keras-style model overview
+    # print(pl_model.model)  # keras-style model overview
     pl_model.model.to(torch.device(args.device))
 
     stageprint("Creating loggers, callbacks and setting up trainer")
@@ -452,7 +452,7 @@ def create_and_run_training_exp_triples(args):
         class_weights=class_weights,  # for rel imbalance
         **namespace_to_dict(args),  # model hparameters
     )
-    print(pl_model.model)  # keras-style model overview
+    # print(pl_model.model)  # keras-style model overview
     pl_model.model.to(torch.device(args.device))
 
     stageprint("Creating loggers, callbacks and setting up trainer")
