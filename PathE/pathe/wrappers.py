@@ -270,6 +270,7 @@ class PathEModelWrapperTriples(LightningModule):
         if self.train_num_negatives > 0:
             # FOR RELATION PREDICTION
             # select the loss that corresponds to the true triples only
+            assert(loss_rp.size(0) % (self.val_num_negatives + 1) == 0, "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!")
             loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0],
                                                    self.train_num_negatives + 1)])
             loss_lp = self.lp_loss_fn(logits_lp, self.train_num_negatives)
@@ -528,6 +529,8 @@ class PathEModelWrapperTriples(LightningModule):
                 torch.arange(0, triples.size()[0],
                              self.val_num_negatives + 1)]
             # select the loss that corresponds to the true triples only
+            assert(len(triples) % (self.val_num_negatives + 1) == 0, "Incompatible batch and negative sample sizes probably something when wrong with the batch size when generating negatives!")
+            assert(loss_rp.size(0) % (self.val_num_negatives + 1) == 0, "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!")
             loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0],
                                                    self.val_num_negatives + 1)])
             # compute and log the losses
@@ -570,6 +573,8 @@ class PathEModelWrapperTriples(LightningModule):
                 torch.arange(0, triples.size()[0],
                              self.test_num_negatives + 1)]
             # select the loss that corresponds to the true triples only
+            assert(len(triples) % (self.val_num_negatives + 1) == 0, "Incompatible batch and negative sample sizes probably something when wrong with the batch size when generating negatives!")
+            assert(loss_rp.size(0) % (self.val_num_negatives + 1) == 0, "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!")
             loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0],
                                                    self.test_num_negatives + 1)])
             # compute and log the losses
