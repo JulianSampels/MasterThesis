@@ -93,6 +93,10 @@ def main():
     parser.add_argument('--lp_loss_fn', action='store',
                         choices=['bce', 'ce', 'nssa'], default='nssa',
                         help='The name of the loss to use for link prediction.')
+    parser.add_argument('--use_manual_optimization', action='store_true', default=False,
+                        help='Whether to use manual optimization with independent heads.')
+    parser.add_argument('--link_head_detached', action='store_true', default=False,
+                        help='Whether to detach the link head during training (used for best relation prediction results).')
     parser.add_argument('--resume', action='store_true', default=False,
                         help='Whether to resume training of the model.')
     parser.add_argument('--batch_size', action='store', type=int, default=16,
@@ -182,6 +186,8 @@ def main():
         if args.val_batch_size is None else args.val_batch_size
     args.val_num_negatives = args.num_negatives \
         if args.val_num_negatives is None else args.val_num_negatives
+    if args.link_head_detached and not args.use_manual_optimization:
+        raise ValueError("link_head_detached=True has no effect when use_manual_optimization=False")
     # Setting the random seed for all modules
     set_random_seed(args.seed, args.device)
 
