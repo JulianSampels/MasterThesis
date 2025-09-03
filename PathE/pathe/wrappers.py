@@ -683,20 +683,19 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.test_relationHitsAt5 = RelationHitsAtKTuples(filtration_dict, k=5)
         self.test_relationHitsAt10 = RelationHitsAtKTuples(filtration_dict, k=10)
 
-        loss_reduction = "mean"
-        if self.val_num_negatives > 0:  # watch link prediction metrics
-            # raise NotImplementedError("check whether tuples versions are needed to be used. ")
-            loss_reduction = 'none'
-            self.val_linkMRR = EntityMRRTriples()
-            self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
-            self.val_linkHitsAt3 = EntityHitsAtKTriples(k=3)
-            self.val_linkHitsAt5 = EntityHitsAtKTriples(k=5)
-            self.val_linkHitsAt10 = EntityHitsAtKTriples(k=10)
-            self.test_linkMRR = EntityMRRTriples()
-            self.test_linkHitsAt1 = EntityHitsAtKTriples(k=1)
-            self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
-            self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
-            self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+        # if self.val_num_negatives > 0:  
+        # watch link prediction metrics
+        # raise NotImplementedError("check whether tuples versions are needed to be used. ")
+        self.val_linkMRR = EntityMRRTriples()
+        self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+        self.val_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+        self.val_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+        self.val_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+        self.test_linkMRR = EntityMRRTriples()
+        self.test_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+        self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+        self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+        self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
         # only used for compatibility when not using manual optimization
         def model_forward_with_loss(batch):
