@@ -998,7 +998,8 @@ class PathEModelTuples(PathEModelTriples):
                 entity_origin: Tensor,
                 targets: Tensor,
                 ppt: Optional[Tensor] = None,
-                source_mask: Optional[Tensor] = None):
+                source_mask: Optional[Tensor] = None,
+                detach_link_head: bool = True):
 
         assert self.batch_first == True, "Dev. code in batch-first mode"
 
@@ -1039,12 +1040,15 @@ class PathEModelTuples(PathEModelTriples):
 
         # Ensure head_emb has the correct shape
         head_emb = head_emb.unsqueeze(0) if head_emb.ndim < 2 else head_emb
-        # tail_emb = tail_emb.unsqueeze(0) if tail_emb.ndim < 2 else tail_emb
 
-        # Predict relation logits using only the head embedding
+        # Relation prediction (always with gradients)
         logits_rp = self.predict_relation_from_h(head_emb)
-        # Predict link logits using only the head and relation embeddings (no tail)
-        logits_link = self.link_predict_from_h(head_emb, targets)
+        
+        # Link prediction (optionally detached)
+        if detach_link_head:
+            logits_link = self.link_predict_from_h(head_emb.detach(), targets)
+        else:
+            logits_link = self.link_predict_from_h(head_emb, targets)
 
         return logits_rp, logits_link
 

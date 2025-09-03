@@ -100,7 +100,7 @@ class PathEModelWrapperTriples(LightningModule):
 
     """
 
-    def __init__(self, pathe_model, filtration_dict, num_negatives=0,
+    def __init__(self, pathe_model, filtration_dict, train_num_negatives=0,
                  optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
                  weight_decay=0, class_weights=None, label_smoothing=0.0,
                  train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
@@ -122,7 +122,7 @@ class PathEModelWrapperTriples(LightningModule):
         super().__init__()
         self.model = pathe_model
         self.loss_weight = loss_weight
-        self.train_num_negatives = num_negatives
+        self.train_num_negatives = train_num_negatives
         self.val_num_negatives = val_num_negatives
         self.test_num_negatives = val_num_negatives \
             if not full_test else full_test
@@ -573,8 +573,8 @@ class PathEModelWrapperTriples(LightningModule):
                 torch.arange(0, triples.size()[0],
                              self.test_num_negatives + 1)]
             # select the loss that corresponds to the true triples only
-            assert(len(triples) % (self.val_num_negatives + 1) == 0, "Incompatible batch and negative sample sizes probably something when wrong with the batch size when generating negatives!")
-            assert(loss_rp.size(0) % (self.val_num_negatives + 1) == 0, "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!")
+            assert(len(triples) % (self.test_num_negatives + 1) == 0, "Incompatible batch and negative sample sizes probably something when wrong with the batch size when generating negatives!")
+            assert(loss_rp.size(0) % (self.test_num_negatives + 1) == 0, "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!")
             loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0],
                                                    self.test_num_negatives + 1)])
             # compute and log the losses
@@ -635,12 +635,13 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
     """
 
-    def __init__(self, pathe_model: PathEModelTuples, filtration_dict, num_negatives=0,
+    def __init__(self, 
+                 pathe_model: PathEModelTuples, filtration_dict, num_negatives=0,
                  optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
                  weight_decay=0, class_weights=None, label_smoothing=0.0,
                  train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
-                 val_num_negatives=0, full_test=False, max_ppt=None,
-                 margin=10, nssa_alpha=1, lp_loss_fn="nssa",
+                 val_num_negatives=0, full_test=False, max_ppt=None, accumulate_gradient=1.0, 
+                 margin=10, nssa_alpha=1, lp_loss_fn="nssa", link_head_detached: bool = True, use_manual_optimization: bool = False,
                  loss_weight: float = 0.5, **hparams):
         super().__init__(pathe_model, filtration_dict, num_negatives,
                          optimiser, scheduler, lr, momentum, weight_decay,
@@ -652,6 +653,22 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
                          full_test=full_test, max_ppt=max_ppt,
                          margin=margin, nssa_alpha=nssa_alpha,
                          lp_loss_fn=lp_loss_fn, loss_weight=loss_weight)
+
+        self.accumulate_gradient = accumulate_gradient
+        self.use_manual_optimization = use_manual_optimization
+        self.link_head_detached = link_head_detached
+
+        # Set automatic optimization based on parameter
+        self.automatic_optimization = not self.use_manual_optimization
+
+        # unnecessary as done in super but for clarity
+        self.model = pathe_model
+
+        # define loss functions which have not been defined in super().__init__()
+        self.rp_loss_fn = nn.CrossEntropyLoss(
+            weight=self.class_weights,
+            reduction='none',
+            label_smoothing=label_smoothing)
 
         # override the metrics set in the parent class to now evaluate tuples
         # [List of metrics we will be watching on validation and test sets]
@@ -681,37 +698,194 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
             self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
-        # override the forward step function to use the tuples
-        self.model_forward = partial(
-            self.pathe_forward_step_tuples, model=self.model,
-            criterion=self.rp_criterion)
+        # only used for compatibility when not using manual optimization
+        def model_forward_with_loss(batch):
+            logits_rp, logits_lp = self.pathe_forward_step_tuples(batch)
+            targets = batch["target"] - 2
+            loss_rp = self.rp_loss_fn(logits_rp, targets)
+            return logits_rp, loss_rp, logits_lp
+        self.model_forward = model_forward_with_loss
+
+    def configure_optimizers(self):
+        if self.use_manual_optimization:
+            # perhaps consider adding other optimizers as in triples version
+            assert(self.optimiser == "adam"), "Currently only Adam is supported for manual optimization."
+            # Return separate optimizers for relation and link prediction
+            relation_params = []
+            link_params = []
+            shared_params = []
+            
+            # Separate parameters based on their role
+            for name, param in self.model.named_parameters():
+                if 'relpredict_head_avg' in name:
+                    relation_params.append(param)
+                elif 'link_predict_head' in name:
+                    link_params.append(param)
+                else:
+                    shared_params.append(param)
+            
+            relation_optimizer = torch.optim.Adam(
+                shared_params + relation_params, 
+                lr=self.lr, 
+                weight_decay=self.weight_decay
+            )
+            
+            link_optimizer = torch.optim.Adam(
+                shared_params + link_params if not self.link_head_detached else link_params,
+                lr=self.lr,
+                weight_decay=self.weight_decay
+            )
+            
+            return [relation_optimizer, link_optimizer]
+        else:
+            return super().configure_optimizers()
+
+    def compute_rp_loss(self, logits, targets, num_negatives):
+        loss_rp = self.rp_loss_fn(logits, targets)
+        assert(loss_rp.size(0) % (num_negatives + 1) == 0), "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!"
+        loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0], num_negatives + 1)])
+        return loss_rp
+
+    def compute_lp_loss(self, logits, num_negatives):
+        loss_lp = self.lp_loss_fn(logits, num_negatives)
+        return loss_lp
+
+    def training_step(self, batch, batch_idx):
+        if not self.use_manual_optimization:
+            return super().training_step(batch, batch_idx)
+        
+        # Manual optimization mode
+        relation_opt, link_opt = self.optimizers()
+        
+        # Forward pass
+        logits_rp, logits_lp = self.model_forward_tuples(batch)
+        
+        # Calculate separate losses
+        targets = batch["target"] - 2
+        rp_loss = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
+        lp_loss = self.compute_lp_loss(logits_lp, self.train_num_negatives)
+        if torch.isnan(rp_loss) or torch.isnan(lp_loss):
+            logger.warning(f"Training stopped due to NaN loss: rp_loss: {rp_loss}, lp_loss: {lp_loss}.")
+            self.trainer.should_stop = True
+            self.trainer.limit_val_batches = 0
+
+        # Scale losses for accumulation
+        rp_loss = rp_loss / self.accumulate_gradient
+        lp_loss = lp_loss / self.accumulate_gradient
+
+        # Accumulate gradients
+        # Backward passes:
+        # 1) Propagate relation loss through the entire model so shared
+        #    parameters and the relation head receive gradients.
+        #    By using retain_graph=True here we keep the graph for a second backward.
+        self.manual_backward(rp_loss, retain_graph=True)
+        # 2) Propagate link loss only through the link head.
+        #    When link_head_detached=True the link optimizer was created with
+        #    link-head-only params; in that case this backward should therefore only affect
+        #    link-head parameters (and not embeddings) as intended.
+        if lp_loss.item() > 0:
+            self.manual_backward(lp_loss)
+        
+        # Step and zero grads when enough batches have been accumulated
+        if (batch_idx + 1) % self.accumulate_gradient == 0:
+            # Optimize relation prediction
+            self.clip_gradients(relation_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
+            relation_opt.step()
+            relation_opt.zero_grad()
+
+            # Optimize link prediction  
+            if lp_loss.item() > 0:
+                self.clip_gradients(link_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
+                link_opt.step()
+                link_opt.zero_grad()
+        
+        # Logging
+        self.log("train_rp_loss", rp_loss, prog_bar=True)
+        self.log("train_lp_loss", lp_loss, prog_bar=True)
+        self.log("train_total_loss", rp_loss + lp_loss)
+        
+        return {"rp_loss": rp_loss, "lp_loss": lp_loss}
     
-    @staticmethod
-    def pathe_forward_step_tuples(model, criterion, batch, **kwargs):
+    def validation_step(self, batch, batch_idx):
+        if not self.use_manual_optimization:
+            return super().validation_step(batch, batch_idx)
+
+        # Forward pass
+        logits_rp, logits_lp = self.model_forward_tuples(batch)
+        targets = batch["target"] - 2
+        tuples = batch['ori_triple']
+
+        # Compute losses
+        rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
+        lp_loss = self.compute_lp_loss(logits_lp, self.val_num_negatives)
+
+        # Logging losses
+        self.log("valid_rp_loss", rp_loss, prog_bar=True)
+        self.log("valid_lp_loss", lp_loss, prog_bar=True)
+        self.log("valid_total_loss", rp_loss + lp_loss)
+
+        # Metrics for tuples (relation prediction)
+        assert(tuples.size()[0] == logits_rp.size()[0])
+        logits_rp_only_positives = logits_rp[torch.arange(0, logits_rp.size()[0], self.val_num_negatives + 1)]
+        tuples_only_positives = tuples[torch.arange(0, tuples.size()[0], self.val_num_negatives + 1)]
+        self.calculate_and_log_val_relation_metrics(tuples_only_positives, logits_rp_only_positives)
+        self.calculate_and_log_val_links_metrics(tuples, logits_lp)
+
+        return {"rp_loss": rp_loss, "lp_loss": lp_loss}
+
+    # quite similar to validation_step but with different logging names and metric calculation functions
+    def test_step(self, batch, batch_idx):
+        if not self.use_manual_optimization:
+            return super().test_step(batch, batch_idx)
+
+        # Forward pass
+        logits_rp, logits_lp = self.model_forward_tuples(batch)
+        targets = batch["target"] - 2
+        tuples = batch['ori_triple']
+
+        # Compute losses
+        rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
+        lp_loss = self.compute_lp_loss(logits_lp, self.test_num_negatives)
+
+        # Logging losses
+        self.log("test_rp_loss", rp_loss, prog_bar=True)
+        self.log("test_lp_loss", lp_loss, prog_bar=True)
+        self.log("test_total_loss", rp_loss + lp_loss)
+
+        # Metrics for tuples (relation prediction)
+        assert(tuples.size()[0] == logits_rp.size()[0])
+        logits_rp_only_positives = logits_rp[torch.arange(0, logits_rp.size()[0], self.test_num_negatives + 1)]
+        tuples_only_positives = tuples[torch.arange(0, tuples.size()[0], self.test_num_negatives + 1)]
+        self.calculate_and_log_test_relation_metrics(tuples_only_positives, logits_rp_only_positives)
+        self.calculate_and_log_test_links_metrics(tuples, logits_lp)
+    
+    def model_forward_tuples(self, batch):
+        return self.pathe_forward_step_tuples(batch)
+
+
+    def pathe_forward_step_tuples(self, batch, **kwargs):
         """
         PathE forward function for multi-paths relation prediction.
         """
         # batch = debug_single_path(batch, trim_paths=False, override_pos=True)
-        ent_paths, rel_paths = \
-            batch["net_input"]["ent_paths"], batch["net_input"]["rel_paths"]
+        ent_paths, rel_paths = batch["net_input"]["ent_paths"], batch["net_input"]["rel_paths"]
         head_idxs = batch["net_input"]["head_idxs"]
-        # tail_idxs = batch["net_input"]["tail_idxs"]
         entity_origin = batch["net_input"]["path_origins"]
         pos = batch["net_input"]["pos"]
         targets = batch["target"] - 2  # no PAD and MSK in the model output
         # FIXME this is going to change with the actual head-tail idxs from dataset
         head_idxs = head_idxs * 2
-        # tail_idxs = tail_idxs * 2
         ppt = batch["ppt"]
 
-        logits_rp, logits_lp = model(
+        logits_rp, logits_lp = self.model(
             ent_paths=ent_paths,
             rel_paths=rel_paths,
             head_idxs=head_idxs,
-            # tail_idxs=tail_idxs,
-            ppt=ppt, pos=pos,
+            ppt=ppt,
+            pos=pos,
             entity_origin=entity_origin,
-            targets=targets)
-        # loss_rp = criterion(logits_rp, batch["target"])
-        loss_rp = criterion(logits_rp, targets)
-        return logits_rp, loss_rp, logits_lp
+            targets=targets,
+            detach_link_head=self.link_head_detached
+        )
+        # loss_rp = self.criterion(logits_rp, targets)
+        return logits_rp, logits_lp
