@@ -879,10 +879,28 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         assert(tuples.size()[0] == logits_rp.size()[0])
         logits_rp_only_positives = logits_rp[torch.arange(0, logits_rp.size()[0], self.val_num_negatives + 1)]
         tuples_only_positives = tuples[torch.arange(0, tuples.size()[0], self.val_num_negatives + 1)]
-        self.calculate_and_log_val_relation_metrics(tuples_only_positives, logits_rp_only_positives)
-        self.calculate_and_log_val_links_metrics(tuples, logits_lp)
+
+        # Accumulate for epoch-level metric computation (avoid per-batch heavy metrics)
+        if not hasattr(self, "_val_acc"):
+            assert(batch_idx == 0), "Somehow accumulating validation data was not deleted in validation_epoch_end() after last epoch. Risking incorrect metrics!"
+            self._val_acc = {"tuples_rp": [], "tuples_lp": [], "logits_rp": [], "logits_lp": []}
+        else:
+            assert(batch_idx > 0), "Somehow accumulating validation data was not initialized in previous validation_steps. Risking incorrect metrics!"
+        self._val_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
+        self._val_acc["tuples_lp"].append(tuples.detach().cpu())
+        self._val_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
+        self._val_acc["logits_lp"].append(logits_lp.detach().cpu())
 
         return {"rp_loss": rp_loss, "lp_loss": lp_loss}
+
+    def validation_epoch_end(self, outputs):
+        if not hasattr(self, "_val_acc"):
+            logger.warning("validation_epoch_end() called without any accumulated validation data!")
+            return
+        # Rename accumulated validation data for usage in triples' metric calculation function
+        self._val_acc['triples_rp'] = self._val_acc.pop('tuples_rp')
+        self._val_acc['triples_lp'] = self._val_acc.pop('tuples_lp')
+        return super().validation_epoch_end(outputs)
 
     # quite similar to validation_step but with different logging names and metric calculation functions
     def test_step(self, batch, batch_idx):
