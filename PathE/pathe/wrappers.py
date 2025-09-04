@@ -518,6 +518,18 @@ class PathEModelWrapperTriples(LightningModule):
             if self.val_num_negatives == 0:
                 loss_rp = torch.mean(loss_rp)
 
+        # Accumulate for epoch-level metric computation (avoid per-batch heavy metrics)
+        if not hasattr(self, "_val_acc"):
+            assert(batch_idx == 0), "Somehow accumulating validation data was not deleted in validation_epoch_end() after last epoch. Risking incorrect metrics!"
+            self._val_acc = {
+                "triples_rp": [],
+                "triples_lp": [],
+                "logits_rp": [],
+                "logits_lp": []
+            }
+        else:
+            assert(batch_idx > 0), "Somehow accumulating validation data was not initialized in previous validation_steps. Risking incorrect metrics!"
+
         triples = batch['ori_triple']
         if self.val_num_negatives > 0:
             # FOR RELATION PREDICTION
@@ -525,7 +537,7 @@ class PathEModelWrapperTriples(LightningModule):
             logits_rp_only = logits_rp[torch.arange(0, logits_rp.size()[0],
                                                  self.val_num_negatives + 1)]
             # select the true triples
-            rp_only_triples = triples[
+            triples_rp_only = triples[
                 torch.arange(0, triples.size()[0],
                              self.val_num_negatives + 1)]
             # select the loss that corresponds to the true triples only
@@ -540,18 +552,58 @@ class PathEModelWrapperTriples(LightningModule):
             self.log("valid_loss_rp", loss_rp)
             self.log("valid_loss_lp", loss_lp)
             self.log("valid_loss", loss, prog_bar=True)
-            self.calculate_and_log_val_relation_metrics(
-                rp_only_triples, logits_rp_only)
-            self.calculate_and_log_val_links_metrics(triples, logits_lp)
+
+            # store what the per-batch code used to send to metric functions in validation_epoch_end()
+            self._val_acc["triples_rp"].append(triples_rp_only.detach().cpu())
+            self._val_acc["triples_lp"].append(triples.detach().cpu())
+            self._val_acc["logits_rp"].append(logits_rp_only.detach().cpu())
+            self._val_acc["logits_lp"].append(logits_lp.detach().cpu())
 
 
         else:
             loss = loss_rp
             self.log("valid_loss_rp", loss_rp)
             self.log("valid_loss", loss_rp, prog_bar=True)
-            self.calculate_and_log_val_relation_metrics(triples, logits_rp)
+            
+            # store what the per-batch code used to send to metric functions in validation_epoch_end()
+            self._val_acc["triples_rp"].append(triples.detach().cpu())
+            self._val_acc["logits_rp"].append(logits_rp.detach().cpu())
 
+    def validation_epoch_end(self, outputs):
+        """
+        Handles the end of a validation epoch by aggregating and processing validation data and calculating heavy metrics.
 
+        This method checks for accumulated validation data in self._val_acc, concatenates batches of triples and logits
+        for relation prediction (RP) and link prediction (LP), and computes corresponding metrics.
+        It ensures batch sizes are compatible. The reference to the accumulated validation data is deleted
+        after processing to prepare for the next epoch.
+
+        Args:
+            outputs (list): List of outputs from each validation step. Not used in the current implementation!
+
+        Raises:
+            AssertionError: If the batch size and logits size do not match for RP or LP tasks.
+        """
+        if not hasattr(self, "_val_acc"):
+            logger.warning("validation_epoch_end() called without any accumulated validation data!")
+            return
+        triples_rp = self._val_acc["triples_rp"]
+        triples_lp = self._val_acc["triples_lp"]
+        logits_rp = self._val_acc["logits_rp"]
+        logits_lp = self._val_acc["logits_lp"]
+
+        if len(triples_rp) >= 0 and len(logits_rp) >= 0:
+            triples_rp = torch.cat(triples_rp, dim=0)
+            logits_rp = torch.cat(logits_rp, dim=0)
+            assert(logits_rp.size(0) == triples_rp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
+            self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
+        if len(triples_lp) > 0 and len(logits_lp) > 0:
+            triples_lp = torch.cat(triples_lp, dim=0)
+            logits_lp = torch.cat(logits_lp, dim=0)
+            assert(logits_lp.size(0) == triples_lp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
+            self.calculate_and_log_val_links_metrics(triples_lp, logits_lp)
+        
+        del self._val_acc  # delete reference for next validation epoch
 
     def test_step(self, batch, batch_idx):
         if self.test_sub_batch_size is None:
