@@ -226,6 +226,48 @@ class KgLoader:
         # head_tuples = triples[:, 0:2]
         # tail_tuples = torch.stack((triples[:, 2], triples[:, 1]), dim=1)
         # tuples = torch.cat((head_tuples, tail_tuples), dim=0)
+    
+    @staticmethod
+    def build_relation_to_inverse_map(tuples, triple_factory: TriplesFactory) -> dict:
+        relation_to_inverse = {}
+        for r in tuples[:, 1]:
+            # triple_factory has stupid bug that get_inverse_relation_id does not work properly
+            # inverse_r = triple_factory.get_inverse_relation_id(r.item())
+            inverse_r = KgLoader.id_to_inverse_id(r.item(), tuples)
+            relation_to_inverse[r.item()] = inverse_r
+        return relation_to_inverse
+    
+    @staticmethod
+    # Map relation IDs to their inverse IDs quick and dirty fix for bug in triple_factory, really slow
+    def id_to_inverse_id(id: int, tuples_no_inv) -> int:
+        size = tuples_no_inv[:, 1].max().item()
+        return id + size if id in tuples_no_inv[:, 1] else id - size
+    
+    def generate_relation_to_inverse_map(self, part):
+        if not self.add_inverse:
+            return True
+        assert part in ['train', 'val', 'test'], "part must be one of 'train', 'val' or 'test'"
+        if self.dataset == 'fb15k237' or self.dataset == 'wn18rr' or \
+                self.dataset == 'codex-small' or self.dataset == 'codex-medium' \
+                or self.dataset == 'yago' or self.dataset == 'ogb-wikikg2' \
+                or self.dataset == 'codex-large' or self.dataset == 'wiki5m':
+            if part == 'train':
+                triples = self.train_no_inv
+                triple_factory = self.triple_factory.training
+            elif part == 'val':
+                triples = self.val_no_inv
+                triple_factory = self.triple_factory.validation
+            elif part == 'test':
+                triples = self.test_no_inv
+                triple_factory = self.triple_factory.testing
+        elif self.dataset == 'test-dataset':
+            if part == 'train':
+                triples, triple_factory = self.train_no_inv, self.triple_factory['training']
+            elif part == 'validation':
+                triples, triple_factory = self.val_no_inv, self.triple_factory['validation']
+            elif part == 'test':
+                triples, triple_factory = self.test_no_inv, self.triple_factory['testing']
+        return KgLoader.build_relation_to_inverse_map(triples, triple_factory)
 
     def count_and_save_edge_stats(self):
         """

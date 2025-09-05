@@ -55,7 +55,7 @@ class PathDataset:
         self.relational_context = None
         self.ht_relation = {}
         print("Saving tuple tensors...")
-        self.save_tuple_tensors()
+        self.save_tuple_tensor_and_dicts()
         print("Making relational context dataset...")
         self.make_relational_context_dataset()
         # self.make_path_between_dataset(num_paths=10)
@@ -657,7 +657,7 @@ class PathDataset:
                 json.dump(id2relation, f)
 
 
-    def save_tuple_tensors(self):
+    def save_tuple_tensor_and_dicts(self):
         """
         A function that saves the tuples of each part of the dataset as
         torch.tensors in tuples.pt
@@ -666,7 +666,7 @@ class PathDataset:
 
         """
         for part in self.graph:
-            print(f"Saving tuple tensor for split '{part}'...")
+            print(f"Saving tuple tensor and dict for split '{part}'...")
             if part == 'train':
                 tuples = self.dataset.train_tuples
             elif part == 'val':
@@ -676,6 +676,11 @@ class PathDataset:
 
             dirname = os.path.join(self.dataset_dir, part)
             torch.save(tuples, os.path.join(dirname, 'tuples.pt'))
+
+            relation2inverseRelation = self.dataset.generate_relation_to_inverse_map(part)
+            with open(os.path.join(dirname, 'relation2inverseRelation.json'), 'w') as f:
+                json.dump(relation2inverseRelation, f)
+
 
     def create_target_csv(self):
         """
