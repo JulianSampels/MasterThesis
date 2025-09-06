@@ -669,17 +669,18 @@ class PathDataset:
             print(f"Saving tuple tensor and dict for split '{part}'...")
             if part == 'train':
                 tuples = self.dataset.train_tuples
+                relation_to_inverse = self.dataset.train_relation_to_inverse
             elif part == 'val':
                 tuples = self.dataset.val_tuples
+                relation_to_inverse = self.dataset.val_relation_to_inverse
             elif part == 'test':
                 tuples = self.dataset.test_tuples
+                relation_to_inverse = self.dataset.test_relation_to_inverse
 
             dirname = os.path.join(self.dataset_dir, part)
             torch.save(tuples, os.path.join(dirname, 'tuples.pt'))
-
-            relation2inverseRelation = self.dataset.generate_relation_to_inverse_map(part)
             with open(os.path.join(dirname, 'relation2inverseRelation.json'), 'w') as f:
-                json.dump(relation2inverseRelation, f)
+                json.dump(relation_to_inverse, f)
 
 
     def create_target_csv(self):
@@ -942,7 +943,7 @@ class Verbalizer:
 
     def verbalize_path(self, path, path_type: str = None):
         """
-        A function that converts an id path into a lebel path, with each
+        A function that converts an id path into a label path, with each
         label separated by a comma
         @param path: the id path
         @type path: List
