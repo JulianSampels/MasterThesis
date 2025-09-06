@@ -753,7 +753,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         def model_forward_with_loss(batch):
             logits_rp, logits_lp = self.pathe_forward_step_tuples(batch)
             targets = batch["target"] - 2
-            loss_rp = self.rp_loss_fn(logits_rp, targets)
+            loss_rp = self.rp_criterion(logits_rp, targets) #use this instead of self.rp_loss_fn to get mean reduction in case of 0 negatives
             return logits_rp, loss_rp, logits_lp
         self.model_forward = model_forward_with_loss
 
@@ -898,8 +898,10 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             logger.warning("validation_epoch_end() called without any accumulated validation data!")
             return
         # Rename accumulated validation data for usage in triples' metric calculation function
-        self._val_acc['triples_rp'] = self._val_acc.pop('tuples_rp')
-        self._val_acc['triples_lp'] = self._val_acc.pop('tuples_lp')
+        if "tuples_rp" in self._val_acc:
+            self._val_acc['triples_rp'] = self._val_acc.pop('tuples_rp')
+        if "tuples_lp" in self._val_acc:
+            self._val_acc['triples_lp'] = self._val_acc.pop('tuples_lp')
         return super().validation_epoch_end(outputs)
 
     # quite similar to validation_step but with different logging names and metric calculation functions
