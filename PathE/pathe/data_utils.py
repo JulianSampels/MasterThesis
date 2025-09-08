@@ -1,3 +1,4 @@
+import json
 import os
 import glob
 import logging
@@ -499,6 +500,26 @@ def load_tuple_tensors(train_path, val_path, test_path):
     val_tuples = torch.load(os.path.join(val_path, 'tuples.pt'))
     test_tuples = torch.load(os.path.join(test_path, 'tuples.pt'))
     return train_tuples, val_tuples, test_tuples
+
+def load_relation2inverse_relation_from_file(json_folder_path: str):
+    """
+    Loads a relation2inverseRelation.json file and returns the mapping as a dictionary.
+
+    Parameters
+    ----------
+    json_folder_path : str
+        Path to the folder containing the relation2inverseRelation.json file.
+
+    Returns
+    -------
+    dict
+        A dictionary mapping original relation IDs to their inverse relation IDs.
+    """
+    with open(os.path.join(json_folder_path, 'relation2inverseRelation.json'), 'r') as f:
+        mapping = json.load(f)
+    # Convert keys and values to integers (since JSON keys are strings)
+    mapping = {int(k): int(v) for k, v in mapping.items()}
+    return mapping
 
 
 def load_corrupted_triples_from_dir(path: str):

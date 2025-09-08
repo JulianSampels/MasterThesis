@@ -44,6 +44,12 @@ def create_and_run_training_exp_tuples(args):
         args.train_paths, args.valid_paths, args.test_paths)
     train_triples, val_triples, test_triples = load_triple_tensors(
         args.train_paths, args.valid_paths, args.test_paths)
+
+    # Load relation to inverse relation mappings
+    train_relation_to_inverse = du.load_relation2inverse_relation_from_file(args.train_paths)
+    val_relation_to_inverse = du.load_relation2inverse_relation_from_file(args.valid_paths)
+    test_relation_to_inverse = du.load_relation2inverse_relation_from_file(args.test_paths)
+
     paths, relcon, _ = du.load_unrolled_setup(args.train_paths, args.path_setup)
 
     # Creating filtration dictionaries and utilities for link prediction
@@ -96,6 +102,7 @@ def create_and_run_training_exp_tuples(args):
         relcontext_store=relcon,
         tuple_store=train_tuples,
         context_triple_store=train_triples,
+        original_relation_to_inverse_relation=train_relation_to_inverse,
         maximum_tuple_paths=args.max_ppt,
         num_negatives=args.num_negatives,
         tuple_corruptor=tuple_corruptor,
@@ -113,6 +120,7 @@ def create_and_run_training_exp_tuples(args):
         relcontext_store=relcon,
         tuple_store=val_tuples,
         context_triple_store=train_triples,
+        original_relation_to_inverse_relation=val_relation_to_inverse,
         maximum_tuple_paths=args.max_ppt,
         tokens_to_idxs=tokens_to_idxs,
         num_negatives=args.val_num_negatives,
@@ -126,6 +134,7 @@ def create_and_run_training_exp_tuples(args):
         relcontext_store=relcon,
         tuple_store=test_tuples,
         context_triple_store=train_triples,
+        original_relation_to_inverse_relation=test_relation_to_inverse,
         maximum_tuple_paths=args.max_ppt,
         tokens_to_idxs=tokens_to_idxs,
         num_negatives=args.val_num_negatives,

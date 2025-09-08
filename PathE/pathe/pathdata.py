@@ -1193,6 +1193,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
                  relcontext_store: str,
                  tuple_store: torch.tensor,
                  context_triple_store: torch.tensor = None,
+                 original_relation_to_inverse_relation: Dict[int, int] = None,
                  tokens_to_idxs: Dict[int, int] = None,
                  maximum_tuple_paths = 50,
                  num_negatives: int = 0,
@@ -1213,6 +1214,8 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             A matrix holding (h, r) tuples.
         context_triple_store : torch.tensor
             If provided, these triples will be used for constructing paths.
+        original_relation_to_inverse_relation : Dict[int, int]
+            Mapping dictionary for encoding original relations to their inverse relations.
         tokens_to_idxs : Dict[int, int]
             Mapping dictionary for encoding tokens to proper idxs.
         maximum_tuple_paths : int
@@ -1238,6 +1241,10 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         self.ppe = maximum_tuple_paths  # paths per entity not divided by two as we have tuples and not triples (only one entity which needs paths)
         self.ppc = self.ppe // 2  # paths per entity context (in/out)
         
+
+        self.relation_inverser = self.generate_relation_inverser(original_relation_to_inverse_relation)
+        for rel in tuple_store[:, 1].unique():
+            print(f"Relation {rel.item()} maps to {self.relation_inverser[rel.item()]}")  # ensure all relations map to something
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved
         # relcontext_df = pd.read_csv(relcontext_store)
@@ -1346,3 +1353,13 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             "ori_triple": tuple, "path_origins": path_ori,
         }
 
+    @staticmethod
+    def generate_relation_inverser(original_relation_to_inverse: Dict[int, int]) -> Dict[int, int]:
+        """
+        Generate a mapping dictionary for encoding all relations (original and inverse) to their inverse relation.
+        """
+        relation_inverser = {}
+        for rel, inv in original_relation_to_inverse.items():
+            relation_inverser[rel] = inv
+            relation_inverser[inv] = rel
+        return relation_inverser
