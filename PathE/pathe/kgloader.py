@@ -56,6 +56,9 @@ class KgLoader:
         self.load_data()
         if self.triple_factory is None:
             raise Exception("Unable to load the selected dataset.")
+        self.train_relation_to_inverse = dict()
+        self.val_relation_to_inverse = dict()
+        self.test_relation_to_inverse = dict()
         self.load_success = self.prepare_triples() if not self.manually_add_inverse else self.prepare_manual_inverse_triples()
         if not self.load_success:
             raise Exception("Unable to prepare the selected dataset.")
