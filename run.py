@@ -12,7 +12,7 @@ dataset_name = 'codex-small'
 # dataset_name = 'ogb-wikikg2'
 
 # # 1. Load and split the dataset
-dataset = KgLoader(dataset_name, add_inverse=True)
+dataset = KgLoader(dataset_name, automatically_add_inverse=False, manually_add_inverse=True)
 # print(f'train triples count: {len(dataset.train_triples)}')
 # print(f'train tuples count: {len(dataset.train_tuples)}')
 

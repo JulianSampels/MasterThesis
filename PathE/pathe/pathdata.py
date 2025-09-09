@@ -1240,7 +1240,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         # Distributing path budget across entities (H, T) and contexts (in, out)
         self.ppe = maximum_tuple_paths  # paths per entity not divided by two as we have tuples and not triples (only one entity which needs paths)
         self.ppc = self.ppe // 2  # paths per entity context (in/out)
-        
+
 
         self.relation_inverser = self.generate_relation_inverser(original_relation_to_inverse_relation)
         for rel in tuple_store[:, 1].unique():
@@ -1352,7 +1352,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             "relation": self.tokens_to_idxs[rel.item()],
             "ori_triple": tuple, "path_origins": path_ori,
         }
-
+    
     @staticmethod
     def generate_relation_inverser(original_relation_to_inverse: Dict[int, int]) -> Dict[int, int]:
         """
