@@ -53,25 +53,19 @@ def create_and_run_training_exp_tuples(args):
     paths, relcon, _ = du.load_unrolled_setup(args.train_paths, args.path_setup)
 
     # Creating filtration dictionaries and utilities for link prediction
-    filtration_dict = triple_lib.make_relation_filter_dict_no_sp_tokens(
-        train_triples, val_triples, test_triples)
+    filtration_dict = triple_lib.make_relation_filter_dict_no_sp_tokens(train_triples, val_triples, test_triples)
     # used in evaluation to filter false negatives
     map_head_to_relationsets_tuples = triple_lib.make_relation_filter_dict_no_sp_tokens_tuples(train_tuples, val_tuples, test_tuples)
     map_relation_to_headsets_tuples = triple_lib.make_head_filter_dict_no_sp_tokens_tuples(train_tuples, val_tuples, test_tuples)
     # Creating the head and tail filtered dict for the triple corruptors
-    head_filter_dict, tail_filter_dict = triple_lib.make_head_tail_dicts(
-        train_triples, val_triples, test_triples)
-    unique_entities = triple_lib.get_unique_entities(
-        train_triples, val_triples, test_triples)
-    unique_relations = triple_lib.get_unique_relations(
-        train_triples, val_triples, test_triples)
-    class_weights = triple_lib.get_class_weights_without_special_tokens(
-        train_triples) if args.class_weigths else None
+    head_filter_dict, tail_filter_dict = triple_lib.make_head_tail_dicts(train_triples, val_triples, test_triples)
+    unique_entities = triple_lib.get_unique_entities(train_triples, val_triples, test_triples)
+    unique_relations = triple_lib.get_unique_relations(train_triples, val_triples, test_triples)
+    class_weights = triple_lib.get_class_weights_without_special_tokens(train_triples) if args.class_weigths else None
 
     # Creating the triple corruptors for head, tail, or both (merged) and
     # preserving the number of positive triples in case of H/T corruption
-    tr_positives, va_positives, te_positives = \
-        len(train_tuples), len(val_tuples), len(test_tuples)
+    tr_positives, va_positives, te_positives = len(train_tuples), len(val_tuples), len(test_tuples)
     tuple_corruptor = None  # instantiated only if num_negatives > 0
     if args.num_negatives:# > 0 and 
         if "r" in args.corruption:
@@ -156,12 +150,12 @@ def create_and_run_training_exp_tuples(args):
                   len(train_set), len(valid_set), len(test_set)))
     print(f"Vocabulary size (with special tokens): {len(tokens_to_idxs)}")
 
+    # Adjust batch sizes to be compatible with number of negatives
     if args.val_batch_size % (args.val_num_negatives + 1) != 0:
         positive_batches = args.val_batch_size // (args.val_num_negatives + 1)
         args.val_batch_size = positive_batches * (args.val_num_negatives + 1)
         # discarded_size = args.batch_size - fixed_bsize
-        logger.warning(f"Clamping val/test batch size to:"
-                       f" {args.val_batch_size}")
+        logger.warning(f"Clamping val/test batch size to: {args.val_batch_size}")
     if args.batch_size % (args.num_negatives + 1) != 0:
         positive_batches = args.batch_size // (args.num_negatives + 1)
         args.batch_size = positive_batches * (args.num_negatives + 1)
@@ -209,6 +203,9 @@ def create_and_run_training_exp_tuples(args):
         pathe_model=model,
         filtration_dict=map_head_to_relationsets_tuples,
         class_weights=class_weights,  # for rel imbalance
+        train_relation_maps=train_set.relation_maps,
+        val_relation_maps=valid_set.relation_maps,
+        test_relation_maps=test_set.relation_maps,
         **namespace_to_dict(args),  # model hparameters
     )
     # print(pl_model.model)  # keras-style model overview
