@@ -4,6 +4,7 @@ collate function in order to streamline data loading operations from arbitrary
 files. Collation is used to create batch by adding the perturbations.
 
 """
+from dataclasses import dataclass
 import math
 import logging
 import itertools
@@ -1241,10 +1242,8 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         self.ppe = maximum_tuple_paths  # paths per entity not divided by two as we have tuples and not triples (only one entity which needs paths)
         self.ppc = self.ppe // 2  # paths per entity context (in/out)
 
-
-        self.relation_inverser = self.generate_relation_inverser(original_relation_to_inverse_relation)
-        for rel in tuple_store[:, 1].unique():
-            print(f"Relation {rel.item()} maps to {self.relation_inverser[rel.item()]}")  # ensure all relations map to something
+        self.relation_maps = RelationMaps(original_relation_to_inverse_relation)
+        self.relation_maps.validate_relation_inverser(tuple_store)
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved
         # relcontext_df = pd.read_csv(relcontext_store)
@@ -1352,7 +1351,23 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             "relation": self.tokens_to_idxs[rel.item()],
             "ori_triple": tuple, "path_origins": path_ori,
         }
-    
+
+
+@dataclass
+class RelationMaps:
+    original_relations: set[int]
+    inverse_relations: set[int]
+    relation_inverser: dict[int, int]
+    original_relation_to_inverse_relation: Dict[int, int]
+    # relation_inverser_tensor: torch.Tensor
+
+    def __init__(self, original_relation_to_inverse_relation: Dict[int, int]):
+        self.original_relations = set(original_relation_to_inverse_relation.keys())
+        self.inverse_relations = set(original_relation_to_inverse_relation.values())
+        self.original_relation_to_inverse_relation = original_relation_to_inverse_relation
+        self.relation_inverser = self.generate_relation_inverser(original_relation_to_inverse_relation)
+        # self.relation_inverser_tensor = torch.tensor([self.relation_inverser[i] for i in range(len(self.relation_inverser))], dtype=torch.long)
+
     @staticmethod
     def generate_relation_inverser(original_relation_to_inverse: Dict[int, int]) -> Dict[int, int]:
         """
@@ -1363,3 +1378,9 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             relation_inverser[rel] = inv
             relation_inverser[inv] = rel
         return relation_inverser
+    
+    def validate_relation_inverser(self, tuple_store: torch.tensor):
+        for rel in tuple_store[:, 1].unique():
+            rel_inv = self.relation_inverser[rel.item()]
+            assert self.relation_inverser[rel_inv] == rel.item(), f"Relation {rel.item()} maps to {rel_inv}, which does not map back to {rel.item()}"
+        

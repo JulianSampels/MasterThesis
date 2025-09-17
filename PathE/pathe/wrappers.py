@@ -5,6 +5,7 @@ Scalable routines for training and finetuning a PathER model.
 
 import logging
 from functools import partial
+from typing import Optional
 
 import torch
 from torch import nn
@@ -14,6 +15,9 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
+import torch_scatter
+
+from PathE.pathe.pathdata import RelationMaps
 
 from .pathe_ranking_metrics import (RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples)
@@ -694,7 +698,11 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
                  train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
                  val_num_negatives=0, full_test=False, max_ppt=None, accumulate_gradient=1.0, 
                  margin=10, nssa_alpha=1, lp_loss_fn="nssa", link_head_detached: bool = True, use_manual_optimization: bool = False,
-                 loss_weight: float = 0.5, **hparams):
+                 loss_weight: float = 0.5, 
+                train_relation_maps: RelationMaps = None,
+                val_relation_maps: RelationMaps = None,
+                test_relation_maps: RelationMaps = None,
+                 **hparams):
         super().__init__(pathe_model, filtration_dict, num_negatives,
                          optimiser, scheduler, lr, momentum, weight_decay,
                          class_weights, label_smoothing,
@@ -709,6 +717,9 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.accumulate_gradient = accumulate_gradient
         self.use_manual_optimization = use_manual_optimization
         self.link_head_detached = link_head_detached
+        self.train_relation_maps = train_relation_maps
+        self.val_relation_maps = val_relation_maps
+        self.test_relation_maps = test_relation_maps
 
         # Set automatic optimization based on parameter
         self.automatic_optimization = not self.use_manual_optimization
@@ -810,7 +821,11 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         
         # Forward pass
         logits_rp, logits_lp = self.model_forward_tuples(batch)
-        
+
+        # generate triple candidates
+        tuples = batch['ori_triple']
+        triple_candidates, _val = self.build_triple_candidates(tuples, self.train_relation_maps, logits_rp, k=100)
+
         # Calculate separate losses
         targets = batch["target"] - 2
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
@@ -932,7 +947,205 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
     
     def model_forward_tuples(self, batch):
         return self.pathe_forward_step_tuples(batch)
+    
+    def build_triple_candidates_prototype_slow(self, tuples: torch.Tensor, relation_maps: RelationMaps, k:int=None, logits_rp: torch.Tensor=None):
+        all_candidates3 = []
+        entities, entity_ids_idxs = tuples[:, 0].unique(return_inverse=True, sorted=False)
+        if logits_rp is not None:
+            # num_entities = entity_ids_idxs.max().item() + 1
+            logits_rp = torch_scatter.scatter_mean(src=logits_rp, index=entity_ids_idxs, dim=0)
+            all_relations = torch.arange(logits_rp.size(1), device=logits_rp.device)
+            original_relations_in_random_order = torch.tensor(list(relation_maps.original_relations), device=tuples.device, dtype=tuples.dtype)
+            is_original = torch.isin(all_relations, original_relations_in_random_order)
+            logits_rp_original = logits_rp[:, is_original]
+            logits_rp_inverse = logits_rp[:, ~is_original]
+            original_relations = all_relations[is_original]
+            inverse_relations = all_relations[~is_original]
+            assert(logits_rp_original.size(1) == logits_rp_inverse.size(1))
+            probability_head_relation = logits_rp[:, is_original].softmax(dim=1)
+            probability_tail_relation = logits_rp[:, ~is_original].softmax(dim=1)
+        topk_candidates = []
+        num_entities = entities.size(0)
+        num_relations = original_relations.size(0)
+        assert(num_relations == logits_rp.size(1) // 2)
+        heads: torch.Tensor = entities.repeat_interleave(num_relations * num_entities)
+        # relations = torch.arange(num_relations, device=tuples.device).repeat(num_entities * num_entities)
+        relations = original_relations.repeat_interleave(num_entities).repeat(num_entities)
+        tails: torch.Tensor = entities.repeat(num_entities * num_relations)
+        topk_candidates = torch.stack((heads, relations, tails), dim=1)
+        assert(topk_candidates.size(0) == num_entities * num_relations * num_entities)
+        # print("all_candidates:", topk_candidates.shape, topk_candidates)
+        # print(f"logits_rp: {logits_rp.shape}")
+        map_entities_to_idx = {ent.item(): idx for idx, ent in enumerate(entities)}
+        map_heads_to_idx = {head.item(): idx for idx, head in enumerate(heads)}
+        map_tails_to_idx = {tail.item(): idx for idx, tail in enumerate(tails)}
+        map_original_relations_to_idx = {rel.item(): idx for idx, rel in enumerate(original_relations)}
+        map_inverse_relations_to_idx = {rel.item(): idx for idx, rel in enumerate(inverse_relations)}
+        heads_idxs = torch.tensor([map_entities_to_idx[h.item()] for h in heads], device=tuples.device, dtype=tuples.dtype)
+        tails_idxs = torch.tensor([map_entities_to_idx[t.item()] for t in tails], device=tuples.device, dtype=tuples.dtype)
+        relations_inv = torch.tensor([relation_maps.relation_inverser.get(r.item()) for r in relations], device=tuples.device, dtype=tuples.dtype)
+        prob_head_original_relations = probability_head_relation[heads_idxs, [map_original_relations_to_idx[r.item()] for r in relations]]
+        prob_tail_inverse_relations = probability_tail_relation[tails_idxs, [map_inverse_relations_to_idx[r.item()] for r in relations_inv]]
+        # print(f"max prob_head_original_relations: {prob_head_original_relations.shape}, {prob_head_original_relations.max().item()}, min: {prob_head_original_relations.min().item()}")
+        # print(f"max prob_tail_inverse_relations: {prob_tail_inverse_relations.shape}, {prob_tail_inverse_relations.max().item()}, min: {prob_tail_inverse_relations.min().item()}")
+        prob = prob_head_original_relations * prob_tail_inverse_relations
+        # relations_inv = relation_maps.relation_inverser_tensor[relations]
+        _val, triple_idxs = prob.topk(k=k, largest=True)
+        topk_candidates = topk_candidates[triple_idxs]
+        # print(f"_val: {_val.shape}, {_val}")
+        # print(f"topk_candidates: {topk_candidates.shape}, {topk_candidates}")
+        all_candidates_with_prob = torch.cat((topk_candidates, _val.unsqueeze(1)), dim=1)
+        # print(f"all_candidates_with_prob: {all_candidates_with_prob.shape}, {all_candidates_with_prob}")
 
+        # is_original = torch.isin(tuples[:, 1], original_relations)
+        # # Separate tuples into original and inverse based on relation indices
+        # # print(f"tuples: {tuples[:, 1].shape}, {tuples[:, 1]}")
+        # # print(f"original_relations: {original_relations.shape}, {original_relations}")
+        # tuples_original_idxs = torch.where(is_original)[0]
+        # tuples_inverse_idxs = torch.where(~is_original)[0]
+        # # print(f"tuples_original_idxs: {tuples_original_idxs.shape}, {tuples_original_idxs}")
+        # tuples_original = tuples[tuples_original_idxs]
+        # # print(f"tuples_original: {tuples_original.shape}, {tuples_original}")
+        # tuples_inverse = tuples[tuples_inverse_idxs]
+        # # Select top-k tuples based on logits if provided
+        # if logits_rp is not None and k is not None:
+        #     k = min(k, logits_rp.size(1))  # ensure k does not exceed number of relations
+        #     # print(f"logits_rp: {logits_rp.shape}, {logits_rp}")
+        #     # print(f"logits_rp[tuples_original_idxs]: {logits_rp[tuples_original_idxs].shape}")
+        #     original_top_k_idxs = logits_rp[tuples_original_idxs].topk(k=k, dim=1, largest=True).indices
+        #     # print(f"original_top_k_idxs: {original_top_k_idxs.shape}, {original_top_k_idxs}")
+        #     inverse_top_k_idxs = logits_rp[tuples_inverse_idxs].topk(k=k, dim=1, largest=True).indices
+        #     tuples_original = tuples_original[original_top_k_idxs]
+        #     # print(f"tuples_original after topk: {tuples_original.shape}, {tuples_original}")
+        #     tuples_inverse = tuples_inverse[inverse_top_k_idxs.squeeze()]
+        # # build candidates based on mapping of inverse relations
+        # # for inverse tuples, find all heads with the same (inversed) relation
+        # for tail, relation_inv in tuples_inverse:
+        #     relation = relation_maps.relation_inverser.get(relation_inv.item())
+        #     head_candidates_idxs = torch.where(tuples_original[:, 1] == relation)[0]
+        #     tuple_candidates = tuples_original[head_candidates_idxs]
+        #     tail_repeated = tail.repeat(tuple_candidates.size(0)).unsqueeze(1)
+        #     triple_candidates = torch.cat((tuple_candidates, tail_repeated), dim=1)
+        #     all_candidates3.append(triple_candidates)
+        
+        # all_candidates2 = []
+        # for rel_orig, rel_inv in relation_maps.original_relation_to_inverse_relation.items():
+        #     # Find all heads in tuples_original that match the original relation
+        #     head_candidates_idxs = torch.where(tuples_original[:, 1] == rel_orig)[0]
+        #     tail_candidates_idxs = torch.where(tuples_inverse[:, 1] == rel_inv)[0]
+            
+        #     if head_candidates_idxs.numel() > 0 and tail_candidates_idxs.numel() > 0:
+        #         tuple_candidates = tuples_original[head_candidates_idxs]
+        #         tail_candidates = tuples_inverse[tail_candidates_idxs][:, 0]
+
+        #         # print(f"rel_orig: {rel_orig}, rel_inv: {rel_inv}, tail_value: {tail_candidates}, tuple_candidates: {tuple_candidates.shape}, {tuple_candidates}")
+
+        #         # Create a repeated tensor for the tails and unsqueeze it
+        #         tuple_candidates_repeated = tuple_candidates.repeat(tail_candidates.size(0), 1)
+        #         tail_repeated = tail_candidates.repeat_interleave(tuple_candidates.size(0), dim=0).unsqueeze(1)
+        #         # print(f"tail_repeated: {tail_repeated.shape}, tuple_candidates_repeated: {tuple_candidates_repeated.shape}")
+                
+        #         triple_candidates = torch.cat((tuple_candidates_repeated, tail_repeated), dim=1)
+        #         all_candidates2.append(triple_candidates)
+        # # print(all_candidates, all_candidates2)
+        # print("candidates:", torch.vstack(all_candidates3).shape if all_candidates3 else (0,3))
+        # print("candidates2:", torch.vstack(all_candidates2).shape if all_candidates2 else (0,3))
+        return topk_candidates, _val
+
+
+    def build_triple_candidates(
+        self,
+        tuples: torch.Tensor,
+        relation_maps: RelationMaps,
+        logits_rp: torch.Tensor,
+        k: int = None
+    ):
+        """
+        Build candidate (head, relation, tail) triples and their joint probabilities.
+
+        Steps (brief):
+        - Mean-aggregate per-sample logits to a per-head representation.
+        - Split logits into original / inverse relation groups and softmax each.
+        - Compute joint probs via log-space addition: log P = log P(r|head) + log P(inv_r|tail).
+        - Return either all E*R*E candidates or the top-k by joint probability.
+
+        Args:
+            tuples: tensor with entity ids in column 0 (num_samples, 2).
+            relation_maps: relation mapping (original/inverse).
+            logits_rp: per-sample logits (num_samples, total_relations).
+            k: None => return all candidates, else top-k.
+
+        Returns:
+            candidates: (N,3) tensor of (head_id, relation_id, tail_id)
+            scores: (N,) joint probabilities
+        """
+        assert logits_rp is not None, "logits_rp required."
+
+        # 1. Collect unique head entities
+        entities, inverse_entity_indices = tuples[:, 0].unique(return_inverse=True, sorted=False)
+        E = entities.size(0)
+
+        # 2. Aggregate logits per local head index
+        # logits_rp_grouped: (E, R_total)
+        logits_rp_grouped = torch_scatter.scatter_mean(logits_rp, inverse_entity_indices, dim=0)
+        device = logits_rp_grouped.device
+
+        # 3. Resolve original & inverse relation ids (assume complete mapping)
+        original_relations = torch.tensor(list(relation_maps.original_relations), device=device, dtype=torch.long)
+        inverse_relations = torch.tensor(list(relation_maps.inverse_relations), device=device, dtype=torch.long)
+        assert original_relations.numel() == inverse_relations.numel(), "Mismatch originals/inverses."
+        assert logits_rp_grouped.size(1) == 2 * original_relations.numel(), "logits_rp size mismatch."
+        R = original_relations.size(0)
+
+        # 4. Slice logits for original and inverse relation columns
+        head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
+        tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
+
+        # 5. Softmax to probabilities per subset
+        probs_head = head_logits_subset.softmax(dim=1)  # P(r | head_local)
+        probs_tail = tail_logits_subset.softmax(dim=1)  # P(inv_r | tail_local)
+
+        # 6. Compute joint log probs (E, R, E) using local indices (0..E-1) using log-prob trick for numerical stability
+        log_p_head = torch.log(probs_head + 1e-12).unsqueeze(2)                 # (E, R, 1)
+        log_p_tail = torch.log(probs_tail + 1e-12).transpose(0,1).unsqueeze(0)  # (1, R, E)
+        log_joint = log_p_head + log_p_tail                                     # (E, R, E)
+
+        if k is None:
+            # Materialize all
+            # Local index tensors
+            h_local = torch.arange(E, device=device).view(E, 1, 1).expand(E, R, E).reshape(-1)  # (E*R*E,)
+            r_local = torch.arange(R, device=device).view(1, R, 1).expand(E, R, E).reshape(-1)  # (E*R*E,)
+            t_local = torch.arange(E, device=device).view(1, 1, E).expand(E, R, E).reshape(-1)  # (E*R*E,)
+
+            # Map local indices back to original IDs
+            # heads_tensor = entities[h_local]
+            # rels_tensor = original_relations[r_local]
+            # tails_tensor = entities[t_local]
+
+            # candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)  # (E*R*E, 3)
+            scores = torch.exp(log_joint.reshape(-1))                                   # (E*R*E,)
+        else:
+            # 7. Top-k selection without assuming entity id consecutiveness (we only use local indices)
+            log_joint_flat = log_joint.reshape(-1)               # (E*R*E,)
+            total = log_joint_flat.numel()
+            K = min(k, total)
+
+            top_log_vals, flat_indices = torch.topk(log_joint_flat, K, largest=True)
+            scores = torch.exp(top_log_vals)
+
+            ER = R * E
+            h_local = flat_indices // ER    # (K,)
+            rem = flat_indices % ER
+            r_local = rem // E              # (K,)
+            t_local = rem % E               # (K,) 
+
+        # Map local back to original IDs
+        heads_tensor = entities[h_local]
+        rels_tensor = original_relations[r_local]
+        tails_tensor = entities[t_local]
+        candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)  # (K, 3) or (E*R*E, 3)
+
+        return candidates, scores
 
     def pathe_forward_step_tuples(self, batch, **kwargs):
         """
