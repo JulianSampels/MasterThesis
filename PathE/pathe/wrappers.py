@@ -822,9 +822,10 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # Forward pass
         logits_rp, logits_lp = self.model_forward_tuples(batch)
 
-        # generate triple candidates
-        tuples = batch['ori_triple']
-        triple_candidates, _val = self.build_triple_candidates(tuples, self.train_relation_maps, logits_rp, k=100)
+        # # generate triple candidates
+        # tuples = batch['ori_triple']
+        # triple_candidates, _val = self.build_triple_candidates(tuples, self.train_relation_maps, logits_rp, k=100)
+        # print(f"Generated {triple_candidates.size(0)} triple candidates for {tuples.size(0)} input tuples: {triple_candidates[:5,:]} ..., {_val[:5]} ...")
 
         # Calculate separate losses
         targets = batch["target"] - 2
@@ -947,7 +948,6 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
     
     def model_forward_tuples(self, batch):
         return self.pathe_forward_step_tuples(batch)
-    
 
     def build_triple_candidates(
         self,
@@ -990,7 +990,8 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         original_relations = torch.tensor(list(relation_maps.original_relations), device=device, dtype=torch.long)
         inverse_relations = torch.tensor(list(relation_maps.inverse_relations), device=device, dtype=torch.long)
         assert original_relations.numel() == inverse_relations.numel(), "Mismatch originals/inverses."
-        assert logits_rp_grouped.size(1) == 2 * original_relations.numel(), "logits_rp size mismatch."
+        # the following assert is not needed as we use local indices now and therefore smaller relation subsets should still work fine
+        # assert logits_rp_grouped.size(1) == 2 * original_relations.numel(), "logits_rp size mismatch."
         R = original_relations.size(0)
 
         # 4. Slice logits for original and inverse relation columns
