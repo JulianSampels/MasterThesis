@@ -73,8 +73,8 @@ def pathe_forward_step(model, criterion, batch, **kwargs):
     PathE forward function for multi-paths relation prediction.
     """
     # batch = debug_single_path(batch, trim_paths=False, override_pos=True)
-    ent_paths, rel_paths = \
-        batch["net_input"]["ent_paths"], batch["net_input"]["rel_paths"]
+    ent_paths = batch["net_input"]["ent_paths"]
+    rel_paths = batch["net_input"]["rel_paths"]
     head_idxs = batch["net_input"]["head_idxs"]
     tail_idxs = batch["net_input"]["tail_idxs"]
     entity_origin = batch["net_input"]["path_origins"]
@@ -171,13 +171,14 @@ class PathEModelWrapperTriples(LightningModule):
             self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
             self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
-        # Defining losses for CLS objectives
-        self.rp_criterion = nn.CrossEntropyLoss(
+        # Losses
+        # self.rp_criterion = torch.nn.MultiMarginLoss(weight=class_weights, margin=margin)
+
+        self.rp_loss_fn = nn.CrossEntropyLoss(
             weight=self.class_weights,
-            reduction=loss_reduction,
+            reduction="none",
             label_smoothing=label_smoothing)
-        # self.rp_criterion = torch.nn.MultiMarginLoss(weight=class_weights,
-        #                                              margin=margin)
+        
         if lp_loss_fn == "bce":
             self.lp_loss_fn = self.calculate_lp_bce
         elif lp_loss_fn == "ce":
@@ -185,10 +186,6 @@ class PathEModelWrapperTriples(LightningModule):
         elif lp_loss_fn == "nssa":
             self.lp_loss_fn = partial(
                 self.calculate_lp_nssa, alpha=nssa_alpha, gamma=margin)
-
-        self.model_forward = partial(
-            pathe_forward_step, model=self.model,
-            criterion=self.rp_criterion)
 
     def calculate_lp_bce(self, logits, num_negatives):
         """
@@ -205,14 +202,12 @@ class PathEModelWrapperTriples(LightningModule):
         labels = torch.zeros((logits.size()[0]),
                              dtype=torch.float32).to(self.device)
         # make the labels of the true triples 1
-        labels[torch.arange(0, labels.size()[0], num_negatives + 1)] = 1.
+        labels[torch.arange(0, labels.size()[0], num_negatives + 1, device=labels.device)] = 1.
         # calculate the weight matrix
-        downweigh_negs = torch.ones_like(labels) / num_negatives
+        downweigh_negs: torch.Tensor = torch.ones_like(labels) / num_negatives
         # set the weights of true triple to 1
-        downweigh_negs[
-            torch.arange(0, labels.size()[0], num_negatives + 1)] = 1.
-        loss = nn.functional.binary_cross_entropy_with_logits(
-            logits.squeeze(), labels, reduction="none")
+        downweigh_negs[torch.arange(0, labels.size()[0], num_negatives + 1, device=downweigh_negs.device)] = 1.
+        loss = nn.functional.binary_cross_entropy_with_logits(logits.squeeze(), labels, reduction="none")
         loss = (loss * downweigh_negs).sum(dim=-1) / downweigh_negs.sum(dim=-1)
         return loss
 
@@ -229,8 +224,7 @@ class PathEModelWrapperTriples(LightningModule):
         scores_unpacked = logits.reshape(logits.size()[0] //
                                          (num_negatives + 1),
                                          num_negatives + 1)
-        labels = torch.zeros((scores_unpacked.size()[0]),
-                             dtype=torch.int64, device=self.device)
+        labels = torch.zeros((scores_unpacked.size()[0]), dtype=torch.int64, device=self.device)
         loss_lp = torch.mean(nn.functional.cross_entropy(scores_unpacked, labels))
         return loss_lp
 
@@ -262,36 +256,48 @@ class PathEModelWrapperTriples(LightningModule):
         loss = (positive_sample_loss + negative_sample_loss) / 2
         return loss
 
-    def training_step(self, batch, batch_idx):
-        if self.train_sub_batch_size is None:
-            logits_rp, loss_rp, logits_lp = self.model_forward(batch=batch)
-        else:
-            logits_rp, loss_rp, logits_lp = self.sub_batch(batch=batch,
-                                sub_batch_size=self.train_sub_batch_size)
-            if self.train_num_negatives == 0:
-                loss_rp = torch.mean(loss_rp)
+    def compute_rp_loss(self, logits, targets, num_negatives: int):
+        """
+        CrossEntropy loss:
+        - if negatives > 0: take only the positive indices and average
+        - else: mean over the whole batch
+        """
+        loss_vec = self.rp_loss_fn(logits, targets)
+        if num_negatives > 0:
+            assert loss_vec.size(0) % (num_negatives + 1) == 0, \
+                "Incompatible loss size and negative sample sizes."
+            pos_idx = torch.arange(0, loss_vec.size(0), num_negatives + 1, device=loss_vec.device)
+            return loss_vec[pos_idx].mean()
+        return loss_vec.mean()
 
+    def compute_lp_loss(self, logits, num_negatives: int):
+        return self.lp_loss_fn(logits, num_negatives)
+
+    def training_step(self, batch, batch_idx):
+        # Forward pass
+        if self.train_sub_batch_size is None:
+            logits_rp, logits_lp = self.model_forward(batch=batch)
+        else:
+            logits_rp, logits_lp = self.sub_batch(batch=batch, sub_batch_size=self.train_sub_batch_size)
+
+        targets = batch["target"] - 2  # no PAD and MSK in the model output
+
+        # Compute losses
+        rp_loss = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
         if self.train_num_negatives > 0:
-            # FOR RELATION PREDICTION
-            # select the loss that corresponds to the true triples only
-            assert(loss_rp.size(0) % (self.val_num_negatives + 1) == 0), "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!"
-            loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0],
-                                                   self.train_num_negatives + 1)])
-            loss_lp = self.lp_loss_fn(logits_lp, self.train_num_negatives)
-            loss = (self.loss_weight * loss_lp) + \
-                   ((1.0 - self.loss_weight) * loss_rp)
-            self.log("train_loss_rp", loss_rp)
-            self.log("train_loss_lp", loss_lp)
+            lp_loss = self.compute_lp_loss(logits_lp, self.train_num_negatives)
+            loss = (self.loss_weight * lp_loss) +  ((1.0 - self.loss_weight) * rp_loss)
+            self.log("train_loss_rp", rp_loss)
+            self.log("train_loss_lp", lp_loss)
             self.log("train_loss", loss, prog_bar=True)
             if torch.isnan(loss):
                 logger.warning("Training stopped due to NaN loss.")
                 self.trainer.should_stop = True
                 self.trainer.limit_val_batches = 0
-
         else:
-            loss = loss_rp
-            self.log("train_loss_rp", loss_rp)
-            self.log("train_loss", loss_rp, prog_bar=True)
+            loss = rp_loss
+            self.log("train_loss_rp", rp_loss)
+            self.log("train_loss", rp_loss, prog_bar=True)
 
         # make_dot(loss, params=dict(self.model.named_parameters())).render(
         #     "attachedavg", format="png")
@@ -393,8 +399,6 @@ class PathEModelWrapperTriples(LightningModule):
                  on_step=False,
                  on_epoch=True)
 
-
-
     def sub_batch(self, batch, sub_batch_size):
         """
         A function that sub batches the evaluation so that it fits into GPU
@@ -417,11 +421,8 @@ class PathEModelWrapperTriples(LightningModule):
         # these are initialized using the number of triples as we cannot
         # separate the paths belonging to each triple (would mess up the
         # attention and aggregation)
-        logits_rp = torch.zeros((batch_size[0], rp_out_size),
-                                dtype=torch.float32)
+        logits_rp = torch.zeros((batch_size[0], rp_out_size), dtype=torch.float32)
         logits_lp = torch.zeros((batch_size[0]), dtype=torch.float32)
-        # loss_lp = torch.zeros(batch_size[0], dtype=torch.float32)
-        loss_rp = torch.zeros(batch_size[0], dtype=torch.float32)
         # get the paths per triple
         ppt = batch["ppt"]
         # if the sub_batch size is smaller than the max number of paths per
@@ -457,74 +458,55 @@ class PathEModelWrapperTriples(LightningModule):
             # in slicing is exclusive
             # create the sub batch dictionary
             sub_batch = {
-                "id": batch["id"][initial_triple:
-                                  triple_offset],
-                "ppt": batch["ppt"][initial_triple:
-                                    triple_offset],
+                "id": batch["id"][initial_triple:triple_offset],
+                "ppt": batch["ppt"][initial_triple:triple_offset],
                 "net_input": {
-                    "ent_paths": batch["net_input"]["ent_paths"][initial:
-                                                                 initial +
-                                                                 path_offset,
-                                 :],
-                    "rel_paths": batch["net_input"]["rel_paths"][initial:
-                                                                 initial +
-                                                                 path_offset,
-                                 :],
-                    "ent_lengths": batch["net_input"]["ent_lengths"][initial:
-                                                                     initial +
-                                                                     path_offset],
-                    "head_idxs": batch["net_input"]["head_idxs"][initial:
-                                                                 initial +
-                                                                 path_offset],
-                    "tail_idxs": batch["net_input"]["tail_idxs"][initial:
-                                                                 initial +
-                                                                 path_offset],
-                    "path_origins": batch["net_input"]["path_origins"][initial:
-                                                                 initial +
-                                                                 path_offset],
-                    "pos": batch["net_input"]["pos"][initial:
-                                                                 initial +
-                                                                 path_offset,
-                                 :],
+                    "ent_paths": batch["net_input"]["ent_paths"][initial: initial + path_offset, :],
+                    "rel_paths": batch["net_input"]["rel_paths"][initial: initial + path_offset, :],
+                    "ent_lengths": batch["net_input"]["ent_lengths"][initial: initial + path_offset],
+                    "head_idxs": batch["net_input"]["head_idxs"][initial: initial + path_offset],
+                    "tail_idxs": batch["net_input"]["tail_idxs"][initial: initial + path_offset],
+                    "path_origins": batch["net_input"]["path_origins"][initial: initial + path_offset],
+                    "pos": batch["net_input"]["pos"][initial: initial + path_offset, :],
                 },
-                "target": batch["target"][initial_triple:
-                                          triple_offset],
-                "ori_triple": batch["ori_triple"][initial_triple:
-                                          triple_offset,:],
+                "target": batch["target"][initial_triple: triple_offset],
+                "ori_triple": batch["ori_triple"][initial_triple: triple_offset, :],
             }
 
             # get the model outputs and losses for the sub batch
-            sb_logits_rp, sb_loss_rp, sb_logits_lp = self.model_forward(
-                batch=sub_batch)
+            sb_logits_rp, sb_logits_lp = self.model_forward(batch=sub_batch)
             # aggregate the results in the aggregation tensors
-            logits_rp[initial_triple: triple_offset,
-            :] = sb_logits_rp
+            logits_rp[initial_triple: triple_offset, :] = sb_logits_rp
             logits_lp[initial_triple: triple_offset] = sb_logits_lp.squeeze()
-            loss_rp[initial_triple: triple_offset] = sb_loss_rp
+
             # increase the starting indices to slice the next sub_batch
             initial = initial + path_offset
             initial_triple = triple_offset
         return (logits_rp.to(torch.device(model_device)),
-                loss_rp.to(torch.device(model_device)),
                 logits_lp.to(torch.device(model_device)))
-
-
-
-
-
 
     def validation_step(self, batch, batch_idx):
         if self.val_sub_batch_size is None:
-            logits_rp, loss_rp, logits_lp = self.model_forward(batch=batch)
+            logits_rp, logits_lp = self.model_forward(batch=batch)
         else:
-            logits_rp, loss_rp, logits_lp = self.sub_batch(batch=batch,
-                                    sub_batch_size=self.val_sub_batch_size)
-            if self.val_num_negatives == 0:
-                loss_rp = torch.mean(loss_rp)
+            logits_rp, logits_lp = self.sub_batch(batch=batch, sub_batch_size=self.val_sub_batch_size)
 
-        # Accumulate for epoch-level metric computation (avoid per-batch heavy metrics)
+        targets = batch["target"] - 2
+        triples = batch['ori_triple']
+
+        # Compute and log losses
+        rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
+        self.log("valid_rp_loss", rp_loss, prog_bar=True)
+        if self.val_num_negatives > 0:
+            lp_loss = self.compute_lp_loss(logits_lp, self.val_num_negatives)
+            self.log("valid_lp_loss", lp_loss, prog_bar=True)
+            self.log("valid_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss), prog_bar=True)
+        else:
+            self.log("valid_total_loss", rp_loss, prog_bar=True)
+
+        # Accumulate for epoch-level metrics
         if not hasattr(self, "_val_acc"):
-            assert(batch_idx == 0), "Somehow accumulating validation data was not deleted in validation_epoch_end() after last epoch. Risking incorrect metrics!"
+            assert(batch_idx == 0), "Accumulation not cleared from previous epoch."
             self._val_acc = {
                 "triples_rp": [],
                 "triples_lp": [],
@@ -532,44 +514,20 @@ class PathEModelWrapperTriples(LightningModule):
                 "logits_lp": []
             }
         else:
-            assert(batch_idx > 0), "Somehow accumulating validation data was not initialized in previous validation_steps. Risking incorrect metrics!"
+            assert(batch_idx > 0), "Accumulation not initialized properly."
 
-        triples = batch['ori_triple']
         if self.val_num_negatives > 0:
-            # FOR RELATION PREDICTION
-            # select the logits of the true triple
-            logits_rp_only = logits_rp[torch.arange(0, logits_rp.size()[0],
-                                                 self.val_num_negatives + 1)]
-            # select the true triples
-            triples_rp_only = triples[
-                torch.arange(0, triples.size()[0],
-                             self.val_num_negatives + 1)]
-            # select the loss that corresponds to the true triples only
-            assert(len(triples) % (self.val_num_negatives + 1) == 0), "Incompatible batch and negative sample sizes probably something when wrong with the batch size when generating negatives!"
-            assert(loss_rp.size(0) % (self.val_num_negatives + 1) == 0), "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!"
-            loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0],
-                                                   self.val_num_negatives + 1)])
-            # compute and log the losses
-            loss_lp = self.lp_loss_fn(logits_lp, self.val_num_negatives)
-            loss = (self.loss_weight * loss_lp) + \
-                   ((1.0 - self.loss_weight) * loss_rp)
-            self.log("valid_loss_rp", loss_rp)
-            self.log("valid_loss_lp", loss_lp)
-            self.log("valid_loss", loss, prog_bar=True)
+            # Select only the positives for relation metrics
+            assert logits_rp.size(0) % (self.val_num_negatives + 1) == 0, "Incompatible batch and negatives."
+            pos_idx = torch.arange(0, logits_rp.size(0), self.val_num_negatives + 1)
+            logits_rp_only = logits_rp[pos_idx]
+            triples_rp_only = triples[pos_idx]
 
-            # store what the per-batch code used to send to metric functions in validation_epoch_end()
             self._val_acc["triples_rp"].append(triples_rp_only.detach().cpu())
             self._val_acc["triples_lp"].append(triples.detach().cpu())
             self._val_acc["logits_rp"].append(logits_rp_only.detach().cpu())
             self._val_acc["logits_lp"].append(logits_lp.detach().cpu())
-
-
         else:
-            loss = loss_rp
-            self.log("valid_loss_rp", loss_rp)
-            self.log("valid_loss", loss_rp, prog_bar=True)
-            
-            # store what the per-batch code used to send to metric functions in validation_epoch_end()
             self._val_acc["triples_rp"].append(triples.detach().cpu())
             self._val_acc["logits_rp"].append(logits_rp.detach().cpu())
 
@@ -611,49 +569,34 @@ class PathEModelWrapperTriples(LightningModule):
 
     def test_step(self, batch, batch_idx):
         if self.test_sub_batch_size is None:
-            logits_rp, loss_rp, logits_lp = self.model_forward(batch=batch)
+            logits_rp, logits_lp = self.model_forward(batch=batch)
         else:
-            logits_rp, loss_rp, logits_lp = self.sub_batch(batch=batch,
-                                sub_batch_size=self.test_sub_batch_size)
-            if self.test_num_negatives == 0:
-                loss_rp = torch.mean(loss_rp)
+            logits_rp, logits_lp = self.sub_batch(batch=batch, sub_batch_size=self.test_sub_batch_size)
 
+        targets = batch["target"] - 2
         triples = batch['ori_triple']
+
+        # Compute and log losses
+        rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
+        self.log("test_rp_loss", rp_loss, prog_bar=True)
         if self.test_num_negatives > 0:
-            # FOR RELATION PREDICTION
-            # select the logits of the true triple
-            logits_rp_only = logits_rp[torch.arange(0, logits_rp.size()[0],
-                                                 self.test_num_negatives + 1)]
-            # select the true triples
-            rp_only_triples = triples[
-                torch.arange(0, triples.size()[0],
-                             self.test_num_negatives + 1)]
-            # select the loss that corresponds to the true triples only
-            assert(len(triples) % (self.val_num_negatives + 1) == 0), "Incompatible batch and negative sample sizes probably something when wrong with the batch size when generating negatives!"
-            assert(loss_rp.size(0) % (self.val_num_negatives + 1) == 0), "Incompatible loss size and negative sample sizes probably something when wrong with the batch size when generating negatives!"
-            loss_rp = torch.mean(loss_rp[torch.arange(0, loss_rp.size()[0],
-                                                   self.test_num_negatives + 1)])
-            # compute and log the losses
-            loss_lp = self.lp_loss_fn(logits_lp, self.test_num_negatives)
-            loss = (self.loss_weight * loss_lp) + \
-                   ((1.0 - self.loss_weight) * loss_rp)
-            self.log("test_loss_rp", loss_rp)
-            self.log("test_loss_lp", loss_lp)
-            self.log("test_loss", loss, prog_bar=True)
-            self.calculate_and_log_test_relation_metrics(
-                rp_only_triples, logits_rp_only)
-
-            self.calculate_and_log_test_links_metrics(triples, logits_lp)
-
-
+            lp_loss = self.compute_lp_loss(logits_lp, self.test_num_negatives)
+            self.log("test_lp_loss", lp_loss, prog_bar=True)
+            self.log("test_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss), prog_bar=True)
         else:
-            loss = loss_rp
-            self.log("test_loss_rp", loss_rp)
-            self.log("test_loss", loss_rp, prog_bar=True)
+            self.log("test_total_loss", rp_loss, prog_bar=True)
+
+        # Metrics
+        if self.test_num_negatives > 0:
+            assert logits_rp.size(0) % (self.test_num_negatives + 1) == 0, "Incompatible batch and negatives."
+            pos_idx = torch.arange(0, logits_rp.size(0), self.test_num_negatives + 1)
+            logits_rp_only = logits_rp[pos_idx]
+            triples_rp_only = triples[pos_idx]
+
+            self.calculate_and_log_test_relation_metrics(triples_rp_only, logits_rp_only)
+            self.calculate_and_log_test_links_metrics(triples, logits_lp)
+        else:
             self.calculate_and_log_test_relation_metrics(triples, logits_rp)
-
-
-
 
     def configure_optimizers(self):
         """
@@ -684,6 +627,39 @@ class PathEModelWrapperTriples(LightningModule):
         if self.scheduler != "none":
             raise NotImplementedError()
         return opt_dict  # makes distinction among optimisers and schedulers
+    
+    def model_forward(self, batch):
+        return self.pathe_forward_step_triples(batch=batch)
+
+    def pathe_forward_step_triples(self, batch, **kwargs):
+        """
+        PathE forward function for multi-paths relation prediction.
+        """
+        # batch = debug_single_path(batch, trim_paths=False, override_pos=True)
+        ent_paths = batch["net_input"]["ent_paths"]
+        rel_paths = batch["net_input"]["rel_paths"]
+        head_idxs = batch["net_input"]["head_idxs"]
+        tail_idxs = batch["net_input"]["tail_idxs"]
+        entity_origin = batch["net_input"]["path_origins"]
+        pos = batch["net_input"]["pos"]
+        targets = batch["target"] - 2  # no PAD and MSK in the model output
+        ppt = batch["ppt"]
+
+        # FIXME this is going to change with the actual head-tail idxs from dataset
+        head_idxs = head_idxs * 2
+        tail_idxs = tail_idxs * 2
+
+        logits_rp, logits_lp = self.model(
+            ent_paths=ent_paths,
+            rel_paths=rel_paths,
+            head_idxs=head_idxs,
+            tail_idxs=tail_idxs,
+            ppt=ppt, 
+            pos=pos,
+            entity_origin=entity_origin,
+            targets=targets)
+        return logits_rp, logits_lp
+
 
 class PathEModelWrapperTuples(PathEModelWrapperTriples):
     """
@@ -760,14 +736,6 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
         self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
-        # only used for compatibility when not using manual optimization
-        def model_forward_with_loss(batch):
-            logits_rp, logits_lp = self.pathe_forward_step_tuples(batch)
-            targets = batch["target"] - 2
-            loss_rp = self.rp_criterion(logits_rp, targets) #use this instead of self.rp_loss_fn to get mean reduction in case of 0 negatives
-            return logits_rp, loss_rp, logits_lp
-        self.model_forward = model_forward_with_loss
-
     def configure_optimizers(self):
         if self.use_manual_optimization:
             # perhaps consider adding other optimizers as in triples version
@@ -820,7 +788,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         relation_opt, link_opt = self.optimizers()
         
         # Forward pass
-        logits_rp, logits_lp = self.model_forward_tuples(batch)
+        logits_rp, logits_lp = self.model_forward(batch)
 
         # # generate triple candidates
         # tuples = batch['ori_triple']
@@ -878,7 +846,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             return super().validation_step(batch, batch_idx)
 
         # Forward pass
-        logits_rp, logits_lp = self.model_forward_tuples(batch)
+        logits_rp, logits_lp = self.model_forward(batch)
         targets = batch["target"] - 2
         tuples = batch['ori_triple']
 
@@ -920,13 +888,23 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             self._val_acc['triples_lp'] = self._val_acc.pop('tuples_lp')
         return super().validation_epoch_end(outputs)
 
+    def predict_step(self, batch, batch_idx, dataloader_idx = 0):
+        logits_rp, logits_lp = self.pathe_forward_step_tuples(batch)
+        tuples = batch['ori_triple']  # (num_samples, 2) -> (h, r)
+        return {
+            "tuples": tuples.detach().cpu(),
+            "logits_rp": logits_rp.detach().cpu(),
+            "logits_lp": logits_lp.detach().cpu()
+        }
+    
+    
     # quite similar to validation_step but with different logging names and metric calculation functions
     def test_step(self, batch, batch_idx):
         if not self.use_manual_optimization:
             return super().test_step(batch, batch_idx)
 
         # Forward pass
-        logits_rp, logits_lp = self.model_forward_tuples(batch)
+        logits_rp, logits_lp = self.model_forward(batch)
         targets = batch["target"] - 2
         tuples = batch['ori_triple']
 
@@ -946,9 +924,36 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.calculate_and_log_test_relation_metrics(tuples_only_positives, logits_rp_only_positives)
         self.calculate_and_log_test_links_metrics(tuples, logits_lp)
     
-    def model_forward_tuples(self, batch):
+    def model_forward(self, batch):
         return self.pathe_forward_step_tuples(batch)
 
+    def pathe_forward_step_tuples(self, batch, **kwargs):
+        """
+        PathE forward function for multi-paths relation prediction.
+        """
+        # batch = debug_single_path(batch, trim_paths=False, override_pos=True)
+        ent_paths, rel_paths = batch["net_input"]["ent_paths"], batch["net_input"]["rel_paths"]
+        head_idxs = batch["net_input"]["head_idxs"]
+        entity_origin = batch["net_input"]["path_origins"]
+        pos = batch["net_input"]["pos"]
+        targets = batch["target"] - 2  # no PAD and MSK in the model output
+        # FIXME this is going to change with the actual head-tail idxs from dataset
+        head_idxs = head_idxs * 2
+        ppt = batch["ppt"]
+
+        logits_rp, logits_lp = self.model(
+            ent_paths=ent_paths,
+            rel_paths=rel_paths,
+            head_idxs=head_idxs,
+            ppt=ppt,
+            pos=pos,
+            entity_origin=entity_origin,
+            targets=targets,
+            detach_link_head=self.link_head_detached
+        )
+        # loss_rp = self.criterion(logits_rp, targets)
+        return logits_rp, logits_lp
+    
     def build_triple_candidates(
         self,
         tuples: torch.Tensor,
@@ -1043,30 +1048,3 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)  # (K, 3) or (E*R*E, 3)
 
         return candidates, scores
-
-    def pathe_forward_step_tuples(self, batch, **kwargs):
-        """
-        PathE forward function for multi-paths relation prediction.
-        """
-        # batch = debug_single_path(batch, trim_paths=False, override_pos=True)
-        ent_paths, rel_paths = batch["net_input"]["ent_paths"], batch["net_input"]["rel_paths"]
-        head_idxs = batch["net_input"]["head_idxs"]
-        entity_origin = batch["net_input"]["path_origins"]
-        pos = batch["net_input"]["pos"]
-        targets = batch["target"] - 2  # no PAD and MSK in the model output
-        # FIXME this is going to change with the actual head-tail idxs from dataset
-        head_idxs = head_idxs * 2
-        ppt = batch["ppt"]
-
-        logits_rp, logits_lp = self.model(
-            ent_paths=ent_paths,
-            rel_paths=rel_paths,
-            head_idxs=head_idxs,
-            ppt=ppt,
-            pos=pos,
-            entity_origin=entity_origin,
-            targets=targets,
-            detach_link_head=self.link_head_detached
-        )
-        # loss_rp = self.criterion(logits_rp, targets)
-        return logits_rp, logits_lp
