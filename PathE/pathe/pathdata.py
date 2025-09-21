@@ -1070,10 +1070,8 @@ class TripleEntityMultiPathDataset(MultiPathDatasetTriples):
         head, rel, tail = triple
         # Retrieving combined incoming and outgoing paths per entity
         with du.local_seed(self.seed, self.epoch, index):
-            h_epaths, h_rpaths, h_idxs, h_erpos = \
-                self._create_inout_contextpaths(head)
-            t_epaths, t_rpaths, t_idxs, t_erpos = \
-                self._create_inout_contextpaths(tail)
+            h_epaths, h_rpaths, h_idxs, h_erpos = self._create_inout_contextpaths(head)
+            t_epaths, t_rpaths, t_idxs, t_erpos = self._create_inout_contextpaths(tail)
         no_hpaths, no_tpaths = len(h_epaths), len(t_epaths)
         # Record the origin of each path (0 for H, 1 for T) and update entixs
         path_ori = [0] * no_hpaths + [1] * no_tpaths
@@ -1097,6 +1095,94 @@ class TripleEntityMultiPathDataset(MultiPathDatasetTriples):
         # self._getitem_separate(index)
         return self._getitem_combined(index)
 
+class CandidateTripleEntityMultiPathDataset(TripleEntityMultiPathDataset):
+    """
+    Triple-centric dataset with precomputed labels and group ids for candidate scoring.
+    - labels: float tensor [N] with 0/1 indicating whether (h,r,t) is true.
+    - group_strategy: 'h' | 'hr'
+       * 'h'     -> group by head (r,t | h)
+       * 'r'     -> group by relation (h,t | r)
+       * 't'     -> group by tail (h,r | t)
+       * 'hr'    -> group by (t | h,r)
+    """
+    def __init__(self,
+                 path_store: str,
+                 relcontext_store: str,
+                 triple_store: torch.Tensor,
+                 labels: torch.Tensor,
+                 group_strategy: str = "h",
+                 context_triple_store: torch.Tensor | None = None,
+                 tokens_to_idxs: Dict[int, int] | None = None,
+                 maximum_triple_paths: int = 50,
+                 seed: int = 46,
+                 parallel: bool = False,
+                 num_workers: int = 0):
+        super().__init__(
+            path_store=path_store,
+            relcontext_store=relcontext_store,
+            triple_store=triple_store,
+            context_triple_store=context_triple_store,
+            tokens_to_idxs=tokens_to_idxs,
+            maximum_triple_paths=maximum_triple_paths,
+            num_negatives=0,                  # candidates already include negatives
+            triple_corruptor=None,
+            seed=seed,
+            parallel=parallel,
+            num_workers=num_workers,
+            neg_triple_store=None,
+        )
+
+        assert labels.shape[0] == self.triplestore.shape[0], \
+            f"labels size {labels.shape} != triples size {self.triplestore.shape[0]}"
+        self._lp_labels = labels.to(torch.float32).cpu()
+
+        if group_strategy == "h":
+            self._lp_group_ids = self.triplestore[:, 0].to(torch.long).cpu()
+        elif group_strategy == "r":
+            self._lp_group_ids = self.triplestore[:, 1].to(torch.long).cpu()
+        elif group_strategy == "t":
+            self._lp_group_ids = self.triplestore[:, 2].to(torch.long).cpu()
+        elif group_strategy == "hr":
+            # Assign a compact id per unique (h,r) pair
+            hr = self.triplestore[:, [0, 1]]
+            _, inv = torch.unique(hr, dim=0, return_inverse=True)
+            self._lp_group_ids = inv.to(torch.long).cpu()
+        else:
+            raise ValueError(f"Unknown group_strategy: {group_strategy}")
+
+        # Precompute weights for each sample based on group counts
+        # Idea: w_pos = 0.5 / num_pos_in_group, w_neg = 0.5 / num_neg_in_group
+        # This ensures that the total weight per group is 1.0, split equally
+        # between positive and negative samples.
+        pos_mask = (self._lp_labels == 1)
+        neg_mask = ~pos_mask
+
+        # Counts per group
+        pos_counts = torch.bincount(self._lp_group_ids, weights=pos_mask.float(), minlength=int(self._lp_group_ids.max().item()) + 1)
+        neg_counts = torch.bincount(self._lp_group_ids, weights=neg_mask.float(), minlength=int(self._lp_group_ids.max().item()) + 1)
+
+        # Avoid division by zero
+        pos_denominator = pos_counts.clone()
+        pos_denominator[pos_denominator == 0] = 1.0
+        neg_denominator = neg_counts.clone()
+        neg_denominator[neg_denominator == 0] = 1.0
+
+        weights = torch.empty(self._lp_labels.shape[0], dtype=torch.float32)
+        # w_pos = 0.5 / num_pos_in_group
+        weights[pos_mask] = 0.5 / pos_denominator[self._lp_group_ids[pos_mask]]
+        # w_neg = 0.5 / num_neg_in_group
+        weights[neg_mask] = 0.5 / neg_denominator[self._lp_group_ids[neg_mask]]
+        self._lp_weights = weights.cpu()
+
+
+    def __getitem__(self, index) -> dict:
+        item = super().__getitem__(index)
+        # Attach precomputed label and group id
+        item["lp_label"] = float(self._lp_labels[index].item())
+        item["lp_group_id"] = int(self._lp_group_ids[index].item())
+        item["lp_weight"] = float(self._lp_weights[index].item())
+        # ori_triple already present from parent
+        return item
 
 class EntityMultiPathDataset(MultiPathDatasetTriples):
 

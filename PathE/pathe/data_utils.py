@@ -365,6 +365,16 @@ def collate_multipaths(
                 if pad_to_length is not None else None,
         )
 
+    if "lp_label" in samples[0]:
+        batch["lp_labels"] = torch.tensor([s["lp_label"] for s in samples], dtype=torch.float32)
+
+    if "lp_group_id" in samples[0]:
+        batch["lp_group_ids"] = torch.tensor([s["lp_group_id"] for s in samples], dtype=torch.long)
+
+    if "lp_weight" in samples[0]:
+        batch["lp_weights"] = torch.tensor([s["lp_weight"] for s in samples], dtype=torch.float32)
+
+
     return batch
 
 ################################################################################
