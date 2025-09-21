@@ -729,7 +729,7 @@ def create_and_run_training_exp_two_phases(args):
     # ---------------------------
     # Phase 1b: Global candidate generation (predict over ALL tuples)
     # ---------------------------
-    topk = getattr(args, "candidate_topk", 100)
+    topk = args.candidates_topk
     stageprint(f"Phase 1b: Predicting over all tuples and building candidates (global top-{topk})...")
 
     def predict_all(trainer, model, loader, ckpt_path=None):

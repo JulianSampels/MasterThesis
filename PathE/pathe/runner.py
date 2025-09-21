@@ -76,6 +76,9 @@ def main():
                         help='Whether to train the CLS token on rel prediction.')
     parser.add_argument('--max_seqlen', action='store', type=int, default=100,
                         help='Maximum length of entity-relation paths.')
+    
+    parser.add_argument('--candidates_topk', type=int, default=1000,
+                        help='Number of top relation candidates per entity to use for triple candidate generation in 2Phase model.')
 
     # Logging and checkpointing
     parser.add_argument('--log_dir', action='store', default="experiments",

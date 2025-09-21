@@ -388,6 +388,8 @@ class PathEModelWrapperTriples(LightningModule):
                  on_epoch=True)
 
     def calculate_and_log_val_links_metrics(self, rp_triples, logits_rp):
+        if self.val_num_negatives == 0:
+            return
         self.val_linkMRR(triples=rp_triples, scores=logits_rp,
                          num_entities_per_sample=self.val_num_negatives)
         self.val_linkHitsAt1(triples=rp_triples, scores=logits_rp,
@@ -414,6 +416,8 @@ class PathEModelWrapperTriples(LightningModule):
                  on_epoch=True)
 
     def calculate_and_log_test_links_metrics(self, rp_triples, logits_rp):
+        if self.test_num_negatives == 0:
+            return
         self.test_linkMRR(triples=rp_triples, scores=logits_rp,
                           num_entities_per_sample=self.test_num_negatives)
         self.test_linkHitsAt1(triples=rp_triples, scores=logits_rp,
@@ -855,19 +859,19 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.test_relationHitsAt5 = RelationHitsAtKTuples(filtration_dict, k=5)
         self.test_relationHitsAt10 = RelationHitsAtKTuples(filtration_dict, k=10)
 
-        # if self.val_num_negatives > 0:  
         # watch link prediction metrics
-        # raise NotImplementedError("check whether tuples versions are needed to be used. ")
-        self.val_linkMRR = EntityMRRTriples()
-        self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
-        self.val_linkHitsAt3 = EntityHitsAtKTriples(k=3)
-        self.val_linkHitsAt5 = EntityHitsAtKTriples(k=5)
-        self.val_linkHitsAt10 = EntityHitsAtKTriples(k=10)
-        self.test_linkMRR = EntityMRRTriples()
-        self.test_linkHitsAt1 = EntityHitsAtKTriples(k=1)
-        self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
-        self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
-        self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+        if self.val_num_negatives > 0:  
+            # raise NotImplementedError("check whether tuples versions are needed to be used. ")
+            self.val_linkMRR = EntityMRRTriples()
+            self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+            self.val_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+            self.val_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+            self.val_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+            self.test_linkMRR = EntityMRRTriples()
+            self.test_linkHitsAt1 = EntityHitsAtKTriples(k=1)
+            self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
+            self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
+            self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
     def configure_optimizers(self):
         if self.use_manual_optimization:
