@@ -20,7 +20,8 @@ import torch_scatter
 from PathE.pathe.pathdata import RelationMaps
 
 from .pathe_ranking_metrics import (RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
-                                   EntityMRRTriples, EntityHitsAtKTriples)
+                                   EntityMRRTriples, EntityHitsAtKTriples, CandidateMRRPerSampleFiltered, 
+                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup)
 
 from .pather_models import PathEModelTriples, PathEModelTuples
 
@@ -170,6 +171,19 @@ class PathEModelWrapperTriples(LightningModule):
             self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
             self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
             self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+        
+        # Candidate metrics (torchmetric style)
+        self.cand_topk = (1, 3, 5, 10)
+        self.cand_metrics_val = nn.ModuleDict({
+            "mrrPerSample": CandidateMRRPerSampleFiltered(),
+            **{f"hits@{k}PerSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
+            **{f"recall@{k}PerGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
+        })
+        self.cand_metrics_test = nn.ModuleDict({
+            "mrrPerSample": CandidateMRRPerSampleFiltered(),
+            **{f"hits@{k}PerSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
+            **{f"recall@{k}PerGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
+        })
 
         # Losses
         # self.rp_criterion = torch.nn.MultiMarginLoss(weight=class_weights, margin=margin)

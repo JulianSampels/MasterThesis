@@ -513,6 +513,54 @@ class EntityMRRTuples(EntityMRRTriples):
         self.reciprocal_ranks += torch.sum(1.0 / realistic_rank, dtype=torch.float)
         self.total += realistic_rank.numel()
 
+class CandidateMRRPerSampleFiltered(Metric):
+    """
+    Filtered MRR per positive sample within candidate groups (group_ids).
+    Other positives in the same group are ignored when ranking the current positive.
+    """
+    higher_is_better = True
+
+    def __init__(self):
+        super().__init__()
+        self.add_state("reciprocal_ranks", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    @torch.no_grad()
+    def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
+        scores = scores.squeeze()
+        labels = labels.to(dtype=torch.float32)
+        group_ids = group_ids.to(dtype=torch.long)
+
+        assert scores.ndim == 1
+        assert labels.shape == scores.shape
+        assert group_ids.shape == scores.shape
+
+        for gid in group_ids.unique():
+            group_mask = (group_ids == gid)
+            group_scores = scores[group_mask]
+            group_labels = labels[group_mask]
+            if group_labels.sum() == 0:
+                continue
+
+            idx_all = torch.arange(group_scores.numel(), device=group_scores.device)
+            pos_indices = idx_all[group_labels > 0.5]
+
+            for idx in pos_indices:
+                candidate_score = group_scores[idx]
+                # Keep negatives and this positive; filter out other positives
+                keep_mask = (group_labels < 0.5) | (idx_all == idx)
+                filtered_scores = group_scores[keep_mask]
+
+                optimistic_rank = (filtered_scores > candidate_score).sum() + 1
+                pessimistic_rank = (filtered_scores >= candidate_score).sum()
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+
+                self.reciprocal_ranks += (1.0 / realistic_rank).to(self.reciprocal_ranks.dtype)
+                self.total += 1
+
+    def compute(self):
+        return self.reciprocal_ranks / self.total.clamp_min(1)
+
 
 class EntityHitsAtKTriples(Metric):
     """
@@ -665,6 +713,97 @@ class EntityHitsAtKTuples(EntityHitsAtKTriples):
         self.hits += torch.sum((realistic_rank <= self.k), dtype=torch.float)
         # Update the total number of evaluated samples
         self.total += realistic_rank.numel()
+
+class CandidateHitsAtKPerSampleFiltered(Metric):
+    """
+    Filtered Hits@K per positive sample within candidate groups (group_ids).
+    Other positives in the same group are ignored when ranking the current positive.
+    """
+    higher_is_better = True
+
+    def __init__(self, k: int):
+        super().__init__()
+        self.k = int(k)
+        self.add_state("hits", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    @torch.no_grad()
+    def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
+        scores = scores.squeeze()
+        labels = labels.to(dtype=torch.float32)
+        group_ids = group_ids.to(dtype=torch.long)
+
+        assert scores.ndim == 1
+        assert labels.shape == scores.shape
+        assert group_ids.shape == scores.shape
+
+        for gid in group_ids.unique():
+            group_mask = (group_ids == gid)
+            group_scores = scores[group_mask]
+            group_labels = labels[group_mask]
+            if group_labels.sum() == 0:
+                continue
+
+            idx_all = torch.arange(group_scores.numel(), device=group_scores.device)
+            pos_indices = idx_all[group_labels > 0.5]
+
+            for idx in pos_indices:
+                candidate_score = group_scores[idx]
+                keep_mask = (group_labels < 0.5) | (idx_all == idx)
+                filtered_scores = group_scores[keep_mask]
+
+                optimistic_rank = (filtered_scores > candidate_score).sum() + 1
+                pessimistic_rank = (filtered_scores >= candidate_score).sum()
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+
+                self.hits += (realistic_rank <= self.k).to(self.hits.dtype)
+                self.total += 1
+
+    def compute(self):
+        return self.hits / self.total.clamp_min(1)
+
+class CandidateRecallAtKPerGroup(Metric):
+    """
+    Recall@K per group (group_ids). For each group:
+      recall = (# positives in top-K) / (# positives in group).
+    Averaged over groups with at least one positive. No filtering within group.
+    """
+    higher_is_better = True
+
+    def __init__(self, k: int):
+        super().__init__()
+        self.k = int(k)
+        self.add_state("recall_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    @torch.no_grad()
+    def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
+        scores = scores.squeeze()
+        labels = labels.to(dtype=torch.float32)
+        group_ids = group_ids.to(dtype=torch.long)
+
+        assert scores.ndim == 1
+        assert labels.shape == scores.shape
+        assert group_ids.shape == scores.shape
+
+        for gid in group_ids.unique():
+            group_mask = (group_ids == gid)
+            group_scores = scores[group_mask]
+            group_labels = labels[group_mask]
+
+            num_pos = int(group_labels.sum().item())
+            if num_pos == 0:
+                continue
+
+            k_eff = min(self.k, group_scores.numel())
+            topk_idx = torch.topk(group_scores, k=k_eff, largest=True).indices
+            num_pos_in_topk = int(group_labels[topk_idx].sum().item())
+
+            self.recall_sum += float(num_pos_in_topk) / float(num_pos)
+            self.total += 1
+
+    def compute(self):
+        return self.recall_sum / self.total.clamp_min(1)
 
 
 class EntityMRR_debug(Metric):
