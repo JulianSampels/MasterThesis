@@ -15,7 +15,7 @@ from pytorch_lightning import Trainer
 
 from . import triple_lib
 from .pather_models import PathEModelTriples, PathEModelTuples
-from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset
+from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir
 from .data_utils import load_tuple_tensors
@@ -549,3 +549,311 @@ def create_and_run_training_exp_triples(args):
     # results_raw = pd.read_csv(fname)
 
     # return results_dict, results_raw
+
+def create_and_run_training_exp_two_phases(args):
+    """
+    Main entry point for the experimental setup, execution, and evaluation.
+    Two-phase experiment without negatives.
+      Phase 1a: Train the tuple model (num_negatives=0).
+      Phase 1b: Predict all tuple logits; build triple candidates globally.
+      Phase 3 : Train a triple model on candidate triples (num_negatives=0), evaluate on original test triples.
+    """
+    model_name = args.model
+    start_time = datetime.datetime.now()
+    stageprint(f"Starting {args.expname} (two phases, no negatives) at: {start_time.strftime('%H:%M:%S')}")
+
+    # ---------------------------
+    # Load data
+    # ---------------------------
+    stageprint("Loading data...")
+    train_tuples, val_tuples, test_tuples = load_tuple_tensors(args.train_paths, args.valid_paths, args.test_paths)
+    train_triples, val_triples, test_triples = load_triple_tensors(args.train_paths, args.valid_paths, args.test_paths)
+
+    # Load relation to inverse relation mappings
+    train_rel2inv = du.load_relation2inverse_relation_from_file(args.train_paths)
+    val_rel2inv   = du.load_relation2inverse_relation_from_file(args.valid_paths)
+    test_rel2inv  = du.load_relation2inverse_relation_from_file(args.test_paths)
+
+    paths, relcon, _ = du.load_unrolled_setup(args.train_paths, args.path_setup)
+    filtration_dict = triple_lib.make_relation_filter_dict_no_sp_tokens(train_triples, val_triples, test_triples)
+    unique_entities = triple_lib.get_unique_entities(train_triples, val_triples, test_triples)
+    class_weights = triple_lib.get_class_weights_without_special_tokens(train_triples) if args.class_weigths else None
+
+    assert(args.num_negatives == 0), "This two-phase training only works with num_negatives=0"
+    assert(args.val_num_negatives == 0), "This two-phase training only works with val_num_negatives=0"
+
+    # ---------------------------
+    # Phase 1a: Tuple training (no negatives)
+    # ---------------------------
+    stageprint("Phase 1a: Creating datasets and dataloaders...")
+    parallel = True
+
+    train_set_t = TupleEntityMultiPathDataset(
+        path_store=paths, relcontext_store=relcon,
+        tuple_store=train_tuples, context_triple_store=train_triples,
+        original_relation_to_inverse_relation=train_rel2inv,
+        maximum_tuple_paths=args.max_ppt,
+        num_negatives=args.num_negatives, tuple_corruptor=None,
+        parallel=parallel, num_workers=args.num_workers, neg_tuple_store=None,
+    )
+    # Using shared data structures for valid and test
+    tokens_to_idxs = train_set_t.tokens_to_idxs
+    path_store = (train_set_t.relation_paths, train_set_t.entity_paths, train_set_t.path_index)
+
+    valid_set_t = TupleEntityMultiPathDataset(
+        path_store=path_store, relcontext_store=relcon,
+        tuple_store=val_tuples, context_triple_store=train_triples,
+        original_relation_to_inverse_relation=val_rel2inv,
+        maximum_tuple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
+        num_negatives=args.val_num_negatives, tuple_corruptor=None,
+        parallel=parallel, num_workers=args.num_workers, neg_tuple_store=None,
+    )
+    test_set_t = TupleEntityMultiPathDataset(
+        path_store=path_store, relcontext_store=relcon,
+        tuple_store=test_tuples, context_triple_store=train_triples,
+        original_relation_to_inverse_relation=test_rel2inv,
+        maximum_tuple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
+        num_negatives=args.val_num_negatives, tuple_corruptor=None,
+        parallel=parallel, num_workers=args.num_workers, neg_tuple_store=None,
+    )
+
+    print(f"Found {len(train_set_t) + len(valid_set_t) + len(test_set_t)} samples in the dataset: Tr {len(train_set_t)}, Va {len(valid_set_t)}, Te {len(test_set_t)}")
+    print(f"Vocabulary size (with special tokens): {len(tokens_to_idxs)}")
+
+    # Creating the data loaders for each partition
+    collate_fn = partial(collate_multipaths, padding_idx=tokens_to_idxs["PAD"])
+    tr_loader_t = torch.utils.data.DataLoader(
+        train_set_t, batch_size=args.batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+    va_loader_t = torch.utils.data.DataLoader(
+        valid_set_t, batch_size=args.val_batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+    te_loader_t = torch.utils.data.DataLoader(
+        test_set_t, batch_size=args.val_batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+
+    # Model + wrapper
+    stageprint("Creating model and loading checkpoints")
+    num_entities = unique_entities.size(0)
+    relcontext_graph = encode_relcontext_freqs(
+        relcontext=relcon, num_entities=num_entities,
+        num_relations=train_set_t.vocab_size - 2, offset=2)
+    bundle = partial(bundle_arguments, exclude=["vocab_size"], args=namespace_to_dict(args))
+    model_t = PathEModelTuples(
+        vocab_size=train_set_t.vocab_size,
+        relcontext_graph=relcontext_graph,
+        padding_idx=tokens_to_idxs["PAD"],
+        **bundle(target_class=PathEModelTuples),
+    )
+    # tuple-specific filters for metrics
+    map_head_to_relsets = triple_lib.make_relation_filter_dict_no_sp_tokens_tuples(train_tuples, val_tuples, test_tuples)
+
+    pl_model_t = PathEModelWrapperTuples(
+        pathe_model=model_t,
+        filtration_dict=map_head_to_relsets,
+        class_weights=class_weights,
+        train_relation_maps=train_set_t.relation_maps,
+        val_relation_maps=valid_set_t.relation_maps,
+        test_relation_maps=test_set_t.relation_maps,
+        **namespace_to_dict(args),
+    )
+    pl_model_t.model.to(torch.device(args.device))
+
+    stageprint("Creating loggers, callbacks and setting up trainer")
+    # Loggers and trainer
+    tb_logger_t = TensorBoardLogger(save_dir=args.log_dir, name=args.expname + "_tuples", version=args.version)
+    exp_dir_t = tb_logger_t.log_dir
+    if args.wandb_project is not None:
+        wb_logger_t = WandbLogger(id=args.wandb_id, save_dir=exp_dir_t, name=args.expname + "_tuples",
+                                  project=args.wandb_project, log_model="all", sync_tensorboard=True)
+        wb_logger_t.watch(pl_model_t, log="all"); wb_logger_t.log_hyperparams(args)
+    else:
+        wb_logger_t = None
+
+    # Creating callbacks for checkpointing and early stopping
+    mode = "min" if args.monitor.endswith("loss") else "max"
+    checkpoint_callbk_t = ModelCheckpoint(
+        monitor=args.monitor, dirpath=args.checkpoint_dir, mode=mode,
+        filename=model_name + f"-tuple-{{epoch}}-{{{args.monitor}:.2f}}",
+        every_n_train_steps=args.chekpoint_ksteps)
+    estopping_callbk_t = EarlyStopping(monitor=args.monitor, patience=args.patience, mode=mode)
+    dataset_callbk_t = DatasetUpdater([train_set_t, valid_set_t] if args.train_paths else [train_set_t.dataset])
+
+    tr_limit, va_limit = (.1, .2) if args.debug else (1., 1.)
+    accelerator = "gpu" if args.device == "cuda" else "cpu"
+    # Automatic gradient clipping and Automatic gradient accumulation is not supported for manual optimization.
+    if args.use_manual_optimization:
+        trainer_t = Trainer(
+            max_epochs=args.max_epochs,
+            accelerator=accelerator, devices=args.num_devices, num_nodes=1,
+            limit_train_batches=tr_limit, limit_val_batches=va_limit,
+            logger=[tb_logger_t] + ([wb_logger_t] if wb_logger_t else []), log_every_n_steps=5,
+            val_check_interval=args.val_check_interval,
+            callbacks=[estopping_callbk_t, checkpoint_callbk_t, dataset_callbk_t],
+        )
+    else:
+        trainer_t = Trainer(
+            max_epochs=args.max_epochs, gradient_clip_val=1.0,
+            accelerator=accelerator, devices=args.num_devices, num_nodes=1,
+            limit_train_batches=tr_limit, limit_val_batches=va_limit,
+            logger=[tb_logger_t] + ([wb_logger_t] if wb_logger_t else []), log_every_n_steps=5,
+            val_check_interval=args.val_check_interval,
+            gradient_clip_algorithm='norm',  # CHANGED THIS
+            accumulate_grad_batches=args.accumulate_gradient,
+            callbacks=[estopping_callbk_t, checkpoint_callbk_t, dataset_callbk_t],
+        )
+
+    if args.cmd in ["train", "resume"]:
+        # Train and resume are the same assuming their setup is consistent
+        stageprint("Training-validating the model, be patient!")
+        trainer_t.fit(pl_model_t, tr_loader_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
+        tuple_ckpt = checkpoint_callbk_t.best_model_path
+        print(f"[Tuples] Best model: {tuple_ckpt}")
+        ttime = (datetime.datetime.now() - start_time).total_seconds() / 3600
+        print(f"[Tuples] Training time: {round(ttime, 2)} hours")
+    else:
+        # For inference-only runs
+        tuple_ckpt = args.tuple_checkpoint
+        print(f"[Tuples] Using checkpoint for prediction: {tuple_ckpt}")
+        if args.cmd == "test" and not tuple_ckpt:
+            raise ValueError("tuple_checkpoint is required for cmd='test'.")
+        
+    stageprint("Evaluating the tuple model (relation predictor) on the test set")
+    tuple_test_dict = trainer_t.test(
+        model=pl_model_t if args.cmd == "test" else None,
+        dataloaders=te_loader_t,
+        ckpt_path=tuple_ckpt
+    )[0]
+    print("\nTesting results (tuple model): {}".format(tuple_test_dict))
+
+    # ---------------------------
+    # Phase 1b: Global candidate generation (predict over ALL tuples)
+    # ---------------------------
+    topk = getattr(args, "candidate_topk", 100)
+    stageprint(f"Phase 1b: Predicting over all tuples and building candidates (global top-{topk})...")
+
+    def predict_all(trainer, model, loader, ckpt_path=None):
+        outs = trainer.predict(model, dataloaders=loader, ckpt_path=ckpt_path)
+        tuples_all = torch.cat([o["tuples"] for o in outs], dim=0)
+        logits_all = torch.cat([o["logits_rp"] for o in outs], dim=0)
+        return tuples_all.to(model.device), logits_all.to(model.device)
+
+    tr_tuples_all, tr_logits_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
+    va_tuples_all, va_logits_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
+    te_tuples_all, te_logits_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
+
+    candidate_train, _scores_train = pl_model_t.build_triple_candidates(tuples=tr_tuples_all, relation_maps=train_set_t.relation_maps, logits_rp=tr_logits_all, k=topk)
+    candidate_val, _scores_val = pl_model_t.build_triple_candidates(tuples=va_tuples_all, relation_maps=valid_set_t.relation_maps, logits_rp=va_logits_all, k=topk)
+    candidate_test, _scores_test = pl_model_t.build_triple_candidates(tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all, k=topk)
+
+    print(f"Candidate triples: train={candidate_train.size(0)}, val={candidate_val.size(0)}, test={candidate_test.size(0)}")
+
+    # Free large tensors before Phase 3
+    del tr_logits_all, va_logits_all, te_logits_all
+    if args.device == "cuda":
+        torch.cuda.empty_cache()
+
+    def build_labels_for_triples(triples: torch.Tensor, true_triples: torch.Tensor) -> torch.Tensor:
+        true_triples = {tuple(row.tolist()) for row in true_triples.cpu()}
+        labels = torch.zeros(triples.size(0), dtype=torch.float32, device=triples.device)
+        for i, triple in enumerate(triples.tolist()):
+            if tuple(triple) in true_triples:
+                labels[i] = 1.0
+        return labels
+
+    train_labels = build_labels_for_triples(candidate_train, train_triples)
+    val_labels = build_labels_for_triples(candidate_val, val_triples)
+    test_labels = build_labels_for_triples(candidate_test, test_triples)
+
+    # ---------------------------
+    # Phase 3: Triple training on candidates (no negatives) and test on gold
+    # ---------------------------
+    stageprint("Phase 3: Training triple model on candidate triples (no negatives)...")
+
+    train_set_tri = CandidateTripleEntityMultiPathDataset(
+        path_store=path_store, relcontext_store=relcon,
+        triple_store=candidate_train, labels=train_labels, group_strategy='h', context_triple_store=train_triples,
+        maximum_triple_paths=args.max_ppt, num_negatives=args.num_negatives,
+        triple_corruptor=None, parallel=parallel, num_workers=args.num_workers, neg_triple_store=None)
+    valid_set_tri = CandidateTripleEntityMultiPathDataset(
+        path_store=path_store, relcontext_store=relcon,
+        triple_store=val_triples, labels=val_labels, group_strategy='h', context_triple_store=train_triples,
+        maximum_triple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
+        num_negatives=args.val_num_negatives, triple_corruptor=None,
+        parallel=parallel, num_workers=args.num_workers, neg_triple_store=None)
+    test_set_tri = CandidateTripleEntityMultiPathDataset(
+        path_store=path_store, relcontext_store=relcon,
+        triple_store=test_triples, labels=test_labels, group_strategy='h', context_triple_store=train_triples,
+        maximum_triple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
+        num_negatives=args.val_num_negatives, triple_corruptor=None,
+        parallel=parallel, num_workers=args.num_workers, neg_triple_store=None)
+
+    tr_loader_tri = torch.utils.data.DataLoader(
+        train_set_tri, batch_size=args.batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+    va_loader_tri = torch.utils.data.DataLoader(
+        valid_set_tri, batch_size=args.val_batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+    te_loader_tri = torch.utils.data.DataLoader(
+        test_set_tri, batch_size=args.val_batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+
+    model_tri = PathEModelTriples(
+        vocab_size=train_set_tri.vocab_size,
+        padding_idx=tokens_to_idxs["PAD"],
+        relcontext_graph=relcontext_graph,
+        **bundle(target_class=PathEModelTriples),
+    )
+    pl_model_tri = PathEModelWrapperTriples(
+        pathe_model=model_tri,
+        filtration_dict=filtration_dict,
+        class_weights=class_weights,
+        train_num_negatives=0, val_num_negatives=0, full_test=0,
+        **namespace_to_dict(args),
+    )
+    pl_model_tri.model.to(torch.device(args.device))
+
+    tb_logger_tri = TensorBoardLogger(save_dir=args.log_dir, name=args.expname + "_triples", version=args.version)
+    if args.wandb_project is not None:
+        wb_logger_tri = WandbLogger(id=args.wandb_id, save_dir=tb_logger_tri.log_dir,
+                                    name=args.expname + "_triples", project=args.wandb_project,
+                                    log_model="all", sync_tensorboard=True)
+        wb_logger_tri.watch(pl_model_tri, log="all"); wb_logger_tri.log_hyperparams(args)
+    else:
+        wb_logger_tri = None
+    checkpoint_callbk_tri = ModelCheckpoint(
+        monitor=args.monitor, dirpath=args.checkpoint_dir, mode="min" if args.monitor.endswith("loss") else "max",
+        filename=model_name + f"-triple-{{epoch}}-{{{args.monitor}:.2f}}",
+        every_n_train_steps=args.chekpoint_ksteps)
+    estopping_callbk_tri = EarlyStopping(monitor=args.monitor, patience=args.patience,
+                                         mode="min" if args.monitor.endswith("loss") else "max")
+    dataset_callbk_tri = DatasetUpdater([train_set_tri, valid_set_tri] if args.train_paths else [train_set_tri.dataset])
+
+    trainer_tri = Trainer(
+        max_epochs=args.max_epochs, gradient_clip_val=1.0,
+        accelerator=accelerator, devices=args.num_devices, num_nodes=1,
+        limit_train_batches=tr_limit, limit_val_batches=va_limit,
+        logger=[tb_logger_tri] + ([wb_logger_tri] if wb_logger_tri else []),
+        log_every_n_steps=5, val_check_interval=args.val_check_interval,
+        gradient_clip_algorithm='norm', accumulate_grad_batches=args.accumulate_gradient,
+        callbacks=[estopping_callbk_tri, checkpoint_callbk_tri, dataset_callbk_tri],
+    )
+
+    if args.cmd in ["train", "resume"]:
+        stageprint("Training-validating the model, be patient!")
+        trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args.triple_checkpoint)
+        triple_ckpt = checkpoint_callbk_tri.best_model_path
+        print(f"[Triples] Best model: {triple_ckpt}")
+    else:
+        triple_ckpt = getattr(args, "triple_checkpoint", args.triple_checkpoint, None)
+        print(f"[Triples] Using checkpoint for test: {triple_ckpt}")
+        if args.cmd == "test" and not triple_ckpt:
+            raise ValueError("triple_checkpoint is required for cmd='test'.")
+
+    stageprint("Evaluating the model on the test set")
+    test_dict = trainer_tri.test(
+        model=pl_model_tri if args.cmd == "test" else None,
+        dataloaders=te_loader_tri,
+        ckpt_path=triple_ckpt
+    )[0]
+    print("\nFinal testing results (triple model): {}".format(test_dict))

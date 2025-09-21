@@ -24,7 +24,7 @@ def main():
 
     parser.add_argument('cmd', choices=['train', 'resume', 'test', 'full_eval'],
                         help='A supported command to execute.')
-    parser.add_argument('model', choices=['pathe', 'patheTuples'],
+    parser.add_argument('model', choices=['pathe', 'patheTuples', 'pathe2Phases'],
                         help='The name of the PathE model to use.')
     parser.add_argument('--path_type', choices=['unrolled'],
                         default='unrolled', help='unrolled')
@@ -87,7 +87,11 @@ def main():
     parser.add_argument('--checkpointing', action='store_true', default=False,
                         help='Whether the model state dict will be dumped.')
     parser.add_argument('--checkpoint', type=lambda x: is_file(parser, x),
-                        help='Path to a model checkpoint to load.')
+                        help='Path to a model checkpoint to load. Use only if single phase model is used.')
+    parser.add_argument('--triple_checkpoint', type=lambda x: is_file(parser, x),
+                        help='Path to a triple model checkpoint to load. Use only if two-phase model is used.')
+    parser.add_argument('--tuple_checkpoint', type=lambda x: is_file(parser, x),
+                        help='Path to a tuple model checkpoint to load. Use only if two-phase model is used.')
 
     # The following arguments are used to control the training process
     parser.add_argument('--lp_loss_fn', action='store',
@@ -217,9 +221,14 @@ def main():
 
     # print(args)
     if args.model == "pathe":
+        assert args.triple_checkpoint is None, "triple_checkpoint can only be used with pathe2Phases"
         pathe_trainer.create_and_run_training_exp_triples(args)
     elif args.model == "patheTuples":
+        assert args.tuple_checkpoint is None, "tuple_checkpoint can only be used with pathe2Phases"
         pathe_trainer.create_and_run_training_exp_tuples(args)
+    elif args.model == "pathe2Phases":
+        assert args.checkpoint is None, "checkpoint cannot be used with pathe2Phases. Use triple_checkpoint and/or tuple_checkpoint instead."
+        pathe_trainer.create_and_run_training_exp_two_phases(args)
 
 
 
