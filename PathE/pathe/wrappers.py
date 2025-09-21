@@ -158,9 +158,7 @@ class PathEModelWrapperTriples(LightningModule):
         self.test_relationHitsAt10 = RelationHitsAtKTriples(filtration_dict, k=10)
         # self.save_hyperparameters(ignore=['pathe_model'])
 
-        loss_reduction = "mean"
         if self.val_num_negatives > 0:  # watch link prediction metrics
-            loss_reduction = 'none'
             self.val_linkMRR = EntityMRRTriples()
             self.val_linkHitsAt1 = EntityHitsAtKTriples(k=1)
             self.val_linkHitsAt3 = EntityHitsAtKTriples(k=3)
@@ -301,8 +299,8 @@ class PathEModelWrapperTriples(LightningModule):
             return loss_vec[pos_idx].mean()
         return loss_vec.mean()
 
-    def compute_lp_loss(self, logits, num_negatives: int):
-        return self.lp_loss_fn(logits, num_negatives)
+    def compute_lp_loss(self, *args, **kwargs):
+        return self.lp_loss_fn(*args, **kwargs)
 
     def training_step(self, batch, batch_idx):
         # Forward pass
@@ -315,7 +313,20 @@ class PathEModelWrapperTriples(LightningModule):
 
         # Compute losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
-        if self.train_num_negatives > 0:
+
+        if "lp_labels" in batch:
+            assert(self.train_num_negatives == 0), "train_num_negatives should be 0 when using provided lp_labels and lp_weights!"
+            lp_loss = self.calculate_lp_bce(logits_lp, labels=batch["lp_labels"], sample_weights=batch["lp_weights"], num_negatives=None)
+            loss = (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss)
+            self.log("train_loss_rp", rp_loss)
+            self.log("train_loss_lp", lp_loss, prog_bar=True)
+            self.log("train_loss", loss, prog_bar=self.loss_weight not in [0.0, 1.0])
+            if torch.isnan(loss):
+                logger.warning("Training stopped due to NaN loss.")
+                self.trainer.should_stop = True
+                self.trainer.limit_val_batches = 0
+            return loss
+        elif self.train_num_negatives > 0:
             lp_loss = self.compute_lp_loss(logits_lp, self.train_num_negatives)
             loss = (self.loss_weight * lp_loss) +  ((1.0 - self.loss_weight) * rp_loss)
             self.log("train_loss_rp", rp_loss)
@@ -325,14 +336,13 @@ class PathEModelWrapperTriples(LightningModule):
                 logger.warning("Training stopped due to NaN loss.")
                 self.trainer.should_stop = True
                 self.trainer.limit_val_batches = 0
+            return loss
         else:
-            loss = rp_loss
             self.log("train_loss_rp", rp_loss)
             self.log("train_loss", rp_loss, prog_bar=True)
-
+            return rp_loss
         # make_dot(loss, params=dict(self.model.named_parameters())).render(
         #     "attachedavg", format="png")
-        return loss
 
     def calculate_and_log_val_relation_metrics(self, triples, logits):
         self.val_relationMRR(triples=triples,
@@ -541,89 +551,117 @@ class PathEModelWrapperTriples(LightningModule):
         return (logits_rp.to(torch.device(model_device)),
                 logits_lp.to(torch.device(model_device)))
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         if self.val_sub_batch_size is None:
             logits_rp, logits_lp = self.model_forward(batch=batch)
         else:
             logits_rp, logits_lp = self.sub_batch(batch=batch, sub_batch_size=self.val_sub_batch_size)
 
-        targets = batch["target"] - 2
-        triples = batch['ori_triple']
+        targets: torch.Tensor = batch["target"] - 2
+        triples: torch.Tensor = batch['ori_triple']
 
-        # Compute and log losses
+        # RP loss (always)
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
         self.log("valid_rp_loss", rp_loss, prog_bar=True)
+
+        # Candidate mode if labels present
+        if "lp_labels" in batch:
+            lp_labels = batch["lp_labels"]
+            lp_weights = batch.get("lp_weights")
+            lp_groups = batch.get("lp_group_ids")
+
+            lp_loss = self.calculate_lp_bce(logits_lp, labels=lp_labels, sample_weights=lp_weights, num_negatives=None)
+            self.log("valid_lp_loss", lp_loss, prog_bar=True)
+            self.log("valid_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss),
+                     prog_bar=self.loss_weight not in [0.0, 1.0])
+
+            # Accumulate everything into unified _val_acc
+            if not hasattr(self, "_val_acc"):
+                assert batch_idx == 0, "Accumulation not cleared from previous epoch."
+                self._val_acc = {
+                    "triples_rp": [], "logits_rp": [],
+                    "logits_lp": [], "lp_labels": [], "lp_groups": [],
+                }
+            # Only keep positives for relation metrics to save RAM
+            pos_mask = (lp_labels > 0.5)
+            self._val_acc["triples_rp"].append(triples[pos_mask].detach().cpu())
+            self._val_acc["logits_rp"].append(logits_rp[pos_mask].detach().cpu())
+            # Keep all candidates for link metrics
+            self._val_acc["logits_lp"].append(logits_lp.detach().cpu())
+            self._val_acc["lp_labels"].append(lp_labels.detach().cpu())
+            self._val_acc["lp_groups"].append(lp_groups.detach().cpu())
+            return
+
+        # Legacy LP loss/accumulation
         if self.val_num_negatives > 0:
             lp_loss = self.compute_lp_loss(logits_lp, self.val_num_negatives)
             self.log("valid_lp_loss", lp_loss, prog_bar=True)
             self.log("valid_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss), prog_bar=True)
-        else:
-            self.log("valid_total_loss", rp_loss, prog_bar=True)
 
-        # Accumulate for epoch-level metrics
-        if not hasattr(self, "_val_acc"):
-            assert(batch_idx == 0), "Accumulation not cleared from previous epoch."
-            self._val_acc = {
-                "triples_rp": [],
-                "triples_lp": [],
-                "logits_rp": [],
-                "logits_lp": []
-            }
-        else:
-            assert(batch_idx > 0), "Accumulation not initialized properly."
+            if not hasattr(self, "_val_acc"):
+                assert(batch_idx == 0), "Accumulation not cleared from previous epoch."
+                self._val_acc = {"triples_rp": [], "triples_lp": [], "logits_rp": [], "logits_lp": []}
 
-        if self.val_num_negatives > 0:
-            # Select only the positives for relation metrics
+            # select only positives for relation metrics
             assert logits_rp.size(0) % (self.val_num_negatives + 1) == 0, "Incompatible batch and negatives."
             pos_idx = torch.arange(0, logits_rp.size(0), self.val_num_negatives + 1)
             logits_rp_only = logits_rp[pos_idx]
             triples_rp_only = triples[pos_idx]
-
             self._val_acc["triples_rp"].append(triples_rp_only.detach().cpu())
             self._val_acc["triples_lp"].append(triples.detach().cpu())
             self._val_acc["logits_rp"].append(logits_rp_only.detach().cpu())
             self._val_acc["logits_lp"].append(logits_lp.detach().cpu())
         else:
+            self.log("valid_total_loss", rp_loss, prog_bar=True)
+            if not hasattr(self, "_val_acc"):
+                assert(batch_idx == 0), "Accumulation not cleared from previous epoch."
+                self._val_acc = {"triples_rp": [], "logits_rp": []}
             self._val_acc["triples_rp"].append(triples.detach().cpu())
             self._val_acc["logits_rp"].append(logits_rp.detach().cpu())
 
     def validation_epoch_end(self, outputs):
-        """
-        Handles the end of a validation epoch by aggregating and processing validation data and calculating heavy metrics.
-
-        This method checks for accumulated validation data in self._val_acc, concatenates batches of triples and logits
-        for relation prediction (RP) and link prediction (LP), and computes corresponding metrics.
-        It ensures batch sizes are compatible. The reference to the accumulated validation data is deleted
-        after processing to prepare for the next epoch.
-
-        Args:
-            outputs (list): List of outputs from each validation step. Not used in the current implementation!
-
-        Raises:
-            AssertionError: If the batch size and logits size do not match for RP or LP tasks.
-        """
         if not hasattr(self, "_val_acc"):
             logger.warning("validation_epoch_end() called without any accumulated validation data!")
             return
-        triples_rp = self._val_acc["triples_rp"]
-        triples_lp = self._val_acc["triples_lp"]
-        logits_rp = self._val_acc["logits_rp"]
-        logits_lp = self._val_acc["logits_lp"]
+        else:
+            if "lp_labels" in self._val_acc and "logits_lp" in self._val_acc and "lp_groups" in self._val_acc:
+                # Candidate mode metrics
+                triples_rp = torch.cat(self._val_acc["triples_rp"], dim=0)
+                logits_rp = torch.cat(self._val_acc["logits_rp"], dim=0)
+                lp_labels = torch.cat(self._val_acc["lp_labels"], dim=0)
+                logits_lp = torch.cat(self._val_acc["logits_lp"], dim=0)
+                lp_groups = torch.cat(self._val_acc["lp_groups"], dim=0)
 
-        if len(triples_rp) >= 0 and len(logits_rp) >= 0:
-            triples_rp = torch.cat(triples_rp, dim=0)
-            logits_rp = torch.cat(logits_rp, dim=0)
-            assert(logits_rp.size(0) == triples_rp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
-            self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
-        if len(triples_lp) > 0 and len(logits_lp) > 0:
-            triples_lp = torch.cat(triples_lp, dim=0)
-            logits_lp = torch.cat(logits_lp, dim=0)
-            assert(logits_lp.size(0) == triples_lp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
-            self.calculate_and_log_val_links_metrics(triples_lp, logits_lp)
-        
-        del self._val_acc  # delete reference for next validation epoch
+                # make sure sizes are compatible and everything went well in val step
+                assert(logits_rp.size(0) == triples_rp.size(0)), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().'
+                assert(logits_lp.size(0) == lp_labels.size(0) == lp_groups.size(0)), 'Incompatible candidate scores, labels or groups sizes, perhaps something went wrong while generating them in validation_step().'
+                assert(logits_rp.size(0) == lp_labels.size(0)), 'Incompatible candidate and relation prediction batch sizes, perhaps something went wrong while generating them in validation_step().'
 
-    def test_step(self, batch, batch_idx):
+                # Relation metrics
+                self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
+
+                # Candidate metrics
+                self.calculate_and_log_candidate_metrics(logits_lp, lp_labels, lp_groups, split="val")
+            else:
+                # Legacy RP/LP metrics
+                triples_rp = self._val_acc["triples_rp"]
+                triples_lp = self._val_acc["triples_lp"]
+                logits_rp = self._val_acc["logits_rp"]
+                logits_lp = self._val_acc["logits_lp"]
+
+                if len(triples_rp) >= 0 and len(logits_rp) >= 0:
+                    triples_rp = torch.cat(triples_rp, dim=0)
+                    logits_rp = torch.cat(logits_rp, dim=0)
+                    assert(logits_rp.size(0) == triples_rp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
+                    self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
+                if len(triples_lp) > 0 and len(logits_lp) > 0:
+                    triples_lp = torch.cat(triples_lp, dim=0)
+                    logits_lp = torch.cat(logits_lp, dim=0)
+                    assert(logits_lp.size(0) == triples_lp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
+                    self.calculate_and_log_val_links_metrics(triples_lp, logits_lp)
+            del self._val_acc  # delete reference for next validation epoch
+
+    def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         if self.test_sub_batch_size is None:
             logits_rp, logits_lp = self.model_forward(batch=batch)
         else:
@@ -632,18 +670,41 @@ class PathEModelWrapperTriples(LightningModule):
         targets = batch["target"] - 2
         triples = batch['ori_triple']
 
-        # Compute and log losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
         self.log("test_rp_loss", rp_loss, prog_bar=True)
-        if self.test_num_negatives > 0:
+
+        # Candidate mode per-batch metrics
+        if "lp_labels" in batch:
+            lp_labels = batch["lp_labels"]
+            lp_weights = batch.get("lp_weights")
+            lp_groups = batch.get("lp_group_ids")
+
+            lp_loss = self.calculate_lp_bce(logits_lp, labels=lp_labels, sample_weights=lp_weights, num_negatives=None)
+            self.log("test_lp_loss", lp_loss, prog_bar=True)
+            self.log("test_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss),
+                     prog_bar=self.loss_weight not in [0.0, 1.0])
+
+            # Accumulate for epoch-end heavy metrics
+            if not hasattr(self, "_test_acc"):
+                assert batch_idx == 0, "Test accumulation not cleared from previous epoch."
+                self._test_acc = {"triples_rp": [], "logits_rp": [], "logits_lp": [], "lp_labels": [], "lp_groups": []}
+            
+            # Only keep positives for relation metrics to save RAM
+            pos_mask = (lp_labels > 0.5)
+            self._test_acc["triples_rp"].append(triples[pos_mask].detach().cpu())
+            self._test_acc["logits_rp"].append(logits_rp[pos_mask].detach().cpu())
+            # Keep all candidates for link metrics
+            self._test_acc["logits_lp"].append(logits_lp.detach().cpu())
+            self._test_acc["lp_labels"].append(lp_labels.detach().cpu())
+            self._test_acc["lp_groups"].append(lp_groups.detach().cpu())
+            return
+        
+        # Legacy test path
+        elif self.test_num_negatives > 0:
             lp_loss = self.compute_lp_loss(logits_lp, self.test_num_negatives)
             self.log("test_lp_loss", lp_loss, prog_bar=True)
             self.log("test_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss), prog_bar=True)
-        else:
-            self.log("test_total_loss", rp_loss, prog_bar=True)
 
-        # Metrics
-        if self.test_num_negatives > 0:
             assert logits_rp.size(0) % (self.test_num_negatives + 1) == 0, "Incompatible batch and negatives."
             pos_idx = torch.arange(0, logits_rp.size(0), self.test_num_negatives + 1)
             logits_rp_only = logits_rp[pos_idx]
@@ -652,7 +713,25 @@ class PathEModelWrapperTriples(LightningModule):
             self.calculate_and_log_test_relation_metrics(triples_rp_only, logits_rp_only)
             self.calculate_and_log_test_links_metrics(triples, logits_lp)
         else:
+            self.log("test_total_loss", rp_loss, prog_bar=True)
             self.calculate_and_log_test_relation_metrics(triples, logits_rp)
+
+    def on_test_epoch_end(self):
+        if not hasattr(self, "_test_acc"):
+            return
+        triples_rp = torch.cat(self._test_acc["triples_rp"], dim=0)
+        logits_rp = torch.cat(self._test_acc["logits_rp"], dim=0)
+        logits_lp = torch.cat(self._test_acc["logits_lp"], dim=0)
+        lp_labels = torch.cat(self._test_acc["lp_labels"], dim=0)
+        lp_groups = torch.cat(self._test_acc["lp_groups"], dim=0)
+
+        # Relation metrics (epoch-level)
+        self.calculate_and_log_test_relation_metrics(triples_rp, logits_rp)
+
+        # Candidate metrics (epoch-level)
+        self.calculate_and_log_candidate_metrics(logits_lp, lp_labels, lp_groups, split="test")
+
+        del self._test_acc  # delete reference for next test epoch
 
     def configure_optimizers(self):
         """
