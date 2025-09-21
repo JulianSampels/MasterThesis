@@ -201,20 +201,37 @@ class PathEModelWrapperTriples(LightningModule):
             self.lp_loss_fn = partial(
                 self.calculate_lp_nssa, alpha=nssa_alpha, gamma=margin)
 
-    def calculate_lp_bce(self, logits, num_negatives):
+    def calculate_lp_bce(self, logits, labels: torch.Tensor = None, sample_weights: torch.Tensor = None, num_negatives=None):
         """
         Calculates the weighted BCE loss for link prediction.
         Each negative triple is weighted by 1/num negatives.
 
         Parameters
         ----------
-        logits : The logits for each triple with shape (num triple,1)
-        num_negatives : The number of negatives for each positive (int)
+        logits : The logits for each triple with shape (num_triples,1)
+        labels : The labels for each triple with shape (num_triples,), optional
+            If provided, the loss is calculated as weighted BCE with these labels.
+        sample_weights : The weights for each triple with shape (num_triples,), optional
+            If provided, the loss is calculated as weighted BCE with these weights.
+        num_negatives : The number of negatives, optional
+            If provided, the loss is calculated in legacy mode with num_negatives.
 
         """
+        assert (labels is not None and sample_weights is not None) != (num_negatives is not None), "Provide either labels or num_negatives, not both!"
+
+        # candidate mode with provided labels and weights
+        if labels is not None and sample_weights is not None:
+            # Weighted mean BCE loss with provided labels and weights
+            assert(num_negatives is None), "num_negatives should not be provided when using labels and weights!"
+            logits = logits.squeeze(-1)
+            labels = labels.to(logits.dtype)
+            w = sample_weights.to(logits.dtype)
+            loss = nn.functional.binary_cross_entropy_with_logits(logits, labels, weight=w, reduction="sum")
+            return loss / w.sum().clamp_min(1.0)
+        
+        # Legacy mode with num_negatives
         # create the labels for the triples as all zeros
-        labels = torch.zeros((logits.size()[0]),
-                             dtype=torch.float32).to(self.device)
+        labels = torch.zeros((logits.size()[0]), dtype=torch.float32).to(self.device)
         # make the labels of the true triples 1
         labels[torch.arange(0, labels.size()[0], num_negatives + 1, device=labels.device)] = 1.
         # calculate the weight matrix
@@ -412,6 +429,31 @@ class PathEModelWrapperTriples(LightningModule):
         self.log("test_link_hits10", self.test_linkHitsAt10,
                  on_step=False,
                  on_epoch=True)
+
+    def calculate_and_log_candidate_metrics(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor, split: str = "val"):
+        """
+        Update torchmetrics dict (epoch-level) and log:
+          - {split}_cand_mrrPerSample
+          - {split}_cand_hits@{k}PerSample
+          - {split}_cand_recall@{k}PerGroup
+        """
+        # select the metrics dict
+        if split == "val":
+            metrics = self.cand_metrics_val
+        elif split == "test":
+            metrics = self.cand_metrics_test
+        else:
+            raise ValueError("split must be 'val' or 'test'")
+        
+        # Ensure tensors on module device
+        scores = scores.detach().squeeze().to(self.device)
+        labels = labels.detach().to(self.device)
+        group_ids = group_ids.detach().to(self.device)
+
+        # update and log all metrics
+        for key, metric in metrics.items():
+            metric.update(scores=scores, labels=labels, group_ids=group_ids)
+            self.log(f"{split}_link_{key}", metric, on_step=False, on_epoch=True, prog_bar=("mrr" in key))
 
     def sub_batch(self, batch, sub_batch_size):
         """
