@@ -105,7 +105,7 @@ class PathEModelWrapperTriples(LightningModule):
 
     """
 
-    def __init__(self, pathe_model, filtration_dict, train_num_negatives=0,
+    def __init__(self, pathe_model, filtration_dict, num_negatives=0,
                  optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
                  weight_decay=0, class_weights=None, label_smoothing=0.0,
                  train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
@@ -127,10 +127,9 @@ class PathEModelWrapperTriples(LightningModule):
         super().__init__()
         self.model = pathe_model
         self.loss_weight = loss_weight
-        self.train_num_negatives = train_num_negatives
+        self.train_num_negatives = num_negatives
         self.val_num_negatives = val_num_negatives
-        self.test_num_negatives = val_num_negatives \
-            if not full_test else full_test
+        self.test_num_negatives = val_num_negatives if not full_test else full_test
         self.class_weights = class_weights
         comp_sub_batch = lambda sub_batch: sub_batch * max_ppt \
             if sub_batch is not None else sub_batch  # CHANGED THIS
@@ -173,14 +172,14 @@ class PathEModelWrapperTriples(LightningModule):
         # Candidate metrics (torchmetric style)
         self.cand_topk = (1, 3, 5, 10)
         self.cand_metrics_val = nn.ModuleDict({
-            "mrrPerSample": CandidateMRRPerSampleFiltered(),
-            **{f"hits@{k}PerSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
-            **{f"recall@{k}PerGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
+            "mrr_perSample": CandidateMRRPerSampleFiltered(),
+            **{f"hits@{k}_perSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
+            **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
         })
         self.cand_metrics_test = nn.ModuleDict({
-            "mrrPerSample": CandidateMRRPerSampleFiltered(),
-            **{f"hits@{k}PerSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
-            **{f"recall@{k}PerGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
+            "mrr_perSample": CandidateMRRPerSampleFiltered(),
+            **{f"hits@{k}_perSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
+            **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
         })
 
         # Losses
@@ -199,7 +198,7 @@ class PathEModelWrapperTriples(LightningModule):
             self.lp_loss_fn = partial(
                 self.calculate_lp_nssa, alpha=nssa_alpha, gamma=margin)
 
-    def calculate_lp_bce(self, logits, labels: torch.Tensor = None, sample_weights: torch.Tensor = None, num_negatives=None):
+    def calculate_lp_bce(self, logits, num_negatives = None, labels: torch.Tensor = None, sample_weights: torch.Tensor = None):
         """
         Calculates the weighted BCE loss for link prediction.
         Each negative triple is weighted by 1/num negatives.
@@ -215,12 +214,11 @@ class PathEModelWrapperTriples(LightningModule):
             If provided, the loss is calculated in legacy mode with num_negatives.
 
         """
-        assert (labels is not None and sample_weights is not None) != (num_negatives is not None), "Provide either labels or num_negatives, not both!"
-
+        assert not (labels is not None and sample_weights is not None) or (not num_negatives), "If labels and sample_weights are provided, num_negatives must be 0 or None!"
+        assert (labels is None) == (sample_weights is None), "labels and sample_weights must be both provided or both None!"
         # candidate mode with provided labels and weights
         if labels is not None and sample_weights is not None:
             # Weighted mean BCE loss with provided labels and weights
-            assert(num_negatives is None), "num_negatives should not be provided when using labels and weights!"
             logits = logits.squeeze(-1)
             labels = labels.to(logits.dtype)
             w = sample_weights.to(logits.dtype)
@@ -228,6 +226,7 @@ class PathEModelWrapperTriples(LightningModule):
             return loss / w.sum().clamp_min(1.0)
         
         # Legacy mode with num_negatives
+        assert num_negatives is not None, "Either labels and sample_weights or num_negatives must be provided!"
         # create the labels for the triples as all zeros
         labels = torch.zeros((logits.size()[0]), dtype=torch.float32).to(self.device)
         # make the labels of the true triples 1
@@ -635,7 +634,6 @@ class PathEModelWrapperTriples(LightningModule):
                 # make sure sizes are compatible and everything went well in val step
                 assert(logits_rp.size(0) == triples_rp.size(0)), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().'
                 assert(logits_lp.size(0) == lp_labels.size(0) == lp_groups.size(0)), 'Incompatible candidate scores, labels or groups sizes, perhaps something went wrong while generating them in validation_step().'
-                assert(logits_rp.size(0) == lp_labels.size(0)), 'Incompatible candidate and relation prediction batch sizes, perhaps something went wrong while generating them in validation_step().'
 
                 # Relation metrics
                 self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
@@ -971,7 +969,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         
         # Logging
         self.log("train_rp_loss", rp_loss, prog_bar=True)
-        self.log("train_lp_loss", lp_loss, prog_bar=True)
+        self.log("train_lp_loss", lp_loss, prog_bar=(self.train_num_negatives > 0))
         self.log("train_total_loss", rp_loss + lp_loss)
         
         return {"rp_loss": rp_loss, "lp_loss": lp_loss}
@@ -991,7 +989,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Logging losses
         self.log("valid_rp_loss", rp_loss, prog_bar=True)
-        self.log("valid_lp_loss", lp_loss, prog_bar=True)
+        self.log("valid_lp_loss", lp_loss, prog_bar=(self.val_num_negatives > 0))
         self.log("valid_total_loss", rp_loss + lp_loss)
 
         # Metrics for tuples (relation prediction)

@@ -2,6 +2,7 @@
 Scalable routines for training a PathE model.
 
 """
+import copy
 import os
 import logging
 import datetime
@@ -299,7 +300,6 @@ def create_and_run_training_exp_tuples(args):
     # results_raw = pd.read_csv(fname)
 
     # return results_dict, results_raw
-
 
 def create_and_run_training_exp_triples(args):
     """
@@ -674,7 +674,7 @@ def create_and_run_training_exp_two_phases(args):
     mode = "min" if args.monitor.endswith("loss") else "max"
     checkpoint_callbk_t = ModelCheckpoint(
         monitor=args.monitor, dirpath=args.checkpoint_dir, mode=mode,
-        filename=model_name + f"-tuple-{{epoch}}-{{{args.monitor}:.2f}}",
+        filename=model_name + f"-phase1-tuple-{{epoch}}-{{{args.monitor}:.2f}}",
         every_n_train_steps=args.chekpoint_ksteps)
     estopping_callbk_t = EarlyStopping(monitor=args.monitor, patience=args.patience, mode=mode)
     dataset_callbk_t = DatasetUpdater([train_set_t, valid_set_t] if args.train_paths else [train_set_t.dataset])
@@ -742,11 +742,9 @@ def create_and_run_training_exp_two_phases(args):
     va_tuples_all, va_logits_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
     te_tuples_all, te_logits_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
-    candidate_train, _scores_train = pl_model_t.build_triple_candidates(tuples=tr_tuples_all, relation_maps=train_set_t.relation_maps, logits_rp=tr_logits_all, k=topk)
-    candidate_val, _scores_val = pl_model_t.build_triple_candidates(tuples=va_tuples_all, relation_maps=valid_set_t.relation_maps, logits_rp=va_logits_all, k=topk)
-    candidate_test, _scores_test = pl_model_t.build_triple_candidates(tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all, k=topk)
-
-    print(f"Candidate triples: train={candidate_train.size(0)}, val={candidate_val.size(0)}, test={candidate_test.size(0)}")
+    candidates_train, _scores_train = pl_model_t.build_triple_candidates(tuples=tr_tuples_all, relation_maps=train_set_t.relation_maps, logits_rp=tr_logits_all, k=topk)
+    candidates_val, _scores_val = pl_model_t.build_triple_candidates(tuples=va_tuples_all, relation_maps=valid_set_t.relation_maps, logits_rp=va_logits_all, k=topk)
+    candidates_test, _scores_test = pl_model_t.build_triple_candidates(tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all, k=topk)
 
     # Free large tensors before Phase 3
     del tr_logits_all, va_logits_all, te_logits_all
@@ -761,42 +759,54 @@ def create_and_run_training_exp_two_phases(args):
                 labels[i] = 1.0
         return labels
 
-    train_labels = build_labels_for_triples(candidate_train, train_triples)
-    val_labels = build_labels_for_triples(candidate_val, val_triples)
-    test_labels = build_labels_for_triples(candidate_test, test_triples)
+    train_labels = build_labels_for_triples(candidates_train, train_triples)
+    val_labels = build_labels_for_triples(candidates_val, val_triples)
+    test_labels = build_labels_for_triples(candidates_test, test_triples)
 
     # ---------------------------
     # Phase 3: Triple training on candidates (no negatives) and test on gold
     # ---------------------------
     stageprint("Phase 3: Training triple model on candidate triples (no negatives)...")
+    # Adjust args for triple training
+    args_phase3 = copy.copy(args)
+    if args_phase3.num_negatives != 0:
+        logger.warning(f"Overriding num_negatives={args_phase3.num_negatives} to 0 for candidate training in phase 3.")
+        args_phase3.num_negatives = 0
+    if args_phase3.val_num_negatives != 0:
+        logger.warning(f"Overriding val_num_negatives={args_phase3.val_num_negatives} to 0 for candidate training in phase 3.")
+        args_phase3.val_num_negatives = 0
+    if args_phase3.full_test:
+        logger.warning(f"Overriding full_test={args_phase3.full_test} to False for candidate training in phase 3.")
+        args_phase3.full_test = False
+    if args_phase3.lp_loss_fn != "bce":
+        logger.warning(f"Overriding lp_loss_fn={args_phase3.lp_loss_fn} to 'bce' for candidate training in phase 3.")
+        args_phase3.lp_loss_fn = "bce"  # BCE for positives + negatives in candidates
 
     train_set_tri = CandidateTripleEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
-        triple_store=candidate_train, labels=train_labels, group_strategy='h', context_triple_store=train_triples,
-        maximum_triple_paths=args.max_ppt, num_negatives=args.num_negatives,
-        triple_corruptor=None, parallel=parallel, num_workers=args.num_workers, neg_triple_store=None)
+        triple_store=candidates_train, labels=train_labels, group_strategy='h', context_triple_store=train_triples,
+        maximum_triple_paths=args_phase3.max_ppt,
+        parallel=parallel, num_workers=args_phase3.num_workers)
     valid_set_tri = CandidateTripleEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
-        triple_store=val_triples, labels=val_labels, group_strategy='h', context_triple_store=train_triples,
-        maximum_triple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
-        num_negatives=args.val_num_negatives, triple_corruptor=None,
-        parallel=parallel, num_workers=args.num_workers, neg_triple_store=None)
+        triple_store=candidates_val, labels=val_labels, group_strategy='h', context_triple_store=train_triples,
+        maximum_triple_paths=args_phase3.max_ppt, tokens_to_idxs=tokens_to_idxs,
+        parallel=parallel, num_workers=args_phase3.num_workers)
     test_set_tri = CandidateTripleEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
-        triple_store=test_triples, labels=test_labels, group_strategy='h', context_triple_store=train_triples,
-        maximum_triple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
-        num_negatives=args.val_num_negatives, triple_corruptor=None,
-        parallel=parallel, num_workers=args.num_workers, neg_triple_store=None)
+        triple_store=candidates_test, labels=test_labels, group_strategy='h', context_triple_store=train_triples,
+        maximum_triple_paths=args_phase3.max_ppt, tokens_to_idxs=tokens_to_idxs,
+        parallel=parallel, num_workers=args_phase3.num_workers)
 
     tr_loader_tri = torch.utils.data.DataLoader(
-        train_set_tri, batch_size=args.batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+        train_set_tri, batch_size=args_phase3.batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args_phase3.num_workers)
     va_loader_tri = torch.utils.data.DataLoader(
-        valid_set_tri, batch_size=args.val_batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+        valid_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args_phase3.num_workers)
     te_loader_tri = torch.utils.data.DataLoader(
-        test_set_tri, batch_size=args.val_batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+        test_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
+        shuffle=False, pin_memory=False, num_workers=args_phase3.num_workers)
 
     model_tri = PathEModelTriples(
         vocab_size=train_set_tri.vocab_size,
@@ -808,51 +818,50 @@ def create_and_run_training_exp_two_phases(args):
         pathe_model=model_tri,
         filtration_dict=filtration_dict,
         class_weights=class_weights,
-        train_num_negatives=0, val_num_negatives=0, full_test=0,
-        **namespace_to_dict(args),
+        **namespace_to_dict(args_phase3),
     )
-    pl_model_tri.model.to(torch.device(args.device))
+    pl_model_tri.model.to(torch.device(args_phase3.device))
 
-    tb_logger_tri = TensorBoardLogger(save_dir=args.log_dir, name=args.expname + "_triples", version=args.version)
-    if args.wandb_project is not None:
-        wb_logger_tri = WandbLogger(id=args.wandb_id, save_dir=tb_logger_tri.log_dir,
-                                    name=args.expname + "_triples", project=args.wandb_project,
+    tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=args_phase3.expname + "_triples", version=args_phase3.version)
+    if args_phase3.wandb_project is not None:
+        wb_logger_tri = WandbLogger(id=args_phase3.wandb_id, save_dir=tb_logger_tri.log_dir,
+                                    name=args_phase3.expname + "_triples", project=args_phase3.wandb_project,
                                     log_model="all", sync_tensorboard=True)
-        wb_logger_tri.watch(pl_model_tri, log="all"); wb_logger_tri.log_hyperparams(args)
+        wb_logger_tri.watch(pl_model_tri, log="all"); wb_logger_tri.log_hyperparams(args_phase3)
     else:
         wb_logger_tri = None
     checkpoint_callbk_tri = ModelCheckpoint(
-        monitor=args.monitor, dirpath=args.checkpoint_dir, mode="min" if args.monitor.endswith("loss") else "max",
-        filename=model_name + f"-triple-{{epoch}}-{{{args.monitor}:.2f}}",
-        every_n_train_steps=args.chekpoint_ksteps)
-    estopping_callbk_tri = EarlyStopping(monitor=args.monitor, patience=args.patience,
-                                         mode="min" if args.monitor.endswith("loss") else "max")
-    dataset_callbk_tri = DatasetUpdater([train_set_tri, valid_set_tri] if args.train_paths else [train_set_tri.dataset])
+        monitor=args_phase3.monitor, dirpath=args_phase3.checkpoint_dir, mode="min" if args_phase3.monitor.endswith("loss") else "max",
+        filename=model_name + f"-phase3-triple-{{epoch}}-{{{args_phase3.monitor}:.2f}}",
+        every_n_train_steps=args_phase3.chekpoint_ksteps)
+    estopping_callbk_tri = EarlyStopping(monitor=args_phase3.monitor, patience=args_phase3.patience,
+                                         mode="min" if args_phase3.monitor.endswith("loss") else "max")
+    dataset_callbk_tri = DatasetUpdater([train_set_tri, valid_set_tri] if args_phase3.train_paths else [train_set_tri.dataset])
 
     trainer_tri = Trainer(
-        max_epochs=args.max_epochs, gradient_clip_val=1.0,
-        accelerator=accelerator, devices=args.num_devices, num_nodes=1,
+        max_epochs=args_phase3.max_epochs, gradient_clip_val=1.0,
+        accelerator=accelerator, devices=args_phase3.num_devices, num_nodes=1,
         limit_train_batches=tr_limit, limit_val_batches=va_limit,
         logger=[tb_logger_tri] + ([wb_logger_tri] if wb_logger_tri else []),
-        log_every_n_steps=5, val_check_interval=args.val_check_interval,
-        gradient_clip_algorithm='norm', accumulate_grad_batches=args.accumulate_gradient,
+        log_every_n_steps=5, val_check_interval=args_phase3.val_check_interval,
+        gradient_clip_algorithm='norm', accumulate_grad_batches=args_phase3.accumulate_gradient,
         callbacks=[estopping_callbk_tri, checkpoint_callbk_tri, dataset_callbk_tri],
     )
 
-    if args.cmd in ["train", "resume"]:
+    if args_phase3.cmd in ["train", "resume"]:
         stageprint("Training-validating the model, be patient!")
-        trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args.triple_checkpoint)
+        trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         triple_ckpt = checkpoint_callbk_tri.best_model_path
         print(f"[Triples] Best model: {triple_ckpt}")
     else:
-        triple_ckpt = getattr(args, "triple_checkpoint", args.triple_checkpoint, None)
+        triple_ckpt = getattr(args_phase3, "triple_checkpoint", args_phase3.triple_checkpoint, None)
         print(f"[Triples] Using checkpoint for test: {triple_ckpt}")
-        if args.cmd == "test" and not triple_ckpt:
+        if args_phase3.cmd == "test" and not triple_ckpt:
             raise ValueError("triple_checkpoint is required for cmd='test'.")
 
     stageprint("Evaluating the model on the test set")
     test_dict = trainer_tri.test(
-        model=pl_model_tri if args.cmd == "test" else None,
+        model=pl_model_tri if args_phase3.cmd == "test" else None,
         dataloaders=te_loader_tri,
         ckpt_path=triple_ckpt
     )[0]

@@ -186,10 +186,8 @@ def main():
     if not (0 <= args.loss_weight <= 1):
         raise ValueError("Loss_weight must be between [0,1]")
     # args.device = torch.device(args.device)
-    args.val_batch_size = args.batch_size \
-        if args.val_batch_size is None else args.val_batch_size
-    args.val_num_negatives = args.num_negatives \
-        if args.val_num_negatives is None else args.val_num_negatives
+    args.val_batch_size = args.batch_size if args.val_batch_size is None else args.val_batch_size
+    args.val_num_negatives = args.num_negatives if args.val_num_negatives is None else args.val_num_negatives
     if args.link_head_detached and not args.use_manual_optimization:
         raise ValueError("link_head_detached=True has no effect when use_manual_optimization=False")
     # Setting the random seed for all modules
