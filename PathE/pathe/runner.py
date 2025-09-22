@@ -77,7 +77,7 @@ def main():
     parser.add_argument('--max_seqlen', action='store', type=int, default=100,
                         help='Maximum length of entity-relation paths.')
     
-    parser.add_argument('--candidates_topk', type=int, default=1000,
+    parser.add_argument('--candidates_topk', type=int, default=1000000,
                         help='Number of top relation candidates per entity to use for triple candidate generation in 2Phase model.')
 
     # Logging and checkpointing
@@ -122,9 +122,15 @@ def main():
                         help='Maximum number of training epochs to run.')
     parser.add_argument('--patience', action='store', type=int, default=10,
                         help='Number of validation epochs with no improvement.')
-    parser.add_argument('--monitor', action='store', default="valid_mrr",
-                        choices=["valid_loss", "valid_mrr", "valid_link_mrr"],
-                        help='Monitored metric for early stopping and ckpt.')
+    parser.add_argument('--tuple_monitor', action='store', default="valid_mrr",
+                        choices=["valid_rp_loss", "valid_lp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr",
+                                 "valid_link_hits@1", "valid_link_hits@3", "valid_link_hits@5", "valid_link_hits@10"],
+                        help='Monitored metric for early stopping and ckpt for tuples.')
+    parser.add_argument('--triple_monitor', action='store', default="valid_link_mrr",
+                        choices=["valid_rp_loss", "valid_lp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr", 
+                                 "valid_link_hits@1", "valid_link_hits@3", "valid_link_hits@5", "valid_link_hits@10", 
+                                 "valid_link_recall@5_perGroup", "valid_link_recall@10_perGroup"],
+                        help='Monitored metric for early stopping and ckpt for triples.')
     parser.add_argument('--class_weigths', action='store_true', default=False,
                         help='Whether to weight the loss with class frequencies.')
     parser.add_argument('--accumulate_gradient', type=int, default=1,
@@ -193,6 +199,7 @@ def main():
     args.val_num_negatives = args.num_negatives if args.val_num_negatives is None else args.val_num_negatives
     if args.link_head_detached and not args.use_manual_optimization:
         raise ValueError("link_head_detached=True has no effect when use_manual_optimization=False")
+
     # Setting the random seed for all modules
     set_random_seed(args.seed, args.device)
 
@@ -223,12 +230,21 @@ def main():
     # print(args)
     if args.model == "pathe":
         assert args.triple_checkpoint is None, "triple_checkpoint can only be used with pathe2Phases"
+        if args.val_num_negatives == 0:
+            assert "link" not in args.triple_monitor, f"Link prediction metric {args.triple_monitor} cannot be used when val_num_negatives=0"
+        assert "recall" not in args.triple_monitor, f"Recall metrics cannot be used with single phase triple model."
         pathe_trainer.create_and_run_training_exp_triples(args)
     elif args.model == "patheTuples":
+        if args.val_num_negatives == 0:
+            assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
         assert args.tuple_checkpoint is None, "tuple_checkpoint can only be used with pathe2Phases"
         pathe_trainer.create_and_run_training_exp_tuples(args)
     elif args.model == "pathe2Phases":
+        if args.val_num_negatives == 0:
+            assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
         assert args.checkpoint is None, "checkpoint cannot be used with pathe2Phases. Use triple_checkpoint and/or tuple_checkpoint instead."
+        assert args.use_manual_optimization, "Two-phase training requires --use_manual_optimization to be set for proper relation prediction in tuples training."
+        assert args.link_head_detached, "Two-phase training requires --link_head_detached to be set for proper relation prediction in tuples training."
         pathe_trainer.create_and_run_training_exp_two_phases(args)
 
 

@@ -172,13 +172,13 @@ class PathEModelWrapperTriples(LightningModule):
         # Candidate metrics (torchmetric style)
         self.cand_topk = (1, 3, 5, 10)
         self.cand_metrics_val = nn.ModuleDict({
-            "mrr_perSample": CandidateMRRPerSampleFiltered(),
-            **{f"hits@{k}_perSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
+            "mrr": CandidateMRRPerSampleFiltered(),
+            **{f"hits@{k}": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
             **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
         })
         self.cand_metrics_test = nn.ModuleDict({
-            "mrr_perSample": CandidateMRRPerSampleFiltered(),
-            **{f"hits@{k}_perSample": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
+            "mrr": CandidateMRRPerSampleFiltered(),
+            **{f"hits@{k}": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
             **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
         })
 
@@ -443,15 +443,15 @@ class PathEModelWrapperTriples(LightningModule):
                  on_step=False,
                  on_epoch=True)
 
-    def calculate_and_log_candidate_metrics(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor, split: str = "val"):
+    def calculate_and_log_candidate_metrics(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor, split: str = "valid"):
         """
         Update torchmetrics dict (epoch-level) and log:
-          - {split}_cand_mrrPerSample
-          - {split}_cand_hits@{k}PerSample
-          - {split}_cand_recall@{k}PerGroup
+          - {split}_link_mrr
+          - {split}_link_hits@{k}
+          - {split}_link_recall@{k}_perGroup
         """
         # select the metrics dict
-        if split == "val":
+        if split == "valid":
             metrics = self.cand_metrics_val
         elif split == "test":
             metrics = self.cand_metrics_test
@@ -643,7 +643,7 @@ class PathEModelWrapperTriples(LightningModule):
                 self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
 
                 # Candidate metrics
-                self.calculate_and_log_candidate_metrics(logits_lp, lp_labels, lp_groups, split="val")
+                self.calculate_and_log_candidate_metrics(logits_lp, lp_labels, lp_groups, split="valid")
             else:
                 # Legacy RP/LP metrics
                 triples_rp = self._val_acc["triples_rp"]
