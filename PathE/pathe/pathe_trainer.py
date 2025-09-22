@@ -729,8 +729,7 @@ def create_and_run_training_exp_two_phases(args):
     # ---------------------------
     # Phase 1b: Global candidate generation (predict over ALL tuples)
     # ---------------------------
-    topk = args.candidates_topk
-    stageprint(f"Phase 1b: Predicting over all tuples and building candidates (global top-{topk})...")
+    stageprint(f"Phase 1b: Predicting over all tuples and building candidates...")
 
     def predict_all(trainer, model, loader, ckpt_path=None):
         outs = trainer.predict(model, dataloaders=loader, ckpt_path=ckpt_path)
@@ -742,9 +741,22 @@ def create_and_run_training_exp_two_phases(args):
     va_tuples_all, va_logits_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
     te_tuples_all, te_logits_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
-    candidates_train, _scores_train = pl_model_t.build_triple_candidates(tuples=tr_tuples_all, relation_maps=train_set_t.relation_maps, logits_rp=tr_logits_all, k=topk)
-    candidates_val, _scores_val = pl_model_t.build_triple_candidates(tuples=va_tuples_all, relation_maps=valid_set_t.relation_maps, logits_rp=va_logits_all, k=topk)
-    candidates_test, _scores_test = pl_model_t.build_triple_candidates(tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all, k=topk)
+    cand_p = args.candidates_threshold_p
+    cand_q = args.candidates_quantile_q
+    cand_t = args.candidates_temperature
+    cand_a = args.candidates_alpha
+    cand_cap = args.candidates_cap
+
+    # Build candidates using threshold/quantile/top-k (priority p > q > k)
+    candidates_train, _scores_train = pl_model_t.build_triple_candidates_adaptive(
+        tuples=tr_tuples_all, relation_maps=train_set_t.relation_maps, logits_rp=tr_logits_all,
+        p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
+    candidates_val, _scores_val = pl_model_t.build_triple_candidates_adaptive(
+        tuples=va_tuples_all, relation_maps=valid_set_t.relation_maps, logits_rp=va_logits_all,
+        p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
+    candidates_test, _scores_test = pl_model_t.build_triple_candidates_adaptive(
+        tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all,
+        p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
 
     # Free large tensors before Phase 3
     del tr_logits_all, va_logits_all, te_logits_all
@@ -762,6 +774,44 @@ def create_and_run_training_exp_two_phases(args):
     train_labels = build_labels_for_triples(candidates_train, train_triples)
     val_labels = build_labels_for_triples(candidates_val, val_triples)
     test_labels = build_labels_for_triples(candidates_test, test_triples)
+
+    # --- Candidate Selection Statistics ---
+
+    def print_candidate_stats(name, candidates, tuples_all, relation_maps):
+        """
+        Print the ratio of selected candidates to the maximal possible number.
+        """
+        entity_count = tuples_all[:, 0].unique().size(0)
+        relation_count = len(relation_maps.original_relations)
+        max_possible = entity_count ** 2 * relation_count
+        ratio = len(candidates) / max_possible if max_possible > 0 else 0
+        print(f"{name}: {len(candidates)} / ({entity_count}^2 * {relation_count}) = {len(candidates)} / {max_possible} = {ratio:.4f}")
+
+    print(f"\nMaximal possible candidates per triple:")
+    print_candidate_stats("Train", candidates_train, tr_tuples_all, train_set_t.relation_maps)
+    print_candidate_stats("Val",   candidates_val,   va_tuples_all, valid_set_t.relation_maps)
+    print_candidate_stats("Test",  candidates_test,  te_tuples_all, test_set_t.relation_maps)
+
+    print(f"\nNumber of gold triples in each split:")
+    print(f"  Train triples: {len(train_triples)}")
+    print(f"  Val triples:   {len(val_triples)}")
+    print(f"  Test triples:  {len(test_triples)}")
+
+    print(f"\nCandidate score statistics (joint probability):")
+    print(f"  Train candidates: lowest={_scores_train.min():.4f}, highest={_scores_train.max():.4f}, mean={_scores_train.mean():.4f}")
+    print(f"  Val candidates:   lowest={_scores_val.min():.4f}, highest={_scores_val.max():.4f}, mean={_scores_val.mean():.4f}")
+    print(f"  Test candidates:  lowest={_scores_test.min():.4f}, highest={_scores_test.max():.4f}, mean={_scores_test.mean():.4f}")
+
+    print(f"\nFraction of gold triples covered by candidates:")
+    print(f"  Train: {train_labels.sum().item() / len(train_triples):.4f}")
+    print(f"  Val:   {val_labels.sum().item() / len(val_triples):.4f}")
+    print(f"  Test:  {test_labels.sum().item() / len(test_triples):.4f}")
+
+    print(f"\nFraction of positive labels in candidate sets:")
+    print(f"  Train: {train_labels.sum().item()} / {len(train_labels)} = {train_labels.sum().item()/len(train_labels):.4f}")
+    print(f"  Val:   {val_labels.sum().item()} / {len(val_labels)} = {val_labels.sum().item()/len(val_labels):.4f}")
+    print(f"  Test:  {test_labels.sum().item()} / {len(test_labels)} = {test_labels.sum().item()/len(test_labels):.4f}")
+    
 
     # ---------------------------
     # Phase 3: Triple training on candidates (no negatives) and test on gold

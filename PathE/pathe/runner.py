@@ -77,8 +77,17 @@ def main():
     parser.add_argument('--max_seqlen', action='store', type=int, default=100,
                         help='Maximum length of entity-relation paths.')
     
-    parser.add_argument('--candidates_topk', type=int, default=1000000,
-                        help='Number of top relation candidates per entity to use for triple candidate generation in 2Phase model.')
+    # Parameters for candidate triple generation and filtering
+    parser.add_argument('--candidates_threshold_p', type=float, default=None,
+                        help='Global probability threshold for candidate triples (keep those with P >= p).')
+    parser.add_argument('--candidates_quantile_q', type=float, default=0.99,
+                        help='Global quantile threshold for candidate triples (keep top (1-q) quantile).')
+    parser.add_argument('--candidates_temperature', type=float, default=1.0,
+                        help='Temperature for candidate probability calibration.')
+    parser.add_argument('--candidates_alpha', type=float, default=0.5,
+                        help='Weight for head vs tail log-prob in candidate scoring (0=head only, 1=tail only, 0.5=balanced).')
+    parser.add_argument('--candidates_cap', type=int, default=None,
+                        help='Top-k candidates to keep after thresholding (maximum number of best candidates to keep).')
 
     # Logging and checkpointing
     parser.add_argument('--log_dir', action='store', default="experiments",

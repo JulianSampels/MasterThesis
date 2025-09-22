@@ -5,6 +5,7 @@ Scalable routines for training and finetuning a PathER model.
 
 import logging
 from functools import partial
+import math
 from typing import Optional
 
 import torch
@@ -197,6 +198,8 @@ class PathEModelWrapperTriples(LightningModule):
         elif lp_loss_fn == "nssa":
             self.lp_loss_fn = partial(
                 self.calculate_lp_nssa, alpha=nssa_alpha, gamma=margin)
+        else:
+            raise ValueError(f"Unknown lp_loss_fn: {lp_loss_fn}")
 
     def calculate_lp_bce(self, logits, num_negatives = None, labels: torch.Tensor = None, sample_weights: torch.Tensor = None):
         """
@@ -1091,97 +1094,116 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # loss_rp = self.criterion(logits_rp, targets)
         return logits_rp, logits_lp
     
-    def build_triple_candidates(
+    def build_triple_candidates_adaptive(
         self,
         tuples: torch.Tensor,
         relation_maps: RelationMaps,
         logits_rp: torch.Tensor,
-        k: int = None
+        p: float = None,          # keep candidates with P >= p (global threshold)
+        q: float = None,          # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
+        temperature: float = 1.0, # temperature for softmax calibration
+        alpha: float = 0.5,       # weight for head vs tail log-probs
+        cap_candidates: int = None # final cap after thresholding only keep top-k candidates
     ):
         """
         Build candidate (head, relation, tail) triples and their joint probabilities.
 
-        Steps (brief):
-        - Mean-aggregate per-sample logits to a per-head representation.
-        - Split logits into original / inverse relation groups and softmax each.
-        - Compute joint probs via log-space addition: log P = log P(r|head) + log P(inv_r|tail).
-        - Return either all E*R*E candidates or the top-k by joint probability.
+        Selection logic (global, not per-entity):
+          1) Compute an effective cap from q: cap_q = ceil((1-q) * E*R*E). If provided,
+             cap_candidates = min(cap_candidates or inf, cap_q).
+          2) If p is provided, keep all with P >= p (global threshold).
+          3) If more than cap_candidates remain, keep the top cap_candidates globally.
+          4) If cap_candidates is None and p is None, keep all.
 
         Args:
-            tuples: tensor with entity ids in column 0 (num_samples, 2).
-            relation_maps: relation mapping (original/inverse).
+            tuples: (num_samples, 2) with entity in col 0.
+            relation_maps: mapping for original/inverse relations.
             logits_rp: per-sample logits (num_samples, total_relations).
-            k: None => return all candidates, else top-k.
+            p: float or None, global probability threshold.
+            q: float in [0,1), quantile threshold: keeps top (1-q) fraction by joint probability,
+               implemented via top-k selection (not by explicit quantile computation).
+            temperature: softmax temperature (>0).
+            alpha: weight in [0,1] for head vs tail contribution.
+            cap_candidates: optional int final cap.
 
         Returns:
             candidates: (N,3) tensor of (head_id, relation_id, tail_id)
             scores: (N,) joint probabilities
         """
         assert logits_rp is not None, "logits_rp required."
+        assert temperature > 0, "temperature must be > 0"
+        assert 0.0 <= alpha <= 1.0, "alpha must be in [0,1]"
 
-        # 1. Collect unique head entities
+        # 1. Collect unique head entities (local indexing)
         entities, inverse_entity_indices = tuples[:, 0].unique(return_inverse=True, sorted=False)
         E = entities.size(0)
 
         # 2. Aggregate logits per local head index
-        # logits_rp_grouped: (E, R_total)
         logits_rp_grouped = torch_scatter.scatter_mean(logits_rp, inverse_entity_indices, dim=0)
         device = logits_rp_grouped.device
 
-        # 3. Resolve original & inverse relation ids (assume complete mapping)
+        # 3. Resolve original & inverse relation ids
         original_relations = torch.tensor(list(relation_maps.original_relations), device=device, dtype=torch.long)
         inverse_relations = torch.tensor(list(relation_maps.inverse_relations), device=device, dtype=torch.long)
         assert original_relations.numel() == inverse_relations.numel(), "Mismatch originals/inverses."
-        # the following assert is not needed as we use local indices now and therefore smaller relation subsets should still work fine
-        # assert logits_rp_grouped.size(1) == 2 * original_relations.numel(), "logits_rp size mismatch."
         R = original_relations.size(0)
 
         # 4. Slice logits for original and inverse relation columns
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
 
-        # 5. Softmax to probabilities per subset
-        probs_head = head_logits_subset.softmax(dim=1)  # P(r | head_local)
-        probs_tail = tail_logits_subset.softmax(dim=1)  # P(inv_r | tail_local)
+        # 5. Calibrated log-probabilities (avoid tiny exp, use log_softmax)
+        log_p_head = torch.log_softmax(head_logits_subset / temperature, dim=1).unsqueeze(2)                 # (E, R, 1)
+        log_p_tail = torch.log_softmax(tail_logits_subset / temperature, dim=1).transpose(0, 1).unsqueeze(0) # (1, R, E)
 
-        # 6. Compute joint log probs (E, R, E) using local indices (0..E-1) using log-prob trick for numerical stability
-        log_p_head = torch.log(probs_head + 1e-12).unsqueeze(2)                 # (E, R, 1)
-        log_p_tail = torch.log(probs_tail + 1e-12).transpose(0,1).unsqueeze(0)  # (1, R, E)
-        log_joint = log_p_head + log_p_tail                                     # (E, R, E)
+        # 6. Joint log-prob with weighting
+        log_joint = alpha * log_p_head + (1.0 - alpha) * log_p_tail  # (E, R, E)
 
-        if k is None:
-            # Materialize all
-            # Local index tensors
-            h_local = torch.arange(E, device=device).view(E, 1, 1).expand(E, R, E).reshape(-1)  # (E*R*E,)
-            r_local = torch.arange(R, device=device).view(1, R, 1).expand(E, R, E).reshape(-1)  # (E*R*E,)
-            t_local = torch.arange(E, device=device).view(1, 1, E).expand(E, R, E).reshape(-1)  # (E*R*E,)
+        # Flatten once for global selection
+        log_joint_flat = log_joint.reshape(-1)  # (E*R*E,)
+        total = log_joint_flat.numel()
 
-            # Map local indices back to original IDs
-            # heads_tensor = entities[h_local]
-            # rels_tensor = original_relations[r_local]
-            # tails_tensor = entities[t_local]
+        # Derive effective cap from q first
+        effective_cap = cap_candidates
+        if q is not None:
+            q = float(q)
+            assert 0.0 <= q < 1.0, "q must be in [0,1)"
+            cap_q = max(1, int(math.ceil((1.0 - q) * total)))
+            effective_cap = cap_q if effective_cap is None else min(effective_cap, cap_q)
 
-            # candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)  # (E*R*E, 3)
-            scores = torch.exp(log_joint.reshape(-1))                                   # (E*R*E,)
+        # Step A: optional probability threshold
+        if p is not None:
+            log_p_thr = torch.tensor(float(p), device=device).clamp_min(1e-45).log()
+            mask = log_joint_flat >= log_p_thr
+            flat_indices = torch.nonzero(mask, as_tuple=False).squeeze(-1)
+            if flat_indices.numel() == 0:
+                # fallback to best single candidate
+                _, top_idx = torch.topk(log_joint_flat, k=1, largest=True)
+                flat_indices = top_idx
         else:
-            # 7. Top-k selection without assuming entity id consecutiveness (we only use local indices)
-            log_joint_flat = log_joint.reshape(-1)               # (E*R*E,)
-            total = log_joint_flat.numel()
-            K = min(k, total)
+            # No threshold: start with all indices (may be capped below)
+            flat_indices = torch.arange(total, device=device)
 
-            top_log_vals, flat_indices = torch.topk(log_joint_flat, K, largest=True)
-            scores = torch.exp(top_log_vals)
+        # Step B: cap to effective_cap if defined (top-k selection)
+        if effective_cap is not None and flat_indices.numel() > effective_cap:
+            selected_vals = log_joint_flat[flat_indices]
+            top_vals, rel_idx = torch.topk(selected_vals, k=effective_cap, largest=True)
+            flat_indices = flat_indices[rel_idx]
+            scores = torch.exp(top_vals)
+        else:
+            scores = torch.exp(log_joint_flat[flat_indices])
 
-            ER = R * E
-            h_local = flat_indices // ER    # (K,)
-            rem = flat_indices % ER
-            r_local = rem // E              # (K,)
-            t_local = rem % E               # (K,) 
+        # Map flat indices to local coordinates
+        ER = R * E
+        h_local = flat_indices // ER
+        rem = flat_indices % ER
+        r_local = rem // E
+        t_local = rem % E
 
         # Map local back to original IDs
         heads_tensor = entities[h_local]
         rels_tensor = original_relations[r_local]
         tails_tensor = entities[t_local]
-        candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)  # (K, 3) or (E*R*E, 3)
+        candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)
 
         return candidates, scores
