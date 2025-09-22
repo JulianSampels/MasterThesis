@@ -542,21 +542,26 @@ class CandidateMRRPerSampleFiltered(Metric):
             if group_labels.sum() == 0:
                 continue
 
-            idx_all = torch.arange(group_scores.numel(), device=group_scores.device)
-            pos_indices = idx_all[group_labels > 0.5]
+            # Vectorized inner computation: compare all negatives vs all positives
+            pos_scores = group_scores[group_labels > 0.5]  # [P]
+            neg_scores = group_scores[group_labels < 0.5]  # [N]
 
-            for idx in pos_indices:
-                candidate_score = group_scores[idx]
-                # Keep negatives and this positive; filter out other positives
-                keep_mask = (group_labels < 0.5) | (idx_all == idx)
-                filtered_scores = group_scores[keep_mask]
+            if pos_scores.numel() == 0:
+                continue
 
-                optimistic_rank = (filtered_scores > candidate_score).sum() + 1
-                pessimistic_rank = (filtered_scores >= candidate_score).sum()
-                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+            if neg_scores.numel() == 0:
+                # Only the candidate itself remains -> rank = 1
+                realistic_rank = torch.ones_like(pos_scores, dtype=torch.float32, device=pos_scores.device)
+            else:
+                # gt/ge counts across all negatives for each positive
+                gt = (neg_scores.unsqueeze(1) >  pos_scores.unsqueeze(0)).sum(dim=0)       # [P]
+                ge = (neg_scores.unsqueeze(1) >= pos_scores.unsqueeze(0)).sum(dim=0)       # [P]
+                optimistic_rank = gt + 1          # +1 for the candidate itself
+                pessimistic_rank = ge + 1         # includes self in >=
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).to(torch.float32)
 
-                self.reciprocal_ranks += (1.0 / realistic_rank).to(self.reciprocal_ranks.dtype)
-                self.total += 1
+            self.reciprocal_ranks += (1.0 / realistic_rank).sum().to(self.reciprocal_ranks.dtype)
+            self.total += pos_scores.numel()
 
     def compute(self):
         return self.reciprocal_ranks / self.total.clamp_min(1)
@@ -744,20 +749,23 @@ class CandidateHitsAtKPerSampleFiltered(Metric):
             if group_labels.sum() == 0:
                 continue
 
-            idx_all = torch.arange(group_scores.numel(), device=group_scores.device)
-            pos_indices = idx_all[group_labels > 0.5]
+            pos_scores = group_scores[group_labels > 0.5]
+            neg_scores = group_scores[group_labels < 0.5]
 
-            for idx in pos_indices:
-                candidate_score = group_scores[idx]
-                keep_mask = (group_labels < 0.5) | (idx_all == idx)
-                filtered_scores = group_scores[keep_mask]
+            if pos_scores.numel() == 0:
+                continue
 
-                optimistic_rank = (filtered_scores > candidate_score).sum() + 1
-                pessimistic_rank = (filtered_scores >= candidate_score).sum()
-                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+            if neg_scores.numel() == 0:
+                realistic_rank = torch.ones_like(pos_scores, dtype=torch.float32, device=pos_scores.device)
+            else:
+                gt = (neg_scores.unsqueeze(1) >  pos_scores.unsqueeze(0)).sum(dim=0)
+                ge = (neg_scores.unsqueeze(1) >= pos_scores.unsqueeze(0)).sum(dim=0)
+                optimistic_rank = gt + 1
+                pessimistic_rank = ge + 1
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).to(torch.float32)
 
-                self.hits += (realistic_rank <= self.k).to(self.hits.dtype)
-                self.total += 1
+            self.hits += (realistic_rank <= self.k).to(self.hits.dtype).sum()
+            self.total += pos_scores.numel()
 
     def compute(self):
         return self.hits / self.total.clamp_min(1)
@@ -797,7 +805,7 @@ class CandidateRecallAtKPerGroup(Metric):
 
             k_eff = min(self.k, group_scores.numel())
             topk_idx = torch.topk(group_scores, k=k_eff, largest=True).indices
-            num_pos_in_topk = int(group_labels[topk_idx].sum().item())
+            num_pos_in_topk = group_labels[topk_idx].sum().item()
 
             self.recall_sum += float(num_pos_in_topk) / float(num_pos)
             self.total += 1
