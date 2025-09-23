@@ -626,6 +626,7 @@ class PathEModelWrapperTriples(LightningModule):
             self._val_acc["logits_rp"].append(logits_rp.detach().cpu())
 
     def validation_epoch_end(self, outputs):
+        print()
         if not hasattr(self, "_val_acc"):
             logger.warning("validation_epoch_end() called without any accumulated validation data!")
             return

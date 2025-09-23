@@ -1159,7 +1159,6 @@ class CandidateTripleEntityMultiPathDataset(TripleEntityMultiPathDataset):
         weights[neg_mask] = 0.5 / neg_denominator[self._lp_group_ids[neg_mask]]
         self._lp_weights = weights.cpu()
 
-
     def __getitem__(self, index) -> dict:
         item = super().__getitem__(index)
         # Attach precomputed label and group id
