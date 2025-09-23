@@ -19,7 +19,8 @@ from . import triple_lib
 from .pather_models import PathEModelTriples, PathEModelTuples
 from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset
 from .data_utils import collate_multipaths, load_triple_tensors, \
-    load_unrolled_setup, load_corrupted_triples_from_dir
+    load_unrolled_setup, load_corrupted_triples_from_dir, \
+    memmap_corrupted_triples_from_dir
 from .data_utils import load_tuple_tensors
 from .callbacks import DatasetUpdater
 from .corruption import CorruptHeadGenerator, CorruptHeadGeneratorTuples, CorruptRelationGeneratorTuples, CorruptTailGenerator, CorruptLinkGenerator#, \
@@ -166,20 +167,25 @@ def create_and_run_training_exp_tuples(args):
 
     # Creating the data loaders for each partition
     collate_fn = partial(collate_multipaths, padding_idx=tokens_to_idxs["PAD"])
+    use_cuda = (args.device == "cuda")
+    use_persist = args.num_workers > 0
     tr_dataloader = torch.utils.data.DataLoader(
         train_set, batch_size=args.batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=False, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist,
         sampler=NegativeTripleSampler(tr_positives, args.num_negatives))
     va_dataloader = torch.utils.data.DataLoader(
         valid_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=False, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist,
         sampler=NegativeTripleSampler(va_positives, args.val_num_negatives))
     te_dataloader = torch.utils.data.DataLoader(
         test_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=False, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist,
         sampler=NegativeTripleSampler(te_positives, args.val_num_negatives))
 
     stageprint("Creating model and loading checkpoints")
@@ -429,20 +435,25 @@ def create_and_run_training_exp_triples(args):
 
     # Creating the data loaders for each partition
     collate_fn = partial(collate_multipaths, padding_idx=tokens_to_idxs["PAD"])
+    use_cuda = (args.device == "cuda")
+    use_persist = args.num_workers > 0
     tr_dataloader = torch.utils.data.DataLoader(
         train_set, batch_size=args.batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=False, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist,
         sampler=NegativeTripleSampler(tr_positives, args.num_negatives))
     va_dataloader = torch.utils.data.DataLoader(
         valid_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=False, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist,
         sampler=NegativeTripleSampler(va_positives, args.val_num_negatives))
     te_dataloader = torch.utils.data.DataLoader(
         test_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=False, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist,
         sampler=NegativeTripleSampler(te_positives, args.val_num_negatives))
 
     stageprint("Creating model and loading checkpoints")
@@ -623,15 +634,20 @@ def create_and_run_training_exp_two_phases(args):
 
     # Creating the data loaders for each partition
     collate_fn = partial(collate_multipaths, padding_idx=tokens_to_idxs["PAD"])
+    use_cuda = (args.device == "cuda")
+    use_persist = args.num_workers > 0
     tr_loader_t = torch.utils.data.DataLoader(
         train_set_t, batch_size=args.batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+        shuffle=False, pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist)
     va_loader_t = torch.utils.data.DataLoader(
         valid_set_t, batch_size=args.val_batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+        shuffle=False, pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist)
     te_loader_t = torch.utils.data.DataLoader(
         test_set_t, batch_size=args.val_batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args.num_workers)
+        shuffle=False, pin_memory=use_cuda, num_workers=args.num_workers,
+        persistent_workers=use_persist)
 
     # Model + wrapper
     stageprint("Creating model and loading checkpoints")
@@ -884,15 +900,25 @@ def create_and_run_training_exp_two_phases(args):
         context_triple_store=train_triples, maximum_triple_paths=args_phase3.max_ppt, 
         tokens_to_idxs=tokens_to_idxs, parallel=parallel, num_workers=args_phase3.num_workers)
 
+    # DataLoader flags for phase 3
+    use_cuda = (args_phase3.device == "cuda")
+    use_persist = args_phase3.num_workers > 0
+
     tr_loader_tri = torch.utils.data.DataLoader(
         train_set_tri, batch_size=args_phase3.batch_size, collate_fn=collate_fn,
-        shuffle=True, pin_memory=False, num_workers=args_phase3.num_workers)
+        shuffle=True, pin_memory=use_cuda,
+        num_workers=args_phase3.num_workers,
+        persistent_workers=use_persist)
     va_loader_tri = torch.utils.data.DataLoader(
         valid_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
-        shuffle=True, pin_memory=False, num_workers=args_phase3.num_workers)
+        shuffle=True, pin_memory=use_cuda,
+        num_workers=args_phase3.num_workers,
+        persistent_workers=use_persist)
     te_loader_tri = torch.utils.data.DataLoader(
         test_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
-        shuffle=True, pin_memory=False, num_workers=args_phase3.num_workers)
+        shuffle=True, pin_memory=use_cuda,
+        num_workers=args_phase3.num_workers,
+        persistent_workers=use_persist)
 
     model_tri = PathEModelTriples(
         vocab_size=train_set_tri.vocab_size,
