@@ -172,8 +172,6 @@ class RelationMRRTuples(RelationMRRTriples):
         # Update the total number of samples processed
         self.total += realistic_rank.numel()
 
-
-
 class RelationMR(Metric):
     """
     A torchmetric implementation of the Mean Rank for relation
@@ -240,7 +238,6 @@ class RelationMR(Metric):
 
     def compute(self):
         return self.ranks / self.total
-
 
 class RelationHitsAtKTriples(Metric):
     """
@@ -341,7 +338,6 @@ class RelationHitsAtKTriples(Metric):
     def compute(self):
         return self.hits / self.total
 
-
 class RelationHitsAtKTuples(RelationHitsAtKTriples):
     """
     A torchmetric implementation of Hits@K for relation prediction with tuples (head, relation).
@@ -373,6 +369,7 @@ class RelationHitsAtKTuples(RelationHitsAtKTriples):
         realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
         self.hits += torch.sum((realistic_rank <= self.k), dtype=torch.float)
         self.total += realistic_rank.numel()
+
 
 class EntityMRRTriples(Metric):
     """
@@ -473,7 +470,6 @@ class EntityMRRTriples(Metric):
 
     def compute(self):
         return self.reciprocal_ranks / self.total
-
 
 class EntityMRRTuples(EntityMRRTriples):
     """
@@ -667,7 +663,6 @@ class EntityHitsAtKTriples(Metric):
     def compute(self):
         return self.hits / self.total
 
-
 class EntityHitsAtKTuples(EntityHitsAtKTriples):
     """
     A torchmetric implementation of Hits@K for entity prediction with tuples.
@@ -783,6 +778,17 @@ class CandidateRecallAtKPerGroup(Metric):
         self.k = int(k)
         self.add_state("recall_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+        # Optional true positive counts
+        self.group_true_counts = None # dict[int, int] or None
+    
+    def set_true_counts(self, map_group_id_to_true_count: dict):
+        """
+        Optionally provide the true number of positives per group.
+        If provided, this is used instead of counting positives in the labels.
+        This is useful if the labels are incomplete (e.g. only a subset of
+        positives are in the dataset).
+        """
+        self.group_true_counts = {int(k): int(v) for k, v in map_group_id_to_true_count.items()}
 
     @torch.no_grad()
     def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
@@ -799,15 +805,20 @@ class CandidateRecallAtKPerGroup(Metric):
             group_scores = scores[group_mask]
             group_labels = labels[group_mask]
 
-            num_pos = int(group_labels.sum().item())
-            if num_pos == 0:
-                continue
-
             k_eff = min(self.k, group_scores.numel())
             topk_idx = torch.topk(group_scores, k=k_eff, largest=True).indices
             num_pos_in_topk = group_labels[topk_idx].sum().item()
 
-            self.recall_sum += float(num_pos_in_topk) / float(num_pos)
+            # Denominator: true triple per-group positives if provided; else use positives in dataset
+            if self.group_true_counts is not None:
+                num_positives = int(self.group_true_counts.get(int(gid.item()), 0))
+            else:
+                num_positives = int(group_labels.sum().item())
+
+            if num_positives == 0:
+                continue    # skip groups with no positives
+
+            self.recall_sum += float(num_pos_in_topk) / float(num_positives)
             self.total += 1
 
     def compute(self):
@@ -961,8 +972,6 @@ class EntityMRR_debug(Metric):
         np.save("../experiments/" + dataset_name + "/" + str(negs) +
                 "_debug_train.npy", final)
 
-
-
 class AllEntityMRR(Metric):
     """
     A torchmetric implementation of the Mean Reciprocal Rank for relation
@@ -1021,7 +1030,6 @@ class AllEntityMRR(Metric):
     def compute(self):
         return self.reciprocal_ranks / self.total
 
-
 class AllEntityHitsAtK(Metric):
     """
     A torchmetric implementation of the Mean Reciprocal Rank for entity
@@ -1078,7 +1086,6 @@ class AllEntityHitsAtK(Metric):
 
     def compute(self):
         return self.hits / self.total
-
 
 class HeadAllEntityHitsAtK(Metric):
     """
@@ -1228,7 +1235,6 @@ class HeadAllEntityMRR(Metric):
 
     def compute(self):
         return self.reciprocal_ranks / self.total
-
 
 class TailAllEntityHitsAtK(Metric):
     """

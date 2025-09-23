@@ -1189,6 +1189,8 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Step B: cap to effective_cap if defined (top-k selection)
         if effective_cap is not None and flat_indices.numel() > effective_cap:
+            if effective_cap == cap_candidates:
+                print(f"Info: Reducing {cap_q} candidates to {effective_cap} triples. This was needed because other filters were not sufficient.")
             selected_vals = log_joint_flat[flat_indices]
             top_vals, rel_idx = torch.topk(selected_vals, k=effective_cap, largest=True)
             flat_indices = flat_indices[rel_idx]

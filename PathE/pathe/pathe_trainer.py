@@ -7,6 +7,7 @@ import os
 import logging
 import datetime
 from functools import partial
+from typing import Callable
 
 import torch
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
@@ -842,24 +843,46 @@ def create_and_run_training_exp_two_phases(args):
         logger.warning(f"Overriding lp_loss_fn={args_phase3.lp_loss_fn} to 'bce' for candidate training in phase 3.")
         args_phase3.lp_loss_fn = "bce"  # BCE for positives + negatives in candidates
 
+    # create group mappings for group ids
+    group_strategy = [0] # for grouping by head entity
+    all_triples = torch.cat([train_triples, val_triples, test_triples, candidates_train, candidates_val, candidates_test], dim=0)
+    groups = all_triples[:, group_strategy].squeeze()
+    if groups.dim() == 1:
+        unique_groups = torch.unique(groups)
+        group_to_id_map = {group: group for group in unique_groups.tolist()}
+    else:
+        unique_groups = torch.unique(groups, dim=0)
+        keys = [tuple(row.tolist()) for row in unique_groups]
+        group_to_id_map = {k: i for i, k in enumerate(keys)}
+    del all_triples
+    del groups
+    def get_group_ids(triples: torch.Tensor, group_strategy: list, group_to_id_map) -> torch.Tensor:
+        groups = triples[:, group_strategy].squeeze()
+        if groups.dim() == 1:
+            return groups
+        else:
+            ids = [group_to_id_map[tuple(row.tolist())] for row in groups]
+            return torch.tensor(ids, dtype=torch.long)
+    get_group_ids = partial(get_group_ids, group_strategy=group_strategy, group_to_id_map=group_to_id_map)
+    
     # path_store = (train_set_t.relation_paths, train_set_t.entity_paths, train_set_t.path_index)
     train_set_tri = CandidateTripleEntityMultiPathDataset(
         path_store=paths, relcontext_store=relcon,
-        triple_store=candidates_train, labels=train_labels, group_strategy='h', context_triple_store=train_triples,
-        maximum_triple_paths=args_phase3.max_ppt,
+        triple_store=candidates_train, labels=train_labels, group_ids=get_group_ids(candidates_train), 
+        context_triple_store=train_triples, maximum_triple_paths=args_phase3.max_ppt,
         parallel=parallel, num_workers=args_phase3.num_workers)
     tokens_to_idxs = train_set_tri.tokens_to_idxs  # shared
     path_store = (train_set_tri.relation_paths, train_set_tri.entity_paths, train_set_tri.path_index)
     valid_set_tri = CandidateTripleEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
-        triple_store=candidates_val, labels=val_labels, group_strategy='h', context_triple_store=train_triples,
-        maximum_triple_paths=args_phase3.max_ppt, tokens_to_idxs=tokens_to_idxs,
-        parallel=parallel, num_workers=args_phase3.num_workers)
+        triple_store=candidates_val, labels=val_labels, group_ids=get_group_ids(candidates_val), 
+        context_triple_store=train_triples, maximum_triple_paths=args_phase3.max_ppt, 
+        tokens_to_idxs=tokens_to_idxs, parallel=parallel, num_workers=args_phase3.num_workers)
     test_set_tri = CandidateTripleEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
-        triple_store=candidates_test, labels=test_labels, group_strategy='h', context_triple_store=train_triples,
-        maximum_triple_paths=args_phase3.max_ppt, tokens_to_idxs=tokens_to_idxs,
-        parallel=parallel, num_workers=args_phase3.num_workers)
+        triple_store=candidates_test, labels=test_labels, group_ids=get_group_ids(candidates_test), 
+        context_triple_store=train_triples, maximum_triple_paths=args_phase3.max_ppt, 
+        tokens_to_idxs=tokens_to_idxs, parallel=parallel, num_workers=args_phase3.num_workers)
 
     tr_loader_tri = torch.utils.data.DataLoader(
         train_set_tri, batch_size=args_phase3.batch_size, collate_fn=collate_fn,
@@ -885,6 +908,26 @@ def create_and_run_training_exp_two_phases(args):
     )
     pl_model_tri.model.to(torch.device(args_phase3.device))
 
+    # --- Provide per group positives count to recall metrics
+    def count_positives_per_group(triples: torch.Tensor, get_group_ids_fn: Callable[[torch.Tensor], torch.Tensor]) -> dict[int, int]:
+        group_ids = get_group_ids_fn(triples).to(torch.long)
+        if group_ids.numel() == 0:
+            return {}
+        counts = torch.bincount(group_ids, minlength=int(group_ids.max().item()) + 1)
+        # keep only non-zero counts if perhaps group_ids where not consecutive starting with 0
+        nonzero = (counts > 0).nonzero(as_tuple=False).flatten()
+        return {int(i): int(counts[i].item()) for i in nonzero}
+
+    # positives per-group counts for validation/test (same grouping as dataset)
+    val_true_counts = count_positives_per_group(val_triples, get_group_ids)
+    test_true_counts = count_positives_per_group(test_triples, get_group_ids)
+
+    # Inject counts into per-group recall metrics
+    for k in pl_model_tri.cand_topk:
+        pl_model_tri.cand_metrics_val[f"recall@{k}_perGroup"].set_true_counts(val_true_counts)
+        pl_model_tri.cand_metrics_test[f"recall@{k}_perGroup"].set_true_counts(test_true_counts)
+
+    # Loggers and trainer
     tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=args_phase3.expname + "_triples", version=args_phase3.version)
     if args_phase3.wandb_project is not None:
         wb_logger_tri = WandbLogger(id=args_phase3.wandb_id, save_dir=tb_logger_tri.log_dir,

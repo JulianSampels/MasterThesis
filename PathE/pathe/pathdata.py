@@ -9,7 +9,7 @@ import math
 import logging
 import itertools
 from collections import Counter
-from typing import Dict, List, Iterator
+from typing import Callable, Dict, List, Iterator
 
 from tqdm import tqdm
 import pandas as pd
@@ -1099,18 +1099,14 @@ class CandidateTripleEntityMultiPathDataset(TripleEntityMultiPathDataset):
     """
     Triple-centric dataset with precomputed labels and group ids for candidate scoring.
     - labels: float tensor [N] with 0/1 indicating whether (h,r,t) is true.
-    - group_strategy: 'h' | 'hr'
-       * 'h'     -> group by head (r,t | h)
-       * 'r'     -> group by relation (h,t | r)
-       * 't'     -> group by tail (h,r | t)
-       * 'hr'    -> group by (t | h,r)
+    - group_ids: long tensor [N] indicating the group membership (e.g., h, r, t, hr, ...) for each triple.
     """
     def __init__(self,
                  path_store: str,
                  relcontext_store: str,
                  triple_store: torch.Tensor,
                  labels: torch.Tensor,
-                 group_strategy: str = "h",
+                 group_ids: torch.Tensor,
                  context_triple_store: torch.Tensor | None = None,
                  tokens_to_idxs: Dict[int, int] | None = None,
                  maximum_triple_paths: int = 50,
@@ -1134,21 +1130,10 @@ class CandidateTripleEntityMultiPathDataset(TripleEntityMultiPathDataset):
 
         assert labels.shape[0] == self.triplestore.shape[0], \
             f"labels size {labels.shape} != triples size {self.triplestore.shape[0]}"
+        assert group_ids.shape[0] == self.triplestore.shape[0], \
+            f"group_ids size {group_ids.shape} != triples size {self.triplestore.shape[0]}"
         self._lp_labels = labels.to(torch.float32).cpu()
-
-        if group_strategy == "h":
-            self._lp_group_ids = self.triplestore[:, 0].to(torch.long).cpu()
-        elif group_strategy == "r":
-            self._lp_group_ids = self.triplestore[:, 1].to(torch.long).cpu()
-        elif group_strategy == "t":
-            self._lp_group_ids = self.triplestore[:, 2].to(torch.long).cpu()
-        elif group_strategy == "hr":
-            # Assign a compact id per unique (h,r) pair
-            hr = self.triplestore[:, [0, 1]]
-            _, inv = torch.unique(hr, dim=0, return_inverse=True)
-            self._lp_group_ids = inv.to(torch.long).cpu()
-        else:
-            raise ValueError(f"Unknown group_strategy: {group_strategy}")
+        self._lp_group_ids = group_ids.to(torch.long).cpu()
 
         # Precompute weights for each sample based on group counts
         # Idea: w_pos = 0.5 / num_pos_in_group, w_neg = 0.5 / num_neg_in_group
