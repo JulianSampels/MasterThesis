@@ -24,7 +24,7 @@ def main():
 
     parser.add_argument('cmd', choices=['train', 'resume', 'test', 'full_eval'],
                         help='A supported command to execute.')
-    parser.add_argument('model', choices=['pathe', 'patheTuples'],
+    parser.add_argument('model', choices=['pathe', 'patheTuples', 'pathe2Phases'],
                         help='The name of the PathE model to use.')
     parser.add_argument('--path_type', choices=['unrolled'],
                         default='unrolled', help='unrolled')
@@ -76,6 +76,18 @@ def main():
                         help='Whether to train the CLS token on rel prediction.')
     parser.add_argument('--max_seqlen', action='store', type=int, default=100,
                         help='Maximum length of entity-relation paths.')
+    
+    # Parameters for candidate triple generation and filtering
+    parser.add_argument('--candidates_threshold_p', type=float, default=None,
+                        help='Global probability threshold for candidate triples (keep those with P >= p).')
+    parser.add_argument('--candidates_quantile_q', type=float, default=0.99,
+                        help='Global quantile threshold for candidate triples (keep top (1-q) quantile).')
+    parser.add_argument('--candidates_temperature', type=float, default=1.0,
+                        help='Temperature for candidate probability calibration.')
+    parser.add_argument('--candidates_alpha', type=float, default=0.5,
+                        help='Weight for head vs tail log-prob in candidate scoring (0=head only, 1=tail only, 0.5=balanced).')
+    parser.add_argument('--candidates_cap', type=int, default=None,
+                        help='Top-k candidates to keep after thresholding (maximum number of best candidates to keep).')
 
     # Logging and checkpointing
     parser.add_argument('--log_dir', action='store', default="experiments",
@@ -87,7 +99,11 @@ def main():
     parser.add_argument('--checkpointing', action='store_true', default=False,
                         help='Whether the model state dict will be dumped.')
     parser.add_argument('--checkpoint', type=lambda x: is_file(parser, x),
-                        help='Path to a model checkpoint to load.')
+                        help='Path to a model checkpoint to load. Use only if single phase model is used.')
+    parser.add_argument('--triple_checkpoint', type=lambda x: is_file(parser, x),
+                        help='Path to a triple model checkpoint to load. Use only if two-phase model is used.')
+    parser.add_argument('--tuple_checkpoint', type=lambda x: is_file(parser, x),
+                        help='Path to a tuple model checkpoint to load. Use only if two-phase model is used.')
 
     # The following arguments are used to control the training process
     parser.add_argument('--lp_loss_fn', action='store',
@@ -115,9 +131,15 @@ def main():
                         help='Maximum number of training epochs to run.')
     parser.add_argument('--patience', action='store', type=int, default=10,
                         help='Number of validation epochs with no improvement.')
-    parser.add_argument('--monitor', action='store', default="valid_mrr",
-                        choices=["valid_loss", "valid_mrr", "valid_link_mrr"],
-                        help='Monitored metric for early stopping and ckpt.')
+    parser.add_argument('--tuple_monitor', action='store', default="valid_mrr",
+                        choices=["valid_rp_loss", "valid_lp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr",
+                                 "valid_link_hits@1", "valid_link_hits@3", "valid_link_hits@5", "valid_link_hits@10"],
+                        help='Monitored metric for early stopping and ckpt for tuples.')
+    parser.add_argument('--triple_monitor', action='store', default="valid_link_mrr",
+                        choices=["valid_rp_loss", "valid_lp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr", 
+                                 "valid_link_hits@1", "valid_link_hits@3", "valid_link_hits@5", "valid_link_hits@10", 
+                                 "valid_link_recall@5_perGroup", "valid_link_recall@10_perGroup"],
+                        help='Monitored metric for early stopping and ckpt for triples.')
     parser.add_argument('--class_weigths', action='store_true', default=False,
                         help='Whether to weight the loss with class frequencies.')
     parser.add_argument('--accumulate_gradient', type=int, default=1,
@@ -182,12 +204,11 @@ def main():
     if not (0 <= args.loss_weight <= 1):
         raise ValueError("Loss_weight must be between [0,1]")
     # args.device = torch.device(args.device)
-    args.val_batch_size = args.batch_size \
-        if args.val_batch_size is None else args.val_batch_size
-    args.val_num_negatives = args.num_negatives \
-        if args.val_num_negatives is None else args.val_num_negatives
+    args.val_batch_size = args.batch_size if args.val_batch_size is None else args.val_batch_size
+    args.val_num_negatives = args.num_negatives if args.val_num_negatives is None else args.val_num_negatives
     if args.link_head_detached and not args.use_manual_optimization:
         raise ValueError("link_head_detached=True has no effect when use_manual_optimization=False")
+
     # Setting the random seed for all modules
     set_random_seed(args.seed, args.device)
 
@@ -217,9 +238,23 @@ def main():
 
     # print(args)
     if args.model == "pathe":
+        assert args.triple_checkpoint is None, "triple_checkpoint can only be used with pathe2Phases"
+        if args.val_num_negatives == 0:
+            assert "link" not in args.triple_monitor, f"Link prediction metric {args.triple_monitor} cannot be used when val_num_negatives=0"
+        assert "recall" not in args.triple_monitor, f"Recall metrics cannot be used with single phase triple model."
         pathe_trainer.create_and_run_training_exp_triples(args)
     elif args.model == "patheTuples":
+        if args.val_num_negatives == 0:
+            assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
+        assert args.tuple_checkpoint is None, "tuple_checkpoint can only be used with pathe2Phases"
         pathe_trainer.create_and_run_training_exp_tuples(args)
+    elif args.model == "pathe2Phases":
+        if args.val_num_negatives == 0:
+            assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
+        assert args.checkpoint is None, "checkpoint cannot be used with pathe2Phases. Use triple_checkpoint and/or tuple_checkpoint instead."
+        assert args.use_manual_optimization, "Two-phase training requires --use_manual_optimization to be set for proper relation prediction in tuples training."
+        assert args.link_head_detached, "Two-phase training requires --link_head_detached to be set for proper relation prediction in tuples training."
+        pathe_trainer.create_and_run_training_exp_two_phases(args)
 
 
 

@@ -2,7 +2,7 @@ import os
 
 import torch
 from pykeen.datasets import (FB15k237, WN18RR, CoDExSmall, CoDExMedium,
-                             YAGO310, OGBWikiKG2, CoDExLarge, Wikidata5M)
+                             YAGO310, OGBWikiKG2, CoDExLarge, Wikidata5M, EagerDataset)
 from pykeen.triples import TriplesFactory
 # from ogb.linkproppred import LinkPropPredDataset
 import numpy as np
@@ -27,12 +27,13 @@ class KgLoader:
 
     load_success: bool
     num_nodes_total: int
-    add_inverse: bool
+    automatically_add_inverse: bool
 
-    def __init__(self, dataset: str = None, add_inverse: bool = None):
+    def __init__(self, dataset: str = None, automatically_add_inverse: bool = False, manually_add_inverse: bool = False):
         """
         :param dataset: the name of the dataset. Currently supported: fb15k237, wn18rr, ogbl-wikikg2
-        :param add_inverse: If inverse edges should be added
+        :param automatically_add_inverse: If inverse edges should be added automatically
+        :param manually_add_inverse: If inverse edges (h, r, t) -> (t, r^-1, h) should be added manually
         """
         self.unique_test = None
         self.unique_val = None
@@ -43,16 +44,24 @@ class KgLoader:
         self.val_no_inv = None
         self.num_nodes_total = 0
         self.dataset = dataset.lower() if dataset is not None else 'fb15k237'
-        self.add_inverse = add_inverse if add_inverse is not None else True
+        self.automatically_add_inverse = automatically_add_inverse
+        self.manually_add_inverse = manually_add_inverse
+        assert not (self.automatically_add_inverse and self.manually_add_inverse), "You can either add inverse edges automatically or manually, but not both."
         self.triple_factory = None
         self.unique_relations = None
         self.unique_entities = None
         self.entity_stats = {}
         self.edge_stats = {}
         self.edge_stats_no_inv = {}
-        self.load_success = self.load_data()
-        if not self.load_success:
+        self.load_data()
+        if self.triple_factory is None:
             raise Exception("Unable to load the selected dataset.")
+        self.train_relation_to_inverse = dict()
+        self.val_relation_to_inverse = dict()
+        self.test_relation_to_inverse = dict()
+        self.load_success = self.prepare_triples() if not self.manually_add_inverse else self.prepare_manual_inverse_triples()
+        if not self.load_success:
+            raise Exception("Unable to prepare the selected dataset.")
         self.generate_tuples()
         self.get_unique_relations_and_entities()
         self.count_entity_stats()
@@ -68,35 +77,35 @@ class KgLoader:
         """
         if self.dataset == 'fb15k237':
             self.triple_factory = FB15k237(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'codex-small':
             self.triple_factory = CoDExSmall(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'codex-medium':
             self.triple_factory = CoDExMedium(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'codex-large':
             self.triple_factory = CoDExLarge(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'wn18rr':
             self.triple_factory = WN18RR(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'yago':
             self.triple_factory = YAGO310(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'ogb-wikikg2':
             self.triple_factory = OGBWikiKG2(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'wiki5m':
             self.triple_factory = Wikidata5M(
-                create_inverse_triples=self.add_inverse)
+                create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'test-dataset':
             train = TriplesFactory.from_path(os.path.join(os.path.join(
                 os.path.join(
                     os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
                     "data"),
                 "test-dataset"), "train.tsv"),
-                                             create_inverse_triples=self.add_inverse)
+                                             create_inverse_triples=self.automatically_add_inverse)
             val = TriplesFactory.from_path(os.path.join(os.path.join(
                 os.path.join(
                     os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
@@ -104,7 +113,7 @@ class KgLoader:
                 "test-dataset"), "val.tsv"),
                                            entity_to_id=train.entity_to_id,
                                            relation_to_id=train.relation_to_id,
-                                           create_inverse_triples=self.add_inverse)
+                                           create_inverse_triples=self.automatically_add_inverse)
             test = TriplesFactory.from_path(os.path.join(os.path.join(
                 os.path.join(
                     os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
@@ -112,14 +121,10 @@ class KgLoader:
                 "test-dataset"), "test.tsv"),
                                             entity_to_id=train.entity_to_id,
                                             relation_to_id=train.relation_to_id,
-                                            create_inverse_triples=self.add_inverse)
+                                            create_inverse_triples=self.automatically_add_inverse)
             self.triple_factory = {'training': train,
                                    'testing': val,
                                    'validation': test}
-        if self.triple_factory is not None:
-            return self.prepare_triples()
-        else:
-            return False
 
     def prepare_triples(self):
         """
@@ -134,7 +139,7 @@ class KgLoader:
                 or self.dataset == 'codex-large' or self.dataset == 'wiki5m':
             self.num_nodes_total = self.triple_factory.num_entities
             # to get the inverse triples as well
-            if self.add_inverse:
+            if self.automatically_add_inverse:
                 self.train_triples = self.triple_factory.training._add_inverse_triples_if_necessary(
                     self.triple_factory.training.mapped_triples)
                 self.val_triples = self.triple_factory.validation._add_inverse_triples_if_necessary(
@@ -172,7 +177,7 @@ class KgLoader:
         # return True
         elif self.dataset == 'test-dataset':
             self.num_nodes_total = self.triple_factory['training'].num_entities
-            if self.add_inverse:
+            if self.automatically_add_inverse:
                 self.train_triples = self.triple_factory[
                     'training']._add_inverse_triples_if_necessary(
                     self.triple_factory['training'].mapped_triples)
@@ -209,7 +214,7 @@ class KgLoader:
         :return: None
         :rtype: Node
         """
-        assert self.add_inverse == True, "Tuples only make sense if inverse edges where added."
+        assert self.manually_add_inverse == True, "Tuples only make sense if inverse edges where added."
         # Initialize empty tensors for tuples
         self.train_tuples = torch.empty((0, 2), dtype=torch.long)
         self.val_tuples = torch.empty((0, 2), dtype=torch.long)
@@ -226,6 +231,144 @@ class KgLoader:
         # head_tuples = triples[:, 0:2]
         # tail_tuples = torch.stack((triples[:, 2], triples[:, 1]), dim=1)
         # tuples = torch.cat((head_tuples, tail_tuples), dim=0)
+    
+    def build_relation_to_inverse_map(self, triple_factory: TriplesFactory) -> dict:
+        relation_to_inverse = {}
+        triples = triple_factory.mapped_triples
+        for id_1 in triples[:, 1].unique():
+            id_1 = id_1.item()
+            id_2 = self.id_to_inverse_id(id_1)
+            label_1: str = triple_factory.relation_id_to_label[id_1]
+            label_2: str = triple_factory.relation_id_to_label[id_2]
+            if label_1.endswith("_inv"):
+                relation_to_inverse[id_2] = id_1
+                label_1 = label_1[:-4]
+            elif label_2.endswith("_inv"):
+                relation_to_inverse[id_1] = id_2
+                label_2 = label_2[:-4]
+            else:
+                raise ValueError(f"Neither relation {label_1} nor {label_2} seem to be an inverse relation.")
+            if not label_1 == label_2:
+                raise ValueError(f"Labels do not match: {label_1} != {label_2}")
+        return relation_to_inverse
+
+    def prepare_manual_inverse_triples(self):
+        if not self.manually_add_inverse:
+            return False
+        assert not self.automatically_add_inverse, "Cannot manually add inverse triples if automatically_add_inverse is True."
+        
+        self.total_num_original_relations = self.triple_factory.num_relations
+        # sanity: all splits use the same shared mapping
+        assert self.total_num_original_relations == torch.concat((
+            self.triple_factory.training.mapped_triples[:, 1], 
+            self.triple_factory.validation.mapped_triples[:, 1], 
+            self.triple_factory.testing.mapped_triples[:, 1]
+        )).unique().shape[0]
+
+        self.inverse_relation_id_offset = self.total_num_original_relations
+
+        if self.dataset in {'fb15k237', 'wn18rr', 'codex-small', 'codex-medium', 'yago', 'ogb-wikikg2', 'codex-large', 'wiki5m'}:
+            self.num_nodes_total = self.triple_factory.num_entities
+
+            # Get number of original relations
+            self.num_relations_original_training = self.triple_factory.training.num_relations
+            self.num_relations_original_validation = self.triple_factory.validation.num_relations
+            self.num_relations_original_testing = self.triple_factory.testing.num_relations
+
+            # save original triples
+            self.train_no_inv = self.triple_factory.training.mapped_triples
+            self.val_no_inv = self.triple_factory.validation.mapped_triples
+            self.test_no_inv = self.triple_factory.testing.mapped_triples
+
+            # Add inverse triples
+            training = self.add_inverse_triples(self.triple_factory.training)
+            validation = self.add_inverse_triples(self.triple_factory.validation)
+            testing = self.add_inverse_triples(self.triple_factory.testing)
+
+            # Re-wrap as dataset
+            self.triple_factory = EagerDataset(training, validation=validation, testing=testing)
+
+            # save triples with inverse relations
+            self.train_triples = self.triple_factory.training.mapped_triples
+            self.val_triples = self.triple_factory.validation.mapped_triples
+            self.test_triples = self.triple_factory.testing.mapped_triples
+
+            # Build relation to inverse map
+            self.train_relation_to_inverse = self.build_relation_to_inverse_map(self.triple_factory.training)
+            self.val_relation_to_inverse = self.build_relation_to_inverse_map(self.triple_factory.validation)
+            self.test_relation_to_inverse = self.build_relation_to_inverse_map(self.triple_factory.testing)
+
+            return True
+
+        elif self.dataset == 'test-dataset':
+            self.num_nodes_total = self.triple_factory['training'].num_entities
+
+            # Get number of original relations
+            self.num_relations_original_training = self.triple_factory['training'].num_relations
+            self.num_relations_original_validation = self.triple_factory['validation'].num_relations
+            self.num_relations_original_testing = self.triple_factory['testing'].num_relations
+
+            # save original triples
+            self.train_no_inv = self.triple_factory['training'].mapped_triples
+            self.val_no_inv = self.triple_factory['validation'].mapped_triples
+            self.test_no_inv = self.triple_factory['testing'].mapped_triples
+
+            # Add inverse triples
+            self.triple_factory['training'] = self.add_inverse_triples(self.triple_factory['training'])
+            self.triple_factory['validation'] = self.add_inverse_triples(self.triple_factory['validation'])
+            self.triple_factory['testing'] = self.add_inverse_triples(self.triple_factory['testing'])
+
+            # save triples with inverse relations
+            self.train_triples = self.triple_factory['training'].mapped_triples
+            self.val_triples = self.triple_factory['validation'].mapped_triples
+            self.test_triples = self.triple_factory['testing'].mapped_triples
+
+            # Build relation to inverse map
+            self.train_relation_to_inverse = self.build_relation_to_inverse_map(self.triple_factory['training'])
+            self.val_relation_to_inverse = self.build_relation_to_inverse_map(self.triple_factory['validation'])
+            self.test_relation_to_inverse = self.build_relation_to_inverse_map(self.triple_factory['testing'])
+
+            return True
+        return False
+
+    def id_to_inverse_id(self, id: int) -> int:
+        inverse_id = id + self.inverse_relation_id_offset if id < self.inverse_relation_id_offset else id - self.inverse_relation_id_offset
+        assert inverse_id >= 0 and inverse_id < 2 * self.inverse_relation_id_offset
+        return inverse_id
+
+    def add_inverse_triples(self, triple_factory: TriplesFactory) -> TriplesFactory:
+        triples_no_inv = triple_factory.mapped_triples
+
+        # generate triples with new ids for inverted relations
+        inverse_triples = self.invert_triples(triples_no_inv)
+        new_mapped_triples = torch.cat((triples_no_inv, inverse_triples), dim=0)
+
+        # generate inverse labels
+        new_relation_to_id = triple_factory.relation_to_id.copy()
+        for label, id in triple_factory.relation_to_id.items():
+            assert not label.endswith("_inv"), f"Relation {label} already seems to be an inverse relation."
+            new_relation_to_id[f"{label}_inv"] = self.id_to_inverse_id(id)
+
+        # triple_factory_with_inverse = triple_factory.clone_and_exchange_triples(torch.cat((triples_no_inv, inverse_triples), dim=0), keep_metadata=True, create_inverse_triples=False)
+        triple_factory_with_inverse = TriplesFactory(mapped_triples=new_mapped_triples, entity_to_id=triple_factory.entity_to_id, relation_to_id=new_relation_to_id, create_inverse_triples=False)
+
+        # Check consistency
+        assert self.inverse_relation_id_offset >= triple_factory.num_relations
+        assert triple_factory_with_inverse.mapped_triples.shape[0] == 2 * triple_factory.mapped_triples.shape[0]
+        assert triple_factory_with_inverse.num_relations == 2 * triple_factory.num_relations
+        assert triple_factory_with_inverse.num_triples == 2 * triple_factory.num_triples
+        assert triple_factory_with_inverse.num_entities == triple_factory.num_entities
+        assert triple_factory_with_inverse.entity_to_id == triple_factory.entity_to_id
+
+        return triple_factory_with_inverse
+
+    def invert_triples(self, triples_no_inv: torch.Tensor) -> torch.Tensor:
+        assert self.inverse_relation_id_offset >= triples_no_inv[:, 1].unique().shape[0]
+        inverse_ids = torch.where(triples_no_inv[:, 1] < self.inverse_relation_id_offset,
+                                  triples_no_inv[:, 1] + self.inverse_relation_id_offset,
+                                  triples_no_inv[:, 1] - self.inverse_relation_id_offset)
+        inverse_triples = torch.stack((triples_no_inv[:, 2], inverse_ids, triples_no_inv[:, 0]), dim=1)
+        return inverse_triples
 
     def count_and_save_edge_stats(self):
         """

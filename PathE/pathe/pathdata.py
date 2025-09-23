@@ -4,11 +4,12 @@ collate function in order to streamline data loading operations from arbitrary
 files. Collation is used to create batch by adding the perturbations.
 
 """
+from dataclasses import dataclass
 import math
 import logging
 import itertools
 from collections import Counter
-from typing import Dict, List, Iterator
+from typing import Callable, Dict, List, Iterator
 
 from tqdm import tqdm
 import pandas as pd
@@ -1069,10 +1070,8 @@ class TripleEntityMultiPathDataset(MultiPathDatasetTriples):
         head, rel, tail = triple
         # Retrieving combined incoming and outgoing paths per entity
         with du.local_seed(self.seed, self.epoch, index):
-            h_epaths, h_rpaths, h_idxs, h_erpos = \
-                self._create_inout_contextpaths(head)
-            t_epaths, t_rpaths, t_idxs, t_erpos = \
-                self._create_inout_contextpaths(tail)
+            h_epaths, h_rpaths, h_idxs, h_erpos = self._create_inout_contextpaths(head)
+            t_epaths, t_rpaths, t_idxs, t_erpos = self._create_inout_contextpaths(tail)
         no_hpaths, no_tpaths = len(h_epaths), len(t_epaths)
         # Record the origin of each path (0 for H, 1 for T) and update entixs
         path_ori = [0] * no_hpaths + [1] * no_tpaths
@@ -1096,6 +1095,78 @@ class TripleEntityMultiPathDataset(MultiPathDatasetTriples):
         # self._getitem_separate(index)
         return self._getitem_combined(index)
 
+class CandidateTripleEntityMultiPathDataset(TripleEntityMultiPathDataset):
+    """
+    Triple-centric dataset with precomputed labels and group ids for candidate scoring.
+    - labels: float tensor [N] with 0/1 indicating whether (h,r,t) is true.
+    - group_ids: long tensor [N] indicating the group membership (e.g., h, r, t, hr, ...) for each triple.
+    """
+    def __init__(self,
+                 path_store: str,
+                 relcontext_store: str,
+                 triple_store: torch.Tensor,
+                 labels: torch.Tensor,
+                 group_ids: torch.Tensor,
+                 context_triple_store: torch.Tensor | None = None,
+                 tokens_to_idxs: Dict[int, int] | None = None,
+                 maximum_triple_paths: int = 50,
+                 seed: int = 46,
+                 parallel: bool = False,
+                 num_workers: int = 0):
+        super().__init__(
+            path_store=path_store,
+            relcontext_store=relcontext_store,
+            triple_store=triple_store,
+            context_triple_store=context_triple_store,
+            tokens_to_idxs=tokens_to_idxs,
+            maximum_triple_paths=maximum_triple_paths,
+            num_negatives=0,                  # candidates already include negatives
+            triple_corruptor=None,
+            seed=seed,
+            parallel=parallel,
+            num_workers=num_workers,
+            neg_triple_store=None,
+        )
+
+        assert labels.shape[0] == self.triplestore.shape[0], \
+            f"labels size {labels.shape} != triples size {self.triplestore.shape[0]}"
+        assert group_ids.shape[0] == self.triplestore.shape[0], \
+            f"group_ids size {group_ids.shape} != triples size {self.triplestore.shape[0]}"
+        self._lp_labels = labels.to(torch.float32).cpu()
+        self._lp_group_ids = group_ids.to(torch.long).cpu()
+
+        # Precompute weights for each sample based on group counts
+        # Idea: w_pos = 0.5 / num_pos_in_group, w_neg = 0.5 / num_neg_in_group
+        # This ensures that the total weight per group is 1.0, split equally
+        # between positive and negative samples.
+        pos_mask = (self._lp_labels == 1)
+        neg_mask = ~pos_mask
+
+        # Counts per group
+        pos_counts = torch.bincount(self._lp_group_ids, weights=pos_mask.float(), minlength=int(self._lp_group_ids.max().item()) + 1)
+        neg_counts = torch.bincount(self._lp_group_ids, weights=neg_mask.float(), minlength=int(self._lp_group_ids.max().item()) + 1)
+
+        # Avoid division by zero
+        pos_denominator = pos_counts.clone()
+        pos_denominator[pos_denominator == 0] = 1.0
+        neg_denominator = neg_counts.clone()
+        neg_denominator[neg_denominator == 0] = 1.0
+
+        weights = torch.empty(self._lp_labels.shape[0], dtype=torch.float32)
+        # w_pos = 0.5 / num_pos_in_group
+        weights[pos_mask] = 0.5 / pos_denominator[self._lp_group_ids[pos_mask]]
+        # w_neg = 0.5 / num_neg_in_group
+        weights[neg_mask] = 0.5 / neg_denominator[self._lp_group_ids[neg_mask]]
+        self._lp_weights = weights.cpu()
+
+    def __getitem__(self, index) -> dict:
+        item = super().__getitem__(index)
+        # Attach precomputed label and group id
+        item["lp_label"] = float(self._lp_labels[index].item())
+        item["lp_group_id"] = int(self._lp_group_ids[index].item())
+        item["lp_weight"] = float(self._lp_weights[index].item())
+        # ori_triple already present from parent
+        return item
 
 class EntityMultiPathDataset(MultiPathDatasetTriples):
 
@@ -1193,6 +1264,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
                  relcontext_store: str,
                  tuple_store: torch.tensor,
                  context_triple_store: torch.tensor = None,
+                 original_relation_to_inverse_relation: Dict[int, int] = None,
                  tokens_to_idxs: Dict[int, int] = None,
                  maximum_tuple_paths = 50,
                  num_negatives: int = 0,
@@ -1213,6 +1285,8 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             A matrix holding (h, r) tuples.
         context_triple_store : torch.tensor
             If provided, these triples will be used for constructing paths.
+        original_relation_to_inverse_relation : Dict[int, int]
+            Mapping dictionary for encoding original relations to their inverse relations.
         tokens_to_idxs : Dict[int, int]
             Mapping dictionary for encoding tokens to proper idxs.
         maximum_tuple_paths : int
@@ -1237,7 +1311,9 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         # Distributing path budget across entities (H, T) and contexts (in, out)
         self.ppe = maximum_tuple_paths  # paths per entity not divided by two as we have tuples and not triples (only one entity which needs paths)
         self.ppc = self.ppe // 2  # paths per entity context (in/out)
-        
+
+        self.relation_maps = RelationMaps(original_relation_to_inverse_relation)
+        self.relation_maps.validate_relation_inverser(tuple_store)
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved
         # relcontext_df = pd.read_csv(relcontext_store)
@@ -1346,3 +1422,35 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             "ori_triple": tuple, "path_origins": path_ori,
         }
 
+
+@dataclass
+class RelationMaps:
+    original_relations: set[int]
+    inverse_relations: set[int]
+    relation_inverser: dict[int, int]
+    original_relation_to_inverse_relation: Dict[int, int]
+    # relation_inverser_tensor: torch.Tensor
+
+    def __init__(self, original_relation_to_inverse_relation: Dict[int, int]):
+        self.original_relations = set(original_relation_to_inverse_relation.keys())
+        self.inverse_relations = set(original_relation_to_inverse_relation.values())
+        self.original_relation_to_inverse_relation = original_relation_to_inverse_relation
+        self.relation_inverser = self.generate_relation_inverser(original_relation_to_inverse_relation)
+        # self.relation_inverser_tensor = torch.tensor([self.relation_inverser[i] for i in range(len(self.relation_inverser))], dtype=torch.long)
+
+    @staticmethod
+    def generate_relation_inverser(original_relation_to_inverse: Dict[int, int]) -> Dict[int, int]:
+        """
+        Generate a mapping dictionary for encoding all relations (original and inverse) to their inverse relation.
+        """
+        relation_inverser = {}
+        for rel, inv in original_relation_to_inverse.items():
+            relation_inverser[rel] = inv
+            relation_inverser[inv] = rel
+        return relation_inverser
+    
+    def validate_relation_inverser(self, tuple_store: torch.tensor):
+        for rel in tuple_store[:, 1].unique():
+            rel_inv = self.relation_inverser[rel.item()]
+            assert self.relation_inverser[rel_inv] == rel.item(), f"Relation {rel.item()} maps to {rel_inv}, which does not map back to {rel.item()}"
+        

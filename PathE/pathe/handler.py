@@ -40,7 +40,7 @@ class Handler:
         self.num_anchors = num_anchors if num_anchors is not None else statics.DEFAULT_NUM_ANCHORS
         self.max_num_paths = max_num_paths if max_num_paths is not None else statics.DEFAULT_NUM_PATHS
         self.graph_params = self.dataloader.dataset + "_" + self.part + "_" \
-                            + str(self.num_anchors) + "_" + str(self.max_num_paths) + "_" + str(dataloader.add_inverse)
+                            + str(self.num_anchors) + "_" + str(self.max_num_paths) + "_" + str(dataloader.automatically_add_inverse) + "_" + str(dataloader.manually_add_inverse)
         self.save_dir = os.path.join(os.path.join(os.path.join(os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
                                                                "data"), "Graph_Data"), self.graph_params)
         self.relations_list = sorted(self.graph.unique_relations.tolist())
