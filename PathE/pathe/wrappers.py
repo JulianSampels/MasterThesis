@@ -830,8 +830,9 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
                          full_test=full_test, max_ppt=max_ppt,
                          margin=margin, nssa_alpha=nssa_alpha,
                          lp_loss_fn=lp_loss_fn, loss_weight=loss_weight)
-
-        self.accumulate_gradient = accumulate_gradient
+        
+        # Ensure sane integer gradient accumulation
+        self.accumulate_gradient = max(1, int(round(accumulate_gradient)))
         self.use_manual_optimization = use_manual_optimization
         self.link_head_detached = link_head_detached
         self.train_relation_maps = train_relation_maps
@@ -931,56 +932,54 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # Forward pass
         logits_rp, logits_lp = self.model_forward(batch)
 
-        # # generate triple candidates
-        # tuples = batch['ori_triple']
-        # triple_candidates, _val = self.build_triple_candidates(tuples, self.train_relation_maps, logits_rp, k=100)
-        # print(f"Generated {triple_candidates.size(0)} triple candidates for {tuples.size(0)} input tuples: {triple_candidates[:5,:]} ..., {_val[:5]} ...")
-
-        # Calculate separate losses
+        # Calculate separate losses (unscaled for logging)
         targets = batch["target"] - 2
-        rp_loss = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
-        lp_loss = self.compute_lp_loss(logits_lp, self.train_num_negatives)
-        if torch.isnan(rp_loss) or torch.isnan(lp_loss):
-            logger.warning(f"Training stopped due to NaN loss: rp_loss: {rp_loss}, lp_loss: {lp_loss}.")
+        rp_loss_unscaled = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
+        use_link = (self.train_num_negatives > 0)
+        lp_loss_unscaled = self.compute_lp_loss(logits_lp, self.train_num_negatives) if use_link else torch.zeros((), device=self.device)
+        if torch.isnan(rp_loss_unscaled) or torch.isnan(lp_loss_unscaled):
+            logger.warning("Training stopped due to NaN loss.")
             self.trainer.should_stop = True
             self.trainer.limit_val_batches = 0
 
-        # Scale losses for accumulation
-        rp_loss = rp_loss / self.accumulate_gradient
-        lp_loss = lp_loss / self.accumulate_gradient
+        # Scale for accumulation
+        scale = 1.0 / self.accumulate_gradient
+        rp_loss = rp_loss_unscaled * scale
+        lp_loss = lp_loss_unscaled * scale
 
-        # Accumulate gradients
-        # Backward passes:
-        # 1) Propagate relation loss through the entire model so shared
-        #    parameters and the relation head receive gradients.
-        #    By using retain_graph=True here we keep the graph for a second backward.
-        self.manual_backward(rp_loss, retain_graph=True)
-        # 2) Propagate link loss only through the link head.
-        #    When link_head_detached=True the link optimizer was created with
-        #    link-head-only params; in that case this backward should therefore only affect
-        #    link-head parameters (and not embeddings) as intended.
-        if lp_loss.item() > 0:
-            self.manual_backward(lp_loss)
+        # Backward passes
+        self.toggle_optimizer(relation_opt)
+        self.manual_backward(rp_loss, retain_graph=(use_link and (not self.link_head_detached)))
+        self.untoggle_optimizer(relation_opt)
+
+        if use_link:
+            self.toggle_optimizer(link_opt)
+            self.manual_backward(lp_loss, retain_graph=False)
+            self.untoggle_optimizer(link_opt)
         
-        # Step and zero grads when enough batches have been accumulated
-        if (batch_idx + 1) % self.accumulate_gradient == 0:
-            # Optimize relation prediction
+        # Step and zero grads when enough batches have been accumulated or at last batch
+        is_boundary = ((batch_idx + 1) % self.accumulate_gradient) == 0
+        total_batches = getattr(self.trainer, "num_training_batches", None)
+        is_last = (total_batches is not None) and ((batch_idx + 1) == int(total_batches))
+        if is_boundary or is_last:
             self.clip_gradients(relation_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
             relation_opt.step()
             relation_opt.zero_grad()
 
-            # Optimize link prediction  
-            if lp_loss.item() > 0:
+            if use_link:
                 self.clip_gradients(link_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
                 link_opt.step()
                 link_opt.zero_grad()
         
-        # Logging
-        self.log("train_rp_loss", rp_loss, prog_bar=True)
-        self.log("train_lp_loss", lp_loss, prog_bar=(self.train_num_negatives > 0))
-        self.log("train_total_loss", rp_loss + lp_loss)
+        # Logging unscaled losses
+        self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
+        if use_link:
+            self.log("train_lp_loss", lp_loss_unscaled, prog_bar=True)
+            self.log("train_total_loss", rp_loss_unscaled + lp_loss_unscaled)
+        else:
+            self.log("train_total_loss", rp_loss_unscaled)
         
-        return {"rp_loss": rp_loss, "lp_loss": lp_loss}
+        return {"rp_loss": rp_loss_unscaled, "lp_loss": lp_loss_unscaled}
     
     def validation_step(self, batch, batch_idx):
         if not self.use_manual_optimization:
