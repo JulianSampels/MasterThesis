@@ -948,14 +948,14 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         lp_loss = lp_loss_unscaled * scale
 
         # Backward passes
-        self.toggle_optimizer(relation_opt)
+        self.toggle_optimizer(optimizer=relation_opt, optimizer_idx=0)
         self.manual_backward(rp_loss, retain_graph=(use_link and (not self.link_head_detached)))
-        self.untoggle_optimizer(relation_opt)
+        self.untoggle_optimizer(optimizer_idx=0)
 
         if use_link:
-            self.toggle_optimizer(link_opt)
+            self.toggle_optimizer(optimizer=link_opt, optimizer_idx=1)
             self.manual_backward(lp_loss, retain_graph=False)
-            self.untoggle_optimizer(link_opt)
+            self.untoggle_optimizer(optimizer_idx=1)
         
         # Step and zero grads when enough batches have been accumulated or at last batch
         is_boundary = ((batch_idx + 1) % self.accumulate_gradient) == 0
