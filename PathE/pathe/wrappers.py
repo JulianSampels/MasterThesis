@@ -1143,9 +1143,12 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         device = logits_rp_grouped.device
 
         # 3. Resolve original & inverse relation ids
-        original_relations = torch.tensor(list(relation_maps.original_relations), device=device, dtype=torch.long)
-        inverse_relations = torch.tensor(list(relation_maps.inverse_relations), device=device, dtype=torch.long)
+        r_map = torch.tensor(list(relation_maps.original_relation_to_inverse_relation.items()), device=device, dtype=torch.long)
+        original_relations = r_map[:, 0]
+        inverse_relations = r_map[:, 1]
         assert original_relations.numel() == inverse_relations.numel(), "Mismatch originals/inverses."
+        for i, rel in enumerate(original_relations):
+            assert relation_maps.original_relation_to_inverse_relation[rel.item()] == inverse_relations[i], "Inconsistent relation maps."
         R = original_relations.size(0)
 
         # 4. Slice logits for original and inverse relation columns

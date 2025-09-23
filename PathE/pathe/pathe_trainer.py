@@ -758,6 +758,13 @@ def create_and_run_training_exp_two_phases(args):
         tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all,
         p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
 
+    # add true triples to train candidates (if not already present) to ensure all positives are included
+    candidates_train = torch.unique(torch.cat([candidates_train, train_triples], dim=0), dim=0)
+    # only keep triples with original relation todo: check if triples.pt shoudl already exclude inv relations and paths for triples same
+    train_triples = train_triples[torch.isin(train_triples[:,1], torch.tensor(list(train_set_t.relation_maps.original_relations)))]
+    val_triples = val_triples[torch.isin(val_triples[:,1], torch.tensor(list(valid_set_t.relation_maps.original_relations)))]
+    test_triples = test_triples[torch.isin(test_triples[:,1], torch.tensor(list(test_set_t.relation_maps.original_relations)))]
+
     # Free large tensors before Phase 3
     del tr_logits_all, va_logits_all, te_logits_all
     if args.device == "cuda":
@@ -835,11 +842,14 @@ def create_and_run_training_exp_two_phases(args):
         logger.warning(f"Overriding lp_loss_fn={args_phase3.lp_loss_fn} to 'bce' for candidate training in phase 3.")
         args_phase3.lp_loss_fn = "bce"  # BCE for positives + negatives in candidates
 
+    # path_store = (train_set_t.relation_paths, train_set_t.entity_paths, train_set_t.path_index)
     train_set_tri = CandidateTripleEntityMultiPathDataset(
-        path_store=path_store, relcontext_store=relcon,
+        path_store=paths, relcontext_store=relcon,
         triple_store=candidates_train, labels=train_labels, group_strategy='h', context_triple_store=train_triples,
         maximum_triple_paths=args_phase3.max_ppt,
         parallel=parallel, num_workers=args_phase3.num_workers)
+    tokens_to_idxs = train_set_tri.tokens_to_idxs  # shared
+    path_store = (train_set_tri.relation_paths, train_set_tri.entity_paths, train_set_tri.path_index)
     valid_set_tri = CandidateTripleEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
         triple_store=candidates_val, labels=val_labels, group_strategy='h', context_triple_store=train_triples,
@@ -853,13 +863,13 @@ def create_and_run_training_exp_two_phases(args):
 
     tr_loader_tri = torch.utils.data.DataLoader(
         train_set_tri, batch_size=args_phase3.batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args_phase3.num_workers)
+        shuffle=True, pin_memory=False, num_workers=args_phase3.num_workers)
     va_loader_tri = torch.utils.data.DataLoader(
         valid_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args_phase3.num_workers)
+        shuffle=True, pin_memory=False, num_workers=args_phase3.num_workers)
     te_loader_tri = torch.utils.data.DataLoader(
         test_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=False, num_workers=args_phase3.num_workers)
+        shuffle=True, pin_memory=False, num_workers=args_phase3.num_workers)
 
     model_tri = PathEModelTriples(
         vocab_size=train_set_tri.vocab_size,
