@@ -1101,22 +1101,25 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         log_p_tail_2d: torch.Tensor,
         alpha: float,
         k: int,
-        block_size: int = 4096,
+        rel_block_size: int = 1,
     ):
         """
         Memory-efficient global top-k over all (head, relation, tail) triples.
 
-        Computes top-k values of the joint log-probability without materializing
-        the (E, R, E) tensor:
-
-            joint(h, r, t) = alpha * log_p_head_2d[h, r] + (1 - alpha) * log_p_tail_2d[r, t]
+        Vectorized over relation chunks:
+        - Process at most `rel_block_size` relations at a time (no tail-splitting).
+        - For a chunk r in [r0:r1), build a joint score tensor S with shape (C, E, E),
+          where C = r1 - r0 and:
+              S[c, h, t] = alpha * log_p_head_2d[h, r0+c] + (1 - alpha) * log_p_tail_2d[r0+c, t]
+        - Run a single topk over the whole chunk (flattened), then decode to (r, h, t).
+        - Merge the chunk top-k into a running global top-k buffer of size k.
 
         Args:
             log_p_head_2d: Tensor (E, R) with log P(r | h)
             log_p_tail_2d: Tensor (R, E) with log P(r^{-1} | t), aligned by relation index
             alpha: Weight in [0,1] for head vs tail terms
             k: Number of top entries to keep globally
-            block_size: Tail-dimension block size to bound working-set memory
+            rel_block_size: Max number of relations to process per chunk
 
         Returns:
             top_vals: (k',) tensor of joint log-probs (k' <= k)
@@ -1129,8 +1132,8 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         assert log_p_tail_2d.shape == (R, E), "log_p_tail_2d must be (R, E)"
 
         # Work on CPU float32 to minimize memory pressure
-        log_p_head_2d = log_p_head_2d.to(dtype=torch.float32, device="cpu", copy=False)
-        log_p_tail_2d = log_p_tail_2d.to(dtype=torch.float32, device="cpu", copy=False)
+        log_p_head_2d = log_p_head_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (E, R)
+        log_p_tail_2d = log_p_tail_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (R, E)
 
         # Running global top-k buffers (pre-allocated, updated incrementally)
         top_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
@@ -1142,66 +1145,66 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         a_h = float(alpha)
         a_t = float(1.0 - alpha)
 
-        # Iterate relations and stream tails in blocks to avoid (E, R, E) materialization
-        for r in tqdm(range(R), desc="Computing global top-k candidates", unit="rel", leave=False):
-            # Per-relation head and tail log-probs
-            h_col = (a_h * log_p_head_2d[:, r]).unsqueeze(1)  # (E, 1)
-            t_vec = (a_t * log_p_tail_2d[r, :])               # (E,)
+        # Progress bar disappears after loop (leave=False)
+        for r0 in tqdm(range(0, R, max(1, int(rel_block_size))),
+                       desc="Computing global top-k candidates", unit="rel", leave=False):
+            r1 = min(R, r0 + max(1, int(rel_block_size)))
+            C = r1 - r0  # number of relations in this chunk
 
-            t0 = 0
-            while t0 < E:
-                t1 = min(E, t0 + int(block_size))
-                # Block joint scores: (E, B) = (E,1) + (1,B)
-                block = h_col + t_vec[t0:t1].unsqueeze(0)  # (E, B)
-                numel_block = block.numel()
-                if numel_block == 0:
-                    t0 = t1
-                    continue
+            # Vectorized joint scores for the relation chunk
+            # h_chunk: (E, C), t_chunk: (C, E)
+            h_chunk = (a_h * log_p_head_2d[:, r0:r1])         # (E, C)
+            t_chunk = (a_t * log_p_tail_2d[r0:r1, :])         # (C, E)
+            # S: (C, E, E) with broadcasting: per relation c, S[c] = h_chunk[:, c][:, None] + t_chunk[c][None, :]
+            S = h_chunk.t().unsqueeze(2) + t_chunk.unsqueeze(1)  # (C, E, E)
 
-                k_block = min(k, numel_block)
-                vals, idx_local = torch.topk(block.reshape(-1), k=k_block, largest=True)
+            # Single top-k for the whole chunk
+            numel_chunk = S.numel()
+            if numel_chunk == 0:
+                continue
+            k_chunk = min(k, numel_chunk)
+            vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
 
-                # Map local indices back to (h, t) within this relation and tail block
-                B = (t1 - t0)
-                h_local = (idx_local // B)
-                t_local = (idx_local %  B) + t0
+            # Decode flat indices to (c, h, t) and map to global r = r0 + c
+            per_rel = E * E
+            c_idx = idx_chunk_flat // per_rel
+            rem   = idx_chunk_flat % per_rel
+            h_idx = rem // E
+            t_idx = rem %  E
+            r_idx = (c_idx + r0).to(torch.long)
 
-                # Merge with running global top-k heap
-                # General idea:
-                # - Maintain the best 'k' triples seen so far across all (r, tail-block) chunks.
-                # - For each chunk, compute its local top-k, concatenate with the current global top list,
-                #   and then take a top-k again. This effectively behaves like a bounded heap without
-                #   allocating or sorting the full (E*R*E) list.
-                # - 'filled' tracks how many entries in the buffers are currently valid (first chunks
-                #   may have fewer than 'k' items).
-                if filled == 0:
-                    take = min(k, vals.numel())
-                    top_vals[:take] = vals[:take]
-                    top_r[:take]    = r
-                    top_h[:take]    = h_local[:take]
-                    top_t[:take]    = t_local[:take]
-                    filled = take
+            # Merge with running global top-k heap
+            # General idea:
+            # - Maintain the best 'k' triples seen so far across processed relation chunks.
+            # - Concatenate current global list with this chunk's list, then take top-k again.
+            # - We never allocate or sort the full (E*R*E) array; memory stays bounded by
+            #   O(C*E*E) for the current chunk plus O(k) for the heap.
+            if filled == 0:
+                take = min(k, vals_chunk.numel())
+                top_vals[:take] = vals_chunk[:take]
+                top_r[:take]    = r_idx[:take]
+                top_h[:take]    = h_idx[:take]
+                top_t[:take]    = t_idx[:take]
+                filled = take
+            else:
+                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
+                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
+                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
+                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
+
+                if cand_vals.numel() > k:
+                    vtop, order = torch.topk(cand_vals, k=k, largest=True)
+                    top_vals[:k] = vtop
+                    top_r[:k]    = cand_r[order]
+                    top_h[:k]    = cand_h[order]
+                    top_t[:k]    = cand_t[order]
+                    filled = k
                 else:
-                    cand_vals = torch.cat([top_vals[:filled], vals], dim=0)
-                    cand_r    = torch.cat([top_r[:filled],    torch.full_like(h_local, r)], dim=0)
-                    cand_h    = torch.cat([top_h[:filled],    h_local], dim=0)
-                    cand_t    = torch.cat([top_t[:filled],    t_local], dim=0)
-
-                    if cand_vals.numel() > k:
-                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
-                        top_vals[:k] = vtop
-                        top_r[:k]    = cand_r[order]
-                        top_h[:k]    = cand_h[order]
-                        top_t[:k]    = cand_t[order]
-                        filled = k
-                    else:
-                        top_vals[:cand_vals.numel()] = cand_vals
-                        top_r[:cand_vals.numel()]    = cand_r
-                        top_h[:cand_vals.numel()]    = cand_h
-                        top_t[:cand_vals.numel()]    = cand_t
-                        filled = cand_vals.numel()
-
-                t0 = t1
+                    top_vals[:cand_vals.numel()] = cand_vals
+                    top_r[:cand_vals.numel()]    = cand_r
+                    top_h[:cand_vals.numel()]    = cand_h
+                    top_t[:cand_vals.numel()]    = cand_t
+                    filled = cand_vals.numel()
 
         # Trim to filled size
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
@@ -1286,23 +1289,25 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             assert 0.0 <= q < 1.0, "q must be in [0,1)"
             cap_q = max(1, int(math.ceil((1.0 - q) * total)))
             if effective_cap is not None and effective_cap < cap_q:
-                logger.warning(f"cap_candidates {effective_cap} < cap_q {cap_q} from q-quantile. Using smaller cap_candidates.")
-                print("WARNING: cap_candidates < cap_q from q-quantile. Using smaller cap_candidates.")
+                logger.warning(f"cap_candidates < cap_q  from q-quantile. Using smaller cap_candidates {cap_candidates} instead of {cap_q}.")
             effective_cap = cap_q if effective_cap is None else min(effective_cap, cap_q)
         if effective_cap is None:
             raise ValueError("Candidate generation requires a cap (q or cap_candidates). Threshold-only (p) is unsafe for large graphs.")
 
         # Compute global top-k in a streaming fashion without O(E*R*E) memory
-        # tune for speed vs memory 
-        # Block RAM (GB) = block_size * E * 4 / 1024**3
-        memory_limit_gb = 50.0  # target RAM limit in GB
-        block_size = max(1, int(memory_limit_gb * (1024**3) / (E * 4)))
+        # Peak RAM ~ rel_block_size * E * E * 4 bytes
+        memory_limit_gb = 1.0  # target RAM limit in GB
+        bytes_per_float = 4
+        max_bytes = int(memory_limit_gb * (1024**3))
+        rel_block_size = max(1, max_bytes // max(1, (E * E * bytes_per_float)))
+        print(f"rel_block_size: {rel_block_size}")
+
         top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
             log_p_head_2d=log_p_head_2d,
             log_p_tail_2d=log_p_tail_2d,
             alpha=float(alpha),
             k=int(effective_cap),
-            block_size=block_size,
+            rel_block_size=int(rel_block_size),
         )
 
         # Build candidate triples (global entity indexing)
