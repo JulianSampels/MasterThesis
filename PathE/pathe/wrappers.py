@@ -1147,7 +1147,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Progress bar disappears after loop (leave=False)
         for r0 in tqdm(range(0, R, max(1, int(rel_block_size))),
-                       desc="Computing global top-k candidates", unit="rel", leave=False):
+                       desc=f"Computing global top-k candidates.", unit=f"{rel_block_size} relations", leave=False):
             r1 = min(R, r0 + max(1, int(rel_block_size)))
             C = r1 - r0  # number of relations in this chunk
 
@@ -1296,18 +1296,17 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Compute global top-k in a streaming fashion without O(E*R*E) memory
         # Peak RAM ~ rel_block_size * E * E * 4 bytes
-        memory_limit_gb = 1.0  # target RAM limit in GB
-        bytes_per_float = 4
-        max_bytes = int(memory_limit_gb * (1024**3))
-        rel_block_size = max(1, max_bytes // max(1, (E * E * bytes_per_float)))
-        print(f"rel_block_size: {rel_block_size}")
+        # memory_limit_gb = 1.0  # target RAM limit in GB
+        # bytes_per_float = 4
+        # max_bytes = int(memory_limit_gb * (1024**3))
+        # rel_block_size = max(1, max_bytes // max(1, (E * E * bytes_per_float)))
 
         top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
             log_p_head_2d=log_p_head_2d,
             log_p_tail_2d=log_p_tail_2d,
             alpha=float(alpha),
             k=int(effective_cap),
-            rel_block_size=int(rel_block_size),
+            rel_block_size=int(10)  # tune based on memory constraints,
         )
 
         # Build candidate triples (global entity indexing)
