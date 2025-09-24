@@ -17,6 +17,7 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
 import torch_scatter
+from tqdm import tqdm
 
 from PathE.pathe.pathdata import RelationMaps
 
@@ -1094,6 +1095,117 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # loss_rp = self.criterion(logits_rp, targets)
         return logits_rp, logits_lp
     
+    def _global_topk_joint_streaming(
+        self,
+        log_p_head_2d: torch.Tensor,
+        log_p_tail_2d: torch.Tensor,
+        alpha: float,
+        k: int,
+        block_size: int = 4096,
+    ):
+        """
+        Memory-efficient global top-k over all (head, relation, tail) triples.
+
+        Computes top-k values of the joint log-probability without materializing
+        the (E, R, E) tensor:
+
+            joint(h, r, t) = alpha * log_p_head_2d[h, r] + (1 - alpha) * log_p_tail_2d[r, t]
+
+        Args:
+            log_p_head_2d: Tensor (E, R) with log P(r | h)
+            log_p_tail_2d: Tensor (R, E) with log P(r^{-1} | t), aligned by relation index
+            alpha: Weight in [0,1] for head vs tail terms
+            k: Number of top entries to keep globally
+            block_size: Tail-dimension block size to bound working-set memory
+
+        Returns:
+            top_vals: (k',) tensor of joint log-probs (k' <= k)
+            top_r:    (k',) tensor of relation indices
+            top_h:    (k',) tensor of head indices
+            top_t:    (k',) tensor of tail indices
+        """
+        assert 0.0 <= alpha <= 1.0, "alpha must be in [0,1]"
+        E, R = log_p_head_2d.shape
+        assert log_p_tail_2d.shape == (R, E), "log_p_tail_2d must be (R, E)"
+
+        # Work on CPU float32 to minimize memory pressure
+        log_p_head_2d = log_p_head_2d.to(dtype=torch.float32, device="cpu", copy=False)
+        log_p_tail_2d = log_p_tail_2d.to(dtype=torch.float32, device="cpu", copy=False)
+
+        # Running global top-k buffers (pre-allocated, updated incrementally)
+        top_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
+        top_r    = torch.full((k,), -1, dtype=torch.long)
+        top_h    = torch.full((k,), -1, dtype=torch.long)
+        top_t    = torch.full((k,), -1, dtype=torch.long)
+        filled = 0  # number of valid entries currently stored in the buffers
+
+        a_h = float(alpha)
+        a_t = float(1.0 - alpha)
+
+        # Iterate relations and stream tails in blocks to avoid (E, R, E) materialization
+        for r in tqdm(range(R), desc="Computing global top-k candidates", unit="rel", leave=False):
+            # Per-relation head and tail log-probs
+            h_col = (a_h * log_p_head_2d[:, r]).unsqueeze(1)  # (E, 1)
+            t_vec = (a_t * log_p_tail_2d[r, :])               # (E,)
+
+            t0 = 0
+            while t0 < E:
+                t1 = min(E, t0 + int(block_size))
+                # Block joint scores: (E, B) = (E,1) + (1,B)
+                block = h_col + t_vec[t0:t1].unsqueeze(0)  # (E, B)
+                numel_block = block.numel()
+                if numel_block == 0:
+                    t0 = t1
+                    continue
+
+                k_block = min(k, numel_block)
+                vals, idx_local = torch.topk(block.reshape(-1), k=k_block, largest=True)
+
+                # Map local indices back to (h, t) within this relation and tail block
+                B = (t1 - t0)
+                h_local = (idx_local // B)
+                t_local = (idx_local %  B) + t0
+
+                # Merge with running global top-k heap
+                # General idea:
+                # - Maintain the best 'k' triples seen so far across all (r, tail-block) chunks.
+                # - For each chunk, compute its local top-k, concatenate with the current global top list,
+                #   and then take a top-k again. This effectively behaves like a bounded heap without
+                #   allocating or sorting the full (E*R*E) list.
+                # - 'filled' tracks how many entries in the buffers are currently valid (first chunks
+                #   may have fewer than 'k' items).
+                if filled == 0:
+                    take = min(k, vals.numel())
+                    top_vals[:take] = vals[:take]
+                    top_r[:take]    = r
+                    top_h[:take]    = h_local[:take]
+                    top_t[:take]    = t_local[:take]
+                    filled = take
+                else:
+                    cand_vals = torch.cat([top_vals[:filled], vals], dim=0)
+                    cand_r    = torch.cat([top_r[:filled],    torch.full_like(h_local, r)], dim=0)
+                    cand_h    = torch.cat([top_h[:filled],    h_local], dim=0)
+                    cand_t    = torch.cat([top_t[:filled],    t_local], dim=0)
+
+                    if cand_vals.numel() > k:
+                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
+                        top_vals[:k] = vtop
+                        top_r[:k]    = cand_r[order]
+                        top_h[:k]    = cand_h[order]
+                        top_t[:k]    = cand_t[order]
+                        filled = k
+                    else:
+                        top_vals[:cand_vals.numel()] = cand_vals
+                        top_r[:cand_vals.numel()]    = cand_r
+                        top_h[:cand_vals.numel()]    = cand_h
+                        top_t[:cand_vals.numel()]    = cand_t
+                        filled = cand_vals.numel()
+
+                t0 = t1
+
+        # Trim to filled size
+        return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
+
     def build_triple_candidates_adaptive(
         self,
         tuples: torch.Tensor,
@@ -1106,29 +1218,33 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         cap_candidates: int = None # final cap after thresholding only keep top-k candidates
     ):
         """
-        Build candidate (head, relation, tail) triples and their joint probabilities.
+        Efficiently generate candidate (head, relation, tail) triples and their joint probabilities
+        for two-phase PathE training, using global top-k streaming to avoid OOM on large graphs.
 
-        Selection logic (global, not per-entity):
-          1) Compute an effective cap from q: cap_q = ceil((1-q) * E*R*E). If provided,
-             cap_candidates = min(cap_candidates or inf, cap_q).
-          2) If p is provided, keep all with P >= p (global threshold).
-          3) If more than cap_candidates remain, keep the top cap_candidates globally.
-          4) If cap_candidates is None and p is None, keep all.
+        Candidate selection logic:
+          1. Compute an effective cap from quantile q (cap_q = ceil((1-q) * E*R*E)), and/or cap_candidates.
+             The final cap is min(cap_candidates, cap_q) if both are set.
+          2. Compute joint log-probabilities for all (h, r, t) triples using:
+                joint(h, r, t) = alpha * log P(r|h) + (1-alpha) * log P(r^{-1}|t)
+             without materializing the full (E, R, E) tensor.
+          3. Use a streaming top-k algorithm to keep only the highest-probability candidates globally.
+          4. Stack all candidate triples and their scores.
+          5. If a global probability threshold p is set, filter candidates by score >= p.
+             Always keep at least one candidate to avoid empty sets downstream.
 
         Args:
-            tuples: (num_samples, 2) with entity in col 0.
-            relation_maps: mapping for original/inverse relations.
-            logits_rp: per-sample logits (num_samples, total_relations).
-            p: float or None, global probability threshold.
-            q: float in [0,1), quantile threshold: keeps top (1-q) fraction by joint probability,
-               implemented via top-k selection (not by explicit quantile computation).
-            temperature: softmax temperature (>0).
-            alpha: weight in [0,1] for head vs tail contribution.
-            cap_candidates: optional int final cap.
+            tuples: (num_samples, 2) tensor, entity in col 0.
+            relation_maps: RelationMaps object mapping original to inverse relations.
+            logits_rp: (num_samples, num_relations) tensor of per-sample relation logits.
+            p: Optional[float], global probability threshold for candidate filtering.
+            q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
+            temperature: float, softmax temperature for calibration.
+            alpha: float in [0,1], weight for head vs tail log-probabilities.
+            cap_candidates: Optional[int], hard cap on number of candidates.
 
         Returns:
-            candidates: (N,3) tensor of (head_id, relation_id, tail_id)
-            scores: (N,) joint probabilities
+            candidates: (N, 3) tensor of (head_id, relation_id, tail_id) triples.
+            scores: (N,) tensor of joint probabilities for each candidate.
         """
         assert logits_rp is not None, "logits_rp required."
         assert temperature > 0, "temperature must be > 0"
@@ -1137,6 +1253,8 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # 1. Collect unique head entities (local indexing)
         entities, inverse_entity_indices = tuples[:, 0].unique(return_inverse=True, sorted=False)
         E = entities.size(0)
+        if E == 0:
+            return tuples.new_zeros((0, 3)), tuples.new_zeros((0,), dtype=torch.float32)
 
         # 2. Aggregate logits per local head index
         logits_rp_grouped = torch_scatter.scatter_mean(logits_rp, inverse_entity_indices, dim=0)
@@ -1155,60 +1273,54 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
 
-        # 5. Calibrated log-probabilities (avoid tiny exp, use log_softmax)
-        log_p_head = torch.log_softmax(head_logits_subset / temperature, dim=1).unsqueeze(2)                 # (E, R, 1)
-        log_p_tail = torch.log_softmax(tail_logits_subset / temperature, dim=1).transpose(0, 1).unsqueeze(0) # (1, R, E)
+        # 5. Calibrated log-probabilities (avoid tiny exp, use log_softmax); keep as 2D on CPU
+        log_p_head_2d = torch.log_softmax(head_logits_subset / temperature, dim=1).to(torch.float32).cpu()  # (E, R)
+        # transpose to (R, E) to index by relation first on tail-side
+        log_p_tail_2d = torch.log_softmax(tail_logits_subset / temperature, dim=1).to(torch.float32).cpu().transpose(0, 1)  # (R, E)
 
-        # 6. Joint log-prob with weighting
-        log_joint = alpha * log_p_head + (1.0 - alpha) * log_p_tail  # (E, R, E)
-
-        # Flatten once for global selection
-        log_joint_flat = log_joint.reshape(-1)  # (E*R*E,)
-        total = log_joint_flat.numel()
-
-        # Derive effective cap from q first
+        # Derive effective cap from q first (before any threshold). This bounds the search space.
+        total = int(E) * int(R) * int(E)
         effective_cap = cap_candidates
         if q is not None:
             q = float(q)
             assert 0.0 <= q < 1.0, "q must be in [0,1)"
             cap_q = max(1, int(math.ceil((1.0 - q) * total)))
             effective_cap = cap_q if effective_cap is None else min(effective_cap, cap_q)
+        if effective_cap is None:
+            raise ValueError("Candidate generation requires a cap (q or cap_candidates). Threshold-only (p) is unsafe for large graphs.")
 
-        # Step A: optional probability threshold
-        if p is not None:
-            log_p_thr = torch.tensor(float(p), device=device).clamp_min(1e-45).log()
-            mask = log_joint_flat >= log_p_thr
-            flat_indices = torch.nonzero(mask, as_tuple=False).squeeze(-1)
-            if flat_indices.numel() == 0:
-                # fallback to best single candidate
-                _, top_idx = torch.topk(log_joint_flat, k=1, largest=True)
-                flat_indices = top_idx
-        else:
-            # No threshold: start with all indices (may be capped below)
-            flat_indices = torch.arange(total, device=device)
+        # Compute global top-k in a streaming fashion without O(E*R*E) memory
+        # tune for speed vs memory 
+        # Block RAM (GB) = block_size * E * 4 / 1024**3
+        memory_limit_gb = 10.0  # target RAM limit in GB
+        block_size = max(1, int(memory_limit_gb * (1024**3) / (E * 4)))
+        top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
+            log_p_head_2d=log_p_head_2d,
+            log_p_tail_2d=log_p_tail_2d,
+            alpha=float(alpha),
+            k=int(effective_cap),
+            block_size=block_size,
+        )
 
-        # Step B: cap to effective_cap if defined (top-k selection)
-        if effective_cap is not None and flat_indices.numel() > effective_cap:
-            if effective_cap == cap_candidates:
-                print(f"Info: Reducing {cap_q} candidates to {effective_cap} triples. This was needed because other filters were not sufficient.")
-            selected_vals = log_joint_flat[flat_indices]
-            top_vals, rel_idx = torch.topk(selected_vals, k=effective_cap, largest=True)
-            flat_indices = flat_indices[rel_idx]
-            scores = torch.exp(top_vals)
-        else:
-            scores = torch.exp(log_joint_flat[flat_indices])
-
-        # Map flat indices to local coordinates
-        ER = R * E
-        h_local = flat_indices // ER
-        rem = flat_indices % ER
-        r_local = rem // E
-        t_local = rem % E
-
-        # Map local back to original IDs
-        heads_tensor = entities[h_local]
-        rels_tensor = original_relations[r_local]
-        tails_tensor = entities[t_local]
+        # Build candidate triples (global entity indexing)
+        heads_tensor = entities[h_idx]
+        rels_tensor  = original_relations[r_idx].cpu()
+        tails_tensor = entities[t_idx]
         candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)
+
+        # Convert to probabilities for thresholding
+        scores = torch.exp(top_log_vals)
+        # 6. Apply global threshold p if provided
+        if p is not None:
+            p = float(p)
+            keep_mask = scores >= p
+            if keep_mask.any():
+                candidates = candidates[keep_mask]
+                scores = scores[keep_mask]
+            else:
+                # Keep at least the best entry to avoid empty sets downstream
+                best = torch.argmax(scores)
+                candidates = candidates[best:best+1]
+                scores = scores[best:best+1]
 
         return candidates, scores
