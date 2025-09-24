@@ -572,7 +572,7 @@ def create_and_run_training_exp_two_phases(args):
     """
     model_name = args.model
     start_time = datetime.datetime.now()
-    stageprint(f"Starting {args.expname} (two phases, no negatives) at: {start_time.strftime('%H:%M:%S')}")
+    stageprint(f"Starting {args.expname} (two phases) at: {start_time.strftime('%H:%M:%S')}")
 
     # ---------------------------
     # Load data
@@ -719,8 +719,7 @@ def create_and_run_training_exp_two_phases(args):
             accumulate_grad_batches=args.accumulate_gradient,
             callbacks=[estopping_callbk_t, checkpoint_callbk_t, dataset_callbk_t],
         )
-
-    if args.cmd in ["train", "resume"]:
+    if args.cmd in ["train", "resume"] and not args.skip_phase1:
         # Train and resume are the same assuming their setup is consistent
         stageprint("Training-validating the model, be patient!")
         trainer_t.fit(pl_model_t, tr_loader_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
@@ -734,14 +733,15 @@ def create_and_run_training_exp_two_phases(args):
         print(f"[Tuples] Using checkpoint for prediction: {tuple_ckpt}")
         if args.cmd == "test" and not tuple_ckpt:
             raise ValueError("tuple_checkpoint is required for cmd='test'.")
-        
-    stageprint("Evaluating the tuple model (relation predictor) on the test set")
-    tuple_test_dict = trainer_t.test(
-        model=pl_model_t if args.cmd == "test" else None,
-        dataloaders=te_loader_t,
-        ckpt_path=tuple_ckpt
-    )[0]
-    print("\nTesting results (tuple model): {}".format(tuple_test_dict))
+            
+    if not args.skip_phase1:
+        stageprint("Evaluating the tuple model (relation predictor) on the test set")
+        tuple_test_dict = trainer_t.test(
+            model=pl_model_t if args.cmd == "test" else None,
+            dataloaders=te_loader_t,
+            ckpt_path=tuple_ckpt
+        )[0]
+        print("\nTesting results (tuple model): {}".format(tuple_test_dict))
 
     # ---------------------------
     # Phase 1b: Global candidate generation (predict over ALL tuples)
@@ -750,9 +750,9 @@ def create_and_run_training_exp_two_phases(args):
 
     def predict_all(trainer, model, loader, ckpt_path=None):
         outs = trainer.predict(model, dataloaders=loader, ckpt_path=ckpt_path)
-        tuples_all = torch.cat([o["tuples"] for o in outs], dim=0)
-        logits_all = torch.cat([o["logits_rp"] for o in outs], dim=0)
-        return tuples_all.to(model.device), logits_all.to(model.device)
+        tuples_all = torch.cat([o["tuples"].cpu() for o in outs], dim=0)
+        logits_all = torch.cat([o["logits_rp"].cpu() for o in outs], dim=0)
+        return tuples_all, logits_all
 
     tr_tuples_all, tr_logits_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
     va_tuples_all, va_logits_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
