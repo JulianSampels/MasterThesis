@@ -1285,6 +1285,9 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             q = float(q)
             assert 0.0 <= q < 1.0, "q must be in [0,1)"
             cap_q = max(1, int(math.ceil((1.0 - q) * total)))
+            if effective_cap is not None and effective_cap < cap_q:
+                logger.warning(f"cap_candidates {effective_cap} < cap_q {cap_q} from q-quantile. Using smaller cap_candidates.")
+                print("WARNING: cap_candidates < cap_q from q-quantile. Using smaller cap_candidates.")
             effective_cap = cap_q if effective_cap is None else min(effective_cap, cap_q)
         if effective_cap is None:
             raise ValueError("Candidate generation requires a cap (q or cap_candidates). Threshold-only (p) is unsafe for large graphs.")
@@ -1292,7 +1295,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # Compute global top-k in a streaming fashion without O(E*R*E) memory
         # tune for speed vs memory 
         # Block RAM (GB) = block_size * E * 4 / 1024**3
-        memory_limit_gb = 10.0  # target RAM limit in GB
+        memory_limit_gb = 50.0  # target RAM limit in GB
         block_size = max(1, int(memory_limit_gb * (1024**3) / (E * 4)))
         top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
             log_p_head_2d=log_p_head_2d,
