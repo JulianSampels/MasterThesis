@@ -835,19 +835,20 @@ class CandidateRecallAtKTotal(Metric):
     def __init__(self, k: int):
         super().__init__()
         self.k = int(k)
-        self.add_state("num_pos_in_topk", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("num_pos_in_topk", default=torch.tensor(0), dist_reduce_fx="sum")
         self.add_state("num_positives", default=torch.tensor(0), dist_reduce_fx="sum")
 
     @torch.no_grad()
     def set_num_positives(self, num_positives: int):
-        self.total_num_positives = torch.tensor(num_positives)
+        self.total_num_positives = torch.tensor(num_positives, dtype=torch.long)
     
     @torch.no_grad()
-    def update(self, scores: torch.Tensor, labels: torch.Tensor):
+    def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids):
         scores = scores.squeeze()
 
         assert scores.ndim == 1
         assert labels.shape == scores.shape
+        labels = labels.to(dtype=torch.long)
 
         k_eff = min(self.k, scores.numel())
         topk_idx = torch.topk(scores, k=k_eff, largest=True).indices
@@ -855,7 +856,7 @@ class CandidateRecallAtKTotal(Metric):
         self.num_positives += labels.sum().item()
 
     def compute(self):
-        if self.total_num_positives is None or self.total_num_positives == 0:
+        if self.total_num_positives is not None or self.total_num_positives == 0:
             return self.num_pos_in_topk / self.total_num_positives.clamp_min(1)
         else:
             return self.num_pos_in_topk / self.num_positives.clamp_min(1)
