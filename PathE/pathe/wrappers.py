@@ -23,7 +23,7 @@ from PathE.pathe.pathdata import RelationMaps
 
 from .pathe_ranking_metrics import (RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples, CandidateMRRPerSampleFiltered, 
-                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup)
+                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal)
 
 from .pather_models import PathEModelTriples, PathEModelTuples
 
@@ -177,11 +177,13 @@ class PathEModelWrapperTriples(LightningModule):
             "mrr": CandidateMRRPerSampleFiltered(),
             **{f"hits@{k}": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
             **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
+            **{f"recall@{k}_total": CandidateRecallAtKTotal(k) for k in self.cand_topk},
         })
         self.cand_metrics_test = nn.ModuleDict({
             "mrr": CandidateMRRPerSampleFiltered(),
             **{f"hits@{k}": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
             **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
+            **{f"recall@{k}_total": CandidateRecallAtKTotal(k) for k in self.cand_topk},
         })
 
         # Losses
@@ -453,6 +455,7 @@ class PathEModelWrapperTriples(LightningModule):
           - {split}_link_mrr
           - {split}_link_hits@{k}
           - {split}_link_recall@{k}_perGroup
+          - {split}_link_recall@{k}_total
         """
         # select the metrics dict
         if split == "valid":

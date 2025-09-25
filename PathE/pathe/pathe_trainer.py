@@ -951,7 +951,9 @@ def create_and_run_training_exp_two_phases(args):
     # Inject counts into per-group recall metrics
     for k in pl_model_tri.cand_topk:
         pl_model_tri.cand_metrics_val[f"recall@{k}_perGroup"].set_true_counts(val_true_counts)
+        pl_model_tri.cand_metrics_val[f"recall@{k}_total"].set_num_positives(len(val_triples))
         pl_model_tri.cand_metrics_test[f"recall@{k}_perGroup"].set_true_counts(test_true_counts)
+        pl_model_tri.cand_metrics_test[f"recall@{k}_total"].set_num_positives(len(test_triples))
 
     # Loggers and trainer
     tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=args_phase3.expname + "_triples", version=args_phase3.version)

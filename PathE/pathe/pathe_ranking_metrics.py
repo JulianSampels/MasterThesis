@@ -824,6 +824,42 @@ class CandidateRecallAtKPerGroup(Metric):
     def compute(self):
         return self.recall_sum / self.total.clamp_min(1)
 
+class CandidateRecallAtKTotal(Metric):
+    """
+    Recall@K over all samples. 
+    recall = (# positives in top-K) / (# positives in dataset).
+    No filtering within group.
+    """
+    higher_is_better = True
+
+    def __init__(self, k: int):
+        super().__init__()
+        self.k = int(k)
+        self.add_state("num_pos_in_topk", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("num_positives", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    def set_num_positives(self, num_positives: torch.Tensor):
+        assert num_positives.ndim == 0
+        self.total_num_positives = num_positives
+    
+    @torch.no_grad()
+    def update(self, scores: torch.Tensor, labels: torch.Tensor):
+        scores = scores.squeeze()
+
+        assert scores.ndim == 1
+        assert labels.shape == scores.shape
+
+        k_eff = min(self.k, scores.numel())
+        topk_idx = torch.topk(scores, k=k_eff, largest=True).indices
+        self.num_pos_in_topk += labels[topk_idx].sum().item()
+        self.num_positives += labels.sum().item()
+
+    def compute(self):
+        if self.total_num_positives is None or self.total_num_positives == 0:
+            return self.num_pos_in_topk / self.total_num_positives.clamp_min(1)
+        else:
+            return self.num_pos_in_topk / self.num_positives.clamp_min(1)
+
 
 class EntityMRR_debug(Metric):
     """
