@@ -838,9 +838,9 @@ class CandidateRecallAtKTotal(Metric):
         self.add_state("num_pos_in_topk", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("num_positives", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    def set_num_positives(self, num_positives: torch.Tensor):
-        assert num_positives.ndim == 0
-        self.total_num_positives = num_positives
+    @torch.no_grad()
+    def set_num_positives(self, num_positives: int):
+        self.total_num_positives = torch.tensor(num_positives)
     
     @torch.no_grad()
     def update(self, scores: torch.Tensor, labels: torch.Tensor):
