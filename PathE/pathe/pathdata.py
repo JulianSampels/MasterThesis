@@ -1153,10 +1153,36 @@ class CandidateTripleEntityMultiPathDataset(TripleEntityMultiPathDataset):
         neg_denominator[neg_denominator == 0] = 1.0
 
         weights = torch.empty(self._lp_labels.shape[0], dtype=torch.float32)
+
+        # Alternative: each group gets total weight 1.0, split between pos and neg
         # w_pos = 0.5 / num_pos_in_group
         weights[pos_mask] = 0.5 / pos_denominator[self._lp_group_ids[pos_mask]]
         # w_neg = 0.5 / num_neg_in_group
         weights[neg_mask] = 0.5 / neg_denominator[self._lp_group_ids[neg_mask]]
+
+        # # Alternative: global balancing between pos and neg
+        # total_pos = pos_mask.sum()
+        # total_neg = neg_mask.sum()
+        # weights[pos_mask] = 0.5 / total_pos
+        # weights[neg_mask] = 0.5 / total_neg
+
+        # # Alternative: each group gets weight relative to its pos count
+        # # inside each group the weight is even distributed between pos and neg
+        # # w_pos = 0.5 * num_pos_in_group * 1 / num_pos_in_group
+        # weights[pos_mask] = 0.5
+        # # w_neg = 0.5 * num_pos_in_group * 1 / num_neg_in_group
+        # weights[neg_mask] = 0.5 * pos_denominator[self._lp_group_ids[neg_mask]] / neg_denominator[self._lp_group_ids[neg_mask]]
+
+        # # Alternative: each group gets weight relative to its total count
+        # # inside each group the weight is even distributed between pos and neg
+        # total_count_per_group = pos_counts + neg_counts
+        # total_count_per_group[total_count_per_group == 0] = 1.0
+        # # w_pos = 0.5 * total_count_per_group * 1 / num_pos_in_group
+        # weights[pos_mask] = 0.5 * total_count_per_group[self._lp_group_ids[pos_mask]] / pos_denominator[self._lp_group_ids[pos_mask]]
+        # # w_neg = 0.5 * total_count_per_group * 1 / num_neg_in_group
+        # weights[neg_mask] = 0.5 * total_count_per_group[self._lp_group_ids[neg_mask]] / neg_denominator[self._lp_group_ids[neg_mask]]
+
+
         self._lp_weights = weights.cpu()
 
     def __getitem__(self, index) -> dict:
@@ -1313,7 +1339,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         self.ppc = self.ppe // 2  # paths per entity context (in/out)
 
         self.relation_maps = RelationMaps(original_relation_to_inverse_relation)
-        self.relation_maps.validate_relation_inverser(tuple_store)
+        self.relation_maps.sanity_check_relation_mappings(tuple_store)
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved
         # relcontext_df = pd.read_csv(relcontext_store)
@@ -1425,17 +1451,24 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
 
 @dataclass
 class RelationMaps:
-    original_relations: set[int]
-    inverse_relations: set[int]
+    # Sets of original and inverse relations
+    original_relations_set: set[int]
+    inverse_relations_set: set[int]
+    # Tensors where relations' index in original_relations_tensor correspond to inverse relations' index in inverse_relations_tensor
+    original_relations_tensor: torch.Tensor
+    inverse_relations_tensor: torch.Tensor
+    # dictionary where all relations map to inverse relations
     relation_inverser: dict[int, int]
+    # dictionary mapping only original relations to their inverse
     original_relation_to_inverse_relation: Dict[int, int]
     # relation_inverser_tensor: torch.Tensor
 
     def __init__(self, original_relation_to_inverse_relation: Dict[int, int]):
-        self.original_relations = set(original_relation_to_inverse_relation.keys())
-        self.inverse_relations = set(original_relation_to_inverse_relation.values())
+        self.original_relations_set = set(original_relation_to_inverse_relation.keys())
+        self.inverse_relations_set = set(original_relation_to_inverse_relation.values())
         self.original_relation_to_inverse_relation = original_relation_to_inverse_relation
         self.relation_inverser = self.generate_relation_inverser(original_relation_to_inverse_relation)
+        self.original_relations_tensor, self.inverse_relations_tensor = self.split_original_inverse_relations()
         # self.relation_inverser_tensor = torch.tensor([self.relation_inverser[i] for i in range(len(self.relation_inverser))], dtype=torch.long)
 
     @staticmethod
@@ -1449,8 +1482,31 @@ class RelationMaps:
             relation_inverser[inv] = rel
         return relation_inverser
     
-    def validate_relation_inverser(self, tuple_store: torch.tensor):
+    def split_original_inverse_relations(self):
+        """
+        Split the original and inverse relations into two separate tensors.
+        """
+        # Resolve original & inverse relation ids
+        r_map = torch.tensor(list(self.original_relation_to_inverse_relation.items()), dtype=torch.long)
+        original_relation_ids = r_map[:, 0]
+        inverse_relation_ids = r_map[:, 1]
+        # Sanity check
+        assert original_relation_ids.numel() > 0, "No original relations found."
+        assert original_relation_ids.numel() == inverse_relation_ids.numel(), "Mismatch originals/inverses relation count."
+        for i, rel in enumerate(original_relation_ids):
+            assert self.original_relation_to_inverse_relation[rel.item()] == inverse_relation_ids[i], "Inconsistent relation maps."
+        return original_relation_ids, inverse_relation_ids
+
+
+    def sanity_check_relation_mappings(self, tuple_store: torch.tensor):
+        # Sanity check the relation_inverser mapping
         for rel in tuple_store[:, 1].unique():
             rel_inv = self.relation_inverser[rel.item()]
             assert self.relation_inverser[rel_inv] == rel.item(), f"Relation {rel.item()} maps to {rel_inv}, which does not map back to {rel.item()}"
-        
+        # Sanity check for relation tensors
+        assert self.original_relations_tensor.size() == self.inverse_relations_tensor.size(), "Original and inverse relations tensors have different sizes."
+        for i, rel in enumerate(self.original_relations_tensor):
+            assert self.original_relation_to_inverse_relation[rel.item()] == self.inverse_relations_tensor[i], "Inconsistent relation maps."
+        # Sanity check sets
+        assert len(self.original_relations_set) == self.original_relations_tensor.numel(), "Mismatch in original relations set and tensor size."
+        assert len(self.inverse_relations_set) == self.inverse_relations_tensor.numel(), "Mismatch in inverse relations set and tensor size."

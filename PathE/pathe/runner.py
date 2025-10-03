@@ -51,7 +51,7 @@ def main():
     # Model hyper-parameters and defaults
     # The next hparameters control the aggregation strategy for entities
     parser.add_argument('--ent_aggregation', action='store',
-                        choices=['avg', "recurrent", "transformer"], default='avg',
+                        choices=['avg', "recurrent", "transformer", "masked_mean"], default='avg',
                         help='The name of the entity aggregation strategy.')
     parser.add_argument('--num_agg_heads', action='store', type=int, default=1,
                         help='Number of attention heads in the aggregator. '
@@ -87,7 +87,7 @@ def main():
     parser.add_argument('--candidates_alpha', type=float, default=0.5,
                         help='Weight for head vs tail log-prob in candidate scoring (0=head only, 1=tail only, 0.5=balanced).')
     parser.add_argument('--candidates_cap', type=int, default=None,
-                        help='Top-k candidates to keep after thresholding (maximum number of best candidates to keep).')
+                        help='Maximum number of top-k candidates to keep.')
 
     # Logging and checkpointing
     parser.add_argument('--log_dir', action='store', default="experiments",
@@ -132,7 +132,8 @@ def main():
     parser.add_argument('--patience', action='store', type=int, default=10,
                         help='Number of validation epochs with no improvement.')
     parser.add_argument('--tuple_monitor', action='store', default="valid_mrr",
-                        choices=["valid_rp_loss", "valid_lp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr",
+                        choices=["valid_rp_loss", "valid_tp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr",
+                                 "valid_tail_mrr",
                                  "valid_link_hits@1", "valid_link_hits@3", "valid_link_hits@5", "valid_link_hits@10"],
                         help='Monitored metric for early stopping and ckpt for tuples.')
     parser.add_argument('--triple_monitor', action='store', default="valid_link_mrr",
@@ -255,7 +256,8 @@ def main():
             assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
         assert args.checkpoint is None, "checkpoint cannot be used with pathe2Phases. Use triple_checkpoint and/or tuple_checkpoint instead."
         assert args.use_manual_optimization, "Two-phase training requires --use_manual_optimization to be set for proper relation prediction in tuples training."
-        assert args.link_head_detached, "Two-phase training requires --link_head_detached to be set for proper relation prediction in tuples training."
+        assert args.loss_weight == 1, "Loss weight must be 1 for two-phase training (only link loss is used in phase 2)."
+        # assert args.link_head_detached, "Two-phase training requires --link_head_detached to be set for proper relation prediction in tuples training."
         assert not (args.tuple_checkpoint is None and args.skip_phase1), "Cannot skip phase 1 if no tuple_checkpoint is provided."
         pathe_trainer.create_and_run_training_exp_two_phases(args)
 

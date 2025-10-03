@@ -2,8 +2,10 @@
 The triple library (triple_lib) provides utilities for manipulating triples.
 
 """
+from functools import partial
 import os
 from collections import defaultdict, Counter
+from typing import Callable
 
 import pandas as pd
 import torch
@@ -435,3 +437,59 @@ def get_dead_ends(relcontext_path):
         print(f"(*) {face}: {count} ({count/dead_ends_no:.2%})")
 
     return dead_ends
+
+def generate_group_id_function(all_triples: torch.Tensor, group_strategy: list) -> Callable[[torch.Tensor], torch.Tensor]:
+    """
+    Create a function that can be used to get group ids for triples based on
+    a specified grouping strategy.
+    Parameters
+    ----------
+    all_triples : torch.Tensor
+        All triples in the dataset (train, val, test) of shape (N, 3).
+    group_strategy : list
+        List of indices (0, 1, 2) specifying which parts of the triple
+        to use for grouping. E.g. [0] for grouping by head, [1, 2] for
+        grouping by (relation, tail), etc.
+    Returns
+    -------
+    get_group_ids : function
+        A function that takes triples as input and returns their group ids.
+    """
+    groups = all_triples[:, group_strategy].squeeze()
+    if groups.dim() == 1:
+        unique_groups = torch.unique(groups)
+        group_to_id_map = {group: group for group in unique_groups.tolist()}
+    else:
+        unique_groups = torch.unique(groups, dim=0)
+        keys = [tuple(row.tolist()) for row in unique_groups]
+        group_to_id_map = {k: i for i, k in enumerate(keys)}
+    def get_group_ids(triples: torch.Tensor, group_strategy: list, group_to_id_map) -> torch.Tensor:
+        groups = triples[:, group_strategy].squeeze()
+        if groups.dim() == 1:
+            return groups
+        else:
+            ids = [group_to_id_map[tuple(row.tolist())] for row in groups]
+            return torch.tensor(ids, dtype=torch.long)
+    get_group_ids = partial(get_group_ids, group_strategy=group_strategy, group_to_id_map=group_to_id_map)
+    return get_group_ids
+
+def build_labels_for_triples(triples: torch.Tensor, true_triples: torch.Tensor) -> torch.Tensor:
+    """
+    Build binary labels for triples indicating if they are true triples.
+    Parameters
+    ----------
+    triples : torch.Tensor
+        The triples to label of shape (N, 3).
+    true_triples : torch.Tensor
+        The set of true triples of shape (M, 3).
+    Returns
+    -------
+    labels : torch.Tensor
+        A binary tensor of shape (N,) where 1 indicates a true triple.
+    """
+    true_triples = {tuple(row.tolist()) for row in true_triples.cpu()}
+    labels = torch.zeros(triples.size(0), dtype=torch.float32, device=triples.device)
+    for i, triple in enumerate(triples.tolist()):
+        if tuple(triple) in true_triples:
+            labels[i] = 1.0
+    return labels

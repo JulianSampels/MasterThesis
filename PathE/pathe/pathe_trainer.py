@@ -15,6 +15,8 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
 
+from .candidates import CandidateGeneratorGlobal, CandidateGeneratorGlobalWithTail, CandidateGeneratorPerHead
+
 from . import triple_lib
 from .pather_models import PathEModelTriples, PathEModelTuples
 from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset
@@ -207,6 +209,40 @@ def create_and_run_training_exp_tuples(args):
         **bundle(target_class=PathEModelTuples),
     )
     # class_weights = triple_lib.get_class_weights(train_triples, tokens_to_idxs)
+    # Build head->tails supervision maps per split for tail BCE
+    def build_head_to_tails(triples: torch.Tensor) -> dict[int, set[int]]:
+        m: dict[int, set[int]] = {}
+        for h, r, t in triples.tolist():
+            s = m.get(h)
+            if s is None:
+                s = set()
+                m[h] = s
+            s.add(t)
+        return m
+
+    head_to_tails_train = build_head_to_tails(train_triples)
+    head_to_tails_val = build_head_to_tails(val_triples)
+    head_to_tails_test = build_head_to_tails(test_triples)
+
+    # Optional: build dense adjacency for faster label construction if memory allows
+    dense_adj = None
+    print(f"Building dense adjacency matrix for {num_entities} entities...")
+    try:
+        # For ~14k entities, a bool ExE is ~196M entries (~196MB). Gate by a cap.
+        if num_entities <= 20000:  # ~400M entries max -> ~400MB as bool, acceptable in many setups
+            dense_adj = torch.zeros((num_entities, num_entities), dtype=torch.bool)
+            for h, tails in head_to_tails_train.items():
+                dense_adj[h, list(tails)] = True
+            # also include validation/test positives to avoid training-only bias in supervision
+            for h, tails in head_to_tails_val.items():
+                dense_adj[h, list(tails)] = True
+            for h, tails in head_to_tails_test.items():
+                dense_adj[h, list(tails)] = True
+    except RuntimeError:
+        dense_adj = None  # fallback to sparse dicts if OOM
+    print(f"Dense adjacency matrix created: {dense_adj is not None}")
+    dense_adj = None
+
     pl_model = PathEModelWrapperTuples(
         pathe_model=model,
         filtration_dict=map_head_to_relationsets_tuples,
@@ -214,6 +250,11 @@ def create_and_run_training_exp_tuples(args):
         train_relation_maps=train_set.relation_maps,
         val_relation_maps=valid_set.relation_maps,
         test_relation_maps=test_set.relation_maps,
+        head_to_tails_train=head_to_tails_train,
+        head_to_tails_val=head_to_tails_val,
+        head_to_tails_test=head_to_tails_test,
+        num_entities=num_entities,
+        dense_head_tail_adj=dense_adj,
         **namespace_to_dict(args),  # model hparameters
     )
     # print(pl_model.model)  # keras-style model overview
@@ -586,6 +627,11 @@ def create_and_run_training_exp_two_phases(args):
     val_rel2inv   = du.load_relation2inverse_relation_from_file(args.valid_paths)
     test_rel2inv  = du.load_relation2inverse_relation_from_file(args.test_paths)
 
+    # Filter out inverse relations from triples
+    train_triples = train_triples[torch.isin(train_triples[:, 1], torch.tensor(list(train_rel2inv.keys()), dtype=torch.long, device=train_triples.device))]
+    val_triples   = val_triples[torch.isin(val_triples[:, 1], torch.tensor(list(val_rel2inv.keys()), dtype=torch.long, device=val_triples.device))]
+    test_triples  = test_triples[torch.isin(test_triples[:, 1], torch.tensor(list(test_rel2inv.keys()), dtype=torch.long, device=test_triples.device))]
+
     paths, relcon, _ = du.load_unrolled_setup(args.train_paths, args.path_setup)
     filtration_dict = triple_lib.make_relation_filter_dict_no_sp_tokens(train_triples, val_triples, test_triples)
     unique_entities = triple_lib.get_unique_entities(train_triples, val_triples, test_triples)
@@ -752,90 +798,210 @@ def create_and_run_training_exp_two_phases(args):
         outs = trainer.predict(model, dataloaders=loader, ckpt_path=ckpt_path)
         tuples_all = torch.cat([o["tuples"].cpu() for o in outs], dim=0)
         logits_all = torch.cat([o["logits_rp"].cpu() for o in outs], dim=0)
-        return tuples_all, logits_all
+        logits_tp_all = torch.cat([o["logits_tp"].cpu() for o in outs], dim=0)
+        return tuples_all, logits_all, logits_tp_all
 
-    tr_tuples_all, tr_logits_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
-    va_tuples_all, va_logits_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
-    te_tuples_all, te_logits_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
+    tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
+    va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
+    te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
-    cand_p = args.candidates_threshold_p
-    cand_q = args.candidates_quantile_q
-    cand_t = args.candidates_temperature
-    cand_a = args.candidates_alpha
-    cand_cap = args.candidates_cap
 
-    # Build candidates using threshold/quantile/top-k (priority p > q > k)
-    candidates_train, _scores_train = pl_model_t.build_triple_candidates_adaptive(
-        tuples=tr_tuples_all, relation_maps=train_set_t.relation_maps, logits_rp=tr_logits_all,
-        p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
-    candidates_val, _scores_val = pl_model_t.build_triple_candidates_adaptive(
-        tuples=va_tuples_all, relation_maps=valid_set_t.relation_maps, logits_rp=va_logits_all,
-        p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
-    candidates_test, _scores_test = pl_model_t.build_triple_candidates_adaptive(
-        tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all,
-        p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
+    # per entity candidate generation and coverage metric
+
+    # import torch_scatter
+    # from tqdm import tqdm
+
+
+    # # ------------------------------------------------------------------
+    # # Simple per-head TopK (r, t) candidate generation + coverage metric
+    # # ------------------------------------------------------------------
+    # topk_k = args.candidates_cap
+
+    # def compute_average_coverage_per_head_and_total_coverage(
+    #     head_to_topk: dict[int, torch.Tensor],
+    #     gold_triples: torch.Tensor,
+    #     original_relations: set[int]
+    # ) -> tuple[float, dict[int, float], float]:
+    #     """
+    #     Computes:
+    #       - per-head coverage: Coverage(h) = (# gold (h,r,t) with r in original_relations present in top-k list for h)
+    #                             / (total gold for h with r in original_relations)
+    #       - average coverage across heads (mean of per-head coverages)
+    #       - total coverage across all gold triples (micro): 
+    #             total_coverage = (sum_over_heads covered_gold_triples(h)) / (total_gold_triples_considered)
+
+    #     Returns:
+    #       avg_cov        : float, mean of per-head coverage values
+    #       per_head_cov   : dict[int, float], mapping head -> coverage
+    #       total_cov      : float, global fraction of all gold triples covered
+    #     """
+    #     if gold_triples.numel() == 0:
+    #         return 0.0, {}, 0.0
+
+    #     # Filter to only original (non-inverse) relations
+    #     rel_tensor = torch.tensor(list(original_relations), dtype=torch.long)
+    #     mask = torch.isin(gold_triples[:, 1], rel_tensor)
+    #     gold = gold_triples[mask]
+    #     if gold.numel() == 0:
+    #         return 0.0, {}, 0.0
+
+    #     from collections import defaultdict
+    #     gold_map: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    #     for h, r, t in gold.tolist():
+    #         gold_map[h].append((r, t))
+
+    #     per_head_cov: dict[int, float] = {}
+    #     covered_total = 0
+    #     total_total = 0
+
+    #     for h, gold_list in tqdm(gold_map.items(), desc="Computing Metric Coverage per head", leave=False):
+    #         total_total += len(gold_list)
+    #         topk_pairs = head_to_topk.get(h)
+    #         if topk_pairs is None or topk_pairs.numel() == 0:
+    #             continue
+    #         cand_set = {(int(r.item()), int(t.item())) for r, t in topk_pairs}
+    #         covered = sum((r, t) in cand_set for (r, t) in gold_list)
+    #         covered_total += covered
+    #         per_head_cov[h] = covered / len(gold_list)
+
+    #     if len(per_head_cov) == 0:
+    #         return 0.0, per_head_cov, 0.0
+
+    #     avg_cov = sum(per_head_cov.values()) / len(per_head_cov)
+    #     total_cov = covered_total / total_total if total_total > 0 else 0.0
+    #     return avg_cov, per_head_cov, total_cov
+
+    # # --- Run the analysis on test tuples ---
+    # print(f"[TopK Analysis] Computing per-head top-{topk_k} (relation, tail) candidates on test tuples...")
+    # head_topk_dict = compute_topk_rt_per_head(
+    #     logits_rp_all=te_logits_all,
+    #     tuples_all=te_tuples_all,
+    #     relation_maps=test_set_t.relation_maps,
+    #     k=topk_k
+    # )
+    # avg_cov, per_head_cov, total_cov = compute_average_coverage_per_head_and_total_coverage(
+    #     head_to_topk=head_topk_dict,
+    #     gold_triples=test_triples,
+    #     original_relations=set(test_set_t.relation_maps.original_relations_set)
+    # )
+    # if len(per_head_cov):
+    #     import statistics
+    #     cov_values = list(per_head_cov.values())
+    #     print(f"[TopK Analysis] Average per-head coverage (test) over {len(per_head_cov)} heads: {avg_cov:.4f}")
+    #     print(f"[TopK Analysis] Total (micro) coverage of gold test triples: {total_cov:.4f}")
+    #     print(f"[TopK Analysis] Median={statistics.median(cov_values):.4f} Min={min(cov_values):.4f} Max={max(cov_values):.4f}")
+    # else:
+    #     print("[TopK Analysis] No heads had both logits and gold triples for coverage computation.")
+
+
+
+
+
+
+    # # Build candidates using threshold/quantile/top-k (priority p > q > k)
+    # candidates_train, _scores_train = pl_model_t.build_triple_candidates_adaptive(
+    #     tuples=tr_tuples_all, relation_maps=train_set_t.relation_maps, logits_rp=tr_logits_all,
+    #     p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
+    # candidates_val, _scores_val = pl_model_t.build_triple_candidates_adaptive(
+    #     tuples=va_tuples_all, relation_maps=valid_set_t.relation_maps, logits_rp=va_logits_all,
+    #     p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
+    # candidates_test, _scores_test = pl_model_t.build_triple_candidates_adaptive(
+    #     tuples=te_tuples_all, relation_maps=test_set_t.relation_maps, logits_rp=te_logits_all,
+    #     p=cand_p, q=cand_q, temperature=cand_t, alpha=cand_a, cap_candidates=cand_cap)
+
+
+    # args.candidates_beta = 1/3
+    # args.candidates_alpha = 1/3
+    # candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, cap_candidates=args.candidates_cap)
+    # candidate_generator = CandidateGeneratorGlobal(p = args.candidates_threshold_p, q = args.candidates_quantile_q, temperature = args.candidates_temperature, alpha = args.candidates_alpha, cap_candidates = args.candidates_cap)
+    candidate_generator = CandidateGeneratorPerHead(topk=args.candidates_cap)
+    candidates_train, _scores_train = candidate_generator.generate_candidates(tr_tuples_all, tr_logits_all, train_set_t.relation_maps, logits_tp=tr_logits_tp_all)
+    candidates_val, _scores_val = candidate_generator.generate_candidates(va_tuples_all, va_logits_all, valid_set_t.relation_maps, logits_tp=va_logits_tp_all)
+    candidates_test, _scores_test = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, logits_tp=te_logits_tp_all)
+
 
     # add true triples to train candidates (if not already present) to ensure all positives are included
     candidates_train = torch.unique(torch.cat([candidates_train, train_triples], dim=0), dim=0)
-    # only keep triples with original relation todo: check if triples.pt shoudl already exclude inv relations and paths for triples same
-    train_triples = train_triples[torch.isin(train_triples[:,1], torch.tensor(list(train_set_t.relation_maps.original_relations)))]
-    val_triples = val_triples[torch.isin(val_triples[:,1], torch.tensor(list(valid_set_t.relation_maps.original_relations)))]
-    test_triples = test_triples[torch.isin(test_triples[:,1], torch.tensor(list(test_set_t.relation_maps.original_relations)))]
+
+    # build labels for candidates
+    train_labels = triple_lib.build_labels_for_triples(candidates_train, train_triples)
+    val_labels = triple_lib.build_labels_for_triples(candidates_val, val_triples)
+    test_labels = triple_lib.build_labels_for_triples(candidates_test, test_triples)
+
+    # create group mappings for group ids
+    group_strategy = [0] # for grouping by head entity
+    all_triples = torch.cat([train_triples, val_triples, test_triples, candidates_train, candidates_val, candidates_test], dim=0)
+    get_group_ids = triple_lib.generate_group_id_function(all_triples, group_strategy)
+    print(f"Unique {group_strategy} in all triples: {all_triples[:, group_strategy].unique().size(0)}")
+    print(f"Unique {group_strategy} in train triples: {train_triples[:, group_strategy].unique().size(0)}")
+    print(f"Unique {group_strategy} in val triples: {val_triples[:, group_strategy].unique().size(0)}")
+    print(f"Unique {group_strategy} in test triples: {test_triples[:, group_strategy].unique().size(0)}")
+    del all_triples # free memory
+
+    # Candidate statistics
+    candidate_generator.print_candidate_statistics(candidates_train, get_group_ids(candidates_train), train_triples, get_group_ids(train_triples), train_set_t.relation_maps, name="Train")
+    print()
+    candidate_generator.print_candidate_statistics(candidates_val, get_group_ids(candidates_val), val_triples, get_group_ids(val_triples), valid_set_t.relation_maps, name="Val")
+    print()
+    candidate_generator.print_candidate_statistics(candidates_test, get_group_ids(candidates_test), test_triples, get_group_ids(test_triples), test_set_t.relation_maps, name="Test")
 
     # Free large tensors before Phase 3
-    del tr_logits_all, va_logits_all, te_logits_all
     if args.device == "cuda":
         torch.cuda.empty_cache()
 
-    def build_labels_for_triples(triples: torch.Tensor, true_triples: torch.Tensor) -> torch.Tensor:
-        true_triples = {tuple(row.tolist()) for row in true_triples.cpu()}
-        labels = torch.zeros(triples.size(0), dtype=torch.float32, device=triples.device)
-        for i, triple in enumerate(triples.tolist()):
-            if tuple(triple) in true_triples:
-                labels[i] = 1.0
-        return labels
-
-    train_labels = build_labels_for_triples(candidates_train, train_triples)
-    val_labels = build_labels_for_triples(candidates_val, val_triples)
-    test_labels = build_labels_for_triples(candidates_test, test_triples)
-
     # --- Candidate Selection Statistics ---
 
-    def print_candidate_stats(name, candidates, tuples_all, relation_maps):
-        """
-        Print the ratio of selected candidates to the maximal possible number.
-        """
-        entity_count = tuples_all[:, 0].unique().size(0)
-        relation_count = len(relation_maps.original_relations)
-        max_possible = entity_count ** 2 * relation_count
-        ratio = len(candidates) / max_possible if max_possible > 0 else 0
-        print(f"{name}: {len(candidates)} / ({entity_count}^2 * {relation_count}) = {len(candidates)} / {max_possible} = {ratio:.4f}")
+    # def print_candidate_stats(name, candidates, tuples_all, relation_maps):
+    #     """
+    #     Print the ratio of selected candidates to the maximal possible number.
+    #     """
+    #     entity_count = tuples_all[:, 0].unique().size(0)
+    #     relation_count = len(relation_maps.original_relations)
+    #     max_possible = entity_count ** 2 * relation_count
+    #     ratio = len(candidates) / max_possible if max_possible > 0 else 0
+    #     print(f"{name}: {len(candidates)} / ({entity_count}^2 * {relation_count}) = {len(candidates)} / {max_possible} = {ratio:.4f}")
 
-    print(f"\nMaximal possible candidates per triple:")
-    print_candidate_stats("Train", candidates_train, tr_tuples_all, train_set_t.relation_maps)
-    print_candidate_stats("Val",   candidates_val,   va_tuples_all, valid_set_t.relation_maps)
-    print_candidate_stats("Test",  candidates_test,  te_tuples_all, test_set_t.relation_maps)
+    # print(f"\nMaximal possible candidates per triple:")
+    # print_candidate_stats("Train", candidates_train, tr_tuples_all, train_set_t.relation_maps)
+    # print_candidate_stats("Val",   candidates_val,   va_tuples_all, valid_set_t.relation_maps)
+    # print_candidate_stats("Test",  candidates_test,  te_tuples_all, test_set_t.relation_maps)
 
-    print(f"\nNumber of gold triples in each split:")
-    print(f"  Train triples: {len(train_triples)}")
-    print(f"  Val triples:   {len(val_triples)}")
-    print(f"  Test triples:  {len(test_triples)}")
+    # print(f"\nNumber of gold triples in each split:")
+    # print(f"  Train triples: {len(train_triples)}")
+    # print(f"  Val triples:   {len(val_triples)}")
+    # print(f"  Test triples:  {len(test_triples)}")
 
-    print(f"\nCandidate score statistics (joint probability):")
-    print(f"  Train candidates: lowest={_scores_train.min():.4f}, highest={_scores_train.max():.4f}, mean={_scores_train.mean():.4f}")
-    print(f"  Val candidates:   lowest={_scores_val.min():.4f}, highest={_scores_val.max():.4f}, mean={_scores_val.mean():.4f}")
-    print(f"  Test candidates:  lowest={_scores_test.min():.4f}, highest={_scores_test.max():.4f}, mean={_scores_test.mean():.4f}")
+    # print(f"\nCandidate score statistics (joint probability):")
+    # print(f"  Train candidates: lowest={_scores_train.min():.4f}, highest={_scores_train.max():.4f}, mean={_scores_train.mean():.4f}")
+    # print(f"  Val candidates:   lowest={_scores_val.min():.4f}, highest={_scores_val.max():.4f}, mean={_scores_val.mean():.4f}")
+    # print(f"  Test candidates:  lowest={_scores_test.min():.4f}, highest={_scores_test.max():.4f}, mean={_scores_test.mean():.4f}")
 
-    print(f"\nFraction of gold triples covered by candidates:")
-    print(f"  Train: {train_labels.sum().item() / len(train_triples):.4f}")
-    print(f"  Val:   {val_labels.sum().item() / len(val_triples):.4f}")
-    print(f"  Test:  {test_labels.sum().item() / len(test_triples):.4f}")
+    # print(f"\nFraction of gold triples covered by candidates:")
+    # print(f"  Train: {train_labels.sum().item() / len(train_triples):.4f}")
+    # print(f"  Val:   {val_labels.sum().item() / len(val_triples):.4f}")
+    # print(f"  Test:  {test_labels.sum().item() / len(test_triples):.4f}")
 
-    print(f"\nFraction of positive labels in candidate sets:")
-    print(f"  Train: {train_labels.sum().item()} / {len(train_labels)} = {train_labels.sum().item()/len(train_labels):.4f}")
-    print(f"  Val:   {val_labels.sum().item()} / {len(val_labels)} = {val_labels.sum().item()/len(val_labels):.4f}")
-    print(f"  Test:  {test_labels.sum().item()} / {len(test_labels)} = {test_labels.sum().item()/len(test_labels):.4f}")
-    
+    # print(f"\nFraction of positive labels in candidate sets:")
+    # print(f"  Train: {train_labels.sum().item()} / {len(train_labels)} = {train_labels.sum().item()/len(train_labels):.4f}")
+    # print(f"  Val:   {val_labels.sum().item()} / {len(val_labels)} = {val_labels.sum().item()/len(val_labels):.4f}")
+    # print(f"  Test:  {test_labels.sum().item()} / {len(test_labels)} = {test_labels.sum().item()/len(test_labels):.4f}")
+
+    # print(f"\nAverage number of positives per head entity in candidate sets:")
+    # true_candidates_train = candidates_train[train_labels == 1]
+    # true_candidates_val = candidates_val[val_labels == 1]
+    # true_candidates_test = candidates_test[test_labels == 1]
+    # head_entities_train, counts_train = true_candidates_train[:,0].unique(return_counts=True)
+    # head_entities_val, counts_val = true_candidates_val[:,0].unique(return_counts=True)
+    # head_entities_test, counts_test = true_candidates_test[:,0].unique(return_counts=True)
+    # avg_pos_per_head_train = counts_train.float().mean().item()
+    # avg_pos_per_head_val = counts_val.float().mean().item()
+    # avg_pos_per_head_test = counts_test.float().mean().item()
+    # print(f"counts train: {counts_train}, Max: {counts_train.max()}, Min: {counts_train.min()}, Mean: {counts_train.float().mean()}, Median: {counts_train.float().median()}")
+    # print(f"counts val: {counts_val}, Max: {counts_val.max()}, Min: {counts_val.min()}, Mean: {counts_val.float().mean()}, Median: {counts_val.float().median()}")
+    # print(f"counts test: {counts_test}, Max: {counts_test.max()}, Min: {counts_test.min()}, Mean: {counts_test.float().mean()}, Median: {counts_test.float().median()}")
+    # print(f"  Train: {avg_pos_per_head_train:.4f} (over {head_entities_train.size(0)} unique head entities)")
+    # print(f"  Val:   {avg_pos_per_head_val:.4f} (over {head_entities_val.size(0)} unique head entities)")
+    # print(f"  Test:  {avg_pos_per_head_test:.4f} (over {head_entities_test.size(0)} unique head entities)")
 
     # ---------------------------
     # Phase 3: Triple training on candidates (no negatives) and test on gold
@@ -858,28 +1024,6 @@ def create_and_run_training_exp_two_phases(args):
     if args_phase3.lp_loss_fn != "bce":
         logger.warning(f"Overriding lp_loss_fn={args_phase3.lp_loss_fn} to 'bce' for candidate training in phase 3.")
         args_phase3.lp_loss_fn = "bce"  # BCE for positives + negatives in candidates
-
-    # create group mappings for group ids
-    group_strategy = [0] # for grouping by head entity
-    all_triples = torch.cat([train_triples, val_triples, test_triples, candidates_train, candidates_val, candidates_test], dim=0)
-    groups = all_triples[:, group_strategy].squeeze()
-    if groups.dim() == 1:
-        unique_groups = torch.unique(groups)
-        group_to_id_map = {group: group for group in unique_groups.tolist()}
-    else:
-        unique_groups = torch.unique(groups, dim=0)
-        keys = [tuple(row.tolist()) for row in unique_groups]
-        group_to_id_map = {k: i for i, k in enumerate(keys)}
-    del all_triples
-    del groups
-    def get_group_ids(triples: torch.Tensor, group_strategy: list, group_to_id_map) -> torch.Tensor:
-        groups = triples[:, group_strategy].squeeze()
-        if groups.dim() == 1:
-            return groups
-        else:
-            ids = [group_to_id_map[tuple(row.tolist())] for row in groups]
-            return torch.tensor(ids, dtype=torch.long)
-    get_group_ids = partial(get_group_ids, group_strategy=group_strategy, group_to_id_map=group_to_id_map)
     
     # path_store = (train_set_t.relation_paths, train_set_t.entity_paths, train_set_t.path_index)
     train_set_tri = CandidateTripleEntityMultiPathDataset(
@@ -981,6 +1125,16 @@ def create_and_run_training_exp_two_phases(args):
         gradient_clip_algorithm='norm', accumulate_grad_batches=args_phase3.accumulate_gradient,
         callbacks=[estopping_callbk_tri, checkpoint_callbk_tri, dataset_callbk_tri],
     )
+
+    # NEW: Evaluate triple metrics on candidate test set with untrained model (baseline/random performance)
+    stageprint("Evaluating untrained triple model on candidate test set (baseline metrics)...")
+    untrained_test_dict = trainer_tri.test(
+        model=pl_model_tri,  # Use the untrained model
+        dataloaders=te_loader_tri,  # Candidate test set
+        ckpt_path=None  # No checkpoint; use current (untrained) model state
+    )[0]
+    print("\nUntrained triple model results on candidates: {}".format(untrained_test_dict))
+
 
     if args_phase3.cmd in ["train", "resume"]:
         stageprint("Training-validating the model, be patient!")

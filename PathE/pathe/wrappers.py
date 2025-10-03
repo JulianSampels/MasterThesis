@@ -23,7 +23,7 @@ from PathE.pathe.pathdata import RelationMaps
 
 from .pathe_ranking_metrics import (RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples, CandidateMRRPerSampleFiltered, 
-                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal)
+                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, TailHitsAtKTuples, TailMRRTuples)
 
 from .pather_models import PathEModelTriples, PathEModelTuples
 
@@ -361,7 +361,7 @@ class PathEModelWrapperTriples(LightningModule):
         self.val_relationHitsAt10(triples=triples,
                                   scores=logits)
         self.log("valid_mrr", self.val_relationMRR, on_step=False,
-                 on_epoch=True)
+                 on_epoch=True, prog_bar=True)
         self.log("valid_hits1", self.val_relationHitsAt1, on_step=False,
                  on_epoch=True)
         self.log("valid_hits3", self.val_relationHitsAt3, on_step=False,
@@ -823,6 +823,11 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
                 train_relation_maps: RelationMaps = None,
                 val_relation_maps: RelationMaps = None,
                 test_relation_maps: RelationMaps = None,
+                head_to_tails_train: dict | None = None,
+                head_to_tails_val: dict | None = None,
+                head_to_tails_test: dict | None = None,
+                num_entities: int | None = None,
+                dense_head_tail_adj: torch.Tensor | None = None,
                  **hparams):
         super().__init__(pathe_model, filtration_dict, num_negatives,
                          optimiser, scheduler, lr, momentum, weight_decay,
@@ -842,6 +847,17 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.train_relation_maps = train_relation_maps
         self.val_relation_maps = val_relation_maps
         self.test_relation_maps = test_relation_maps
+
+        # Supervision for tail prediction (P(t|h))
+        self.head_to_tails_train = head_to_tails_train or {}
+        self.head_to_tails_val = head_to_tails_val or {}
+        self.head_to_tails_test = head_to_tails_test or {}
+        self.num_entities = num_entities
+        # Optional dense adjacency [E x E] with True at (h,t) if t is valid for h
+        if dense_head_tail_adj is not None:
+            self.register_buffer('dense_head_tail_adj', dense_head_tail_adj.to(torch.bool))
+        else:
+            self.dense_head_tail_adj = None
 
         # Set automatic optimization based on parameter
         self.automatic_optimization = not self.use_manual_optimization
@@ -868,6 +884,32 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.test_relationHitsAt5 = RelationHitsAtKTuples(filtration_dict, k=5)
         self.test_relationHitsAt10 = RelationHitsAtKTuples(filtration_dict, k=10)
 
+        # NEW: Tail (entity) metrics for validation only (can extend to test similarly)
+
+        # Build global union map for filtering (train ∪ val ∪ test)
+        global_head_to_tails = {}
+        for d in [self.head_to_tails_train, self.head_to_tails_val, self.head_to_tails_test]:
+            for h, tails in d.items():
+                gt = global_head_to_tails.get(h)
+                if gt is None:
+                    global_head_to_tails[h] = set(tails)
+                else:
+                    gt.update(tails)
+        self.global_head_to_tails = global_head_to_tails
+
+        # Tail metrics now get (eval_map, global_map)
+        self.val_tailMRR = TailMRRTuples(self.head_to_tails_val, self.global_head_to_tails)
+        self.val_tailHitsAt1 = TailHitsAtKTuples(self.head_to_tails_val, k=1, filter_head_to_tails=self.global_head_to_tails)
+        self.val_tailHitsAt3 = TailHitsAtKTuples(self.head_to_tails_val, k=3, filter_head_to_tails=self.global_head_to_tails)
+        self.val_tailHitsAt5 = TailHitsAtKTuples(self.head_to_tails_val, k=5, filter_head_to_tails=self.global_head_to_tails)
+        self.val_tailHitsAt10 = TailHitsAtKTuples(self.head_to_tails_val, k=10, filter_head_to_tails=self.global_head_to_tails)
+
+        self.test_tailMRR = TailMRRTuples(self.head_to_tails_test, self.global_head_to_tails)
+        self.test_tailHitsAt1 = TailHitsAtKTuples(self.head_to_tails_test, k=1, filter_head_to_tails=self.global_head_to_tails)
+        self.test_tailHitsAt3 = TailHitsAtKTuples(self.head_to_tails_test, k=3, filter_head_to_tails=self.global_head_to_tails)
+        self.test_tailHitsAt5 = TailHitsAtKTuples(self.head_to_tails_test, k=5, filter_head_to_tails=self.global_head_to_tails)
+        self.test_tailHitsAt10 = TailHitsAtKTuples(self.head_to_tails_test, k=10, filter_head_to_tails=self.global_head_to_tails)
+
         # watch link prediction metrics
         if self.val_num_negatives > 0:  
             # raise NotImplementedError("check whether tuples versions are needed to be used. ")
@@ -888,15 +930,17 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             assert(self.optimiser == "adam"), "Currently only Adam is supported for manual optimization."
             # Return separate optimizers for relation and link prediction
             relation_params = []
-            link_params = []
+            tail_params = []
             shared_params = []
             
             # Separate parameters based on their role
             for name, param in self.model.named_parameters():
                 if 'relpredict_head_avg' in name:
                     relation_params.append(param)
-                elif 'link_predict_head' in name:
-                    link_params.append(param)
+                    print(f"Relation param: {name}")
+                elif 'tail_predict_head' in name:
+                    tail_params.append(param)
+                    print(f"Tail param: {name}")
                 else:
                     shared_params.append(param)
             
@@ -907,7 +951,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             )
             
             link_optimizer = torch.optim.Adam(
-                shared_params + link_params if not self.link_head_detached else link_params,
+                (shared_params + tail_params) if not self.link_head_detached else tail_params,
                 lr=self.lr,
                 weight_decay=self.weight_decay
             )
@@ -923,151 +967,255 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         return loss_rp
 
     def compute_lp_loss(self, logits, num_negatives):
+        # legacy path not used in tuples tail training
         loss_lp = self.lp_loss_fn(logits, num_negatives)
         return loss_lp
 
+    def _build_tail_labels_weights(self, heads: torch.Tensor, split: str):
+        assert self.num_entities is not None, "num_entities is required for tail supervision"
+        H = heads.size(0)
+        device = heads.device
+        # If we have a dense adjacency, use it for O(1) label construction per head
+        if getattr(self, 'dense_head_tail_adj', None) is not None:
+            adj = self.dense_head_tail_adj.to(device)
+            Y = adj[heads].to(torch.float32)
+        else:
+            Y = torch.zeros((H, self.num_entities), dtype=torch.float32, device=device)
+        if split == 'train':
+            h2t = self.head_to_tails_train
+        elif split == 'valid':
+            h2t = self.head_to_tails_val
+        elif split == 'test':
+            h2t = self.head_to_tails_test
+        else:
+            raise ValueError("split must be 'train' | 'valid' | 'test'")
+        if getattr(self, 'dense_head_tail_adj', None) is None:
+            for i in range(H):
+                h = int(heads[i].item())
+                tails = h2t.get(h)
+                if tails:
+                    idx = torch.tensor(list(tails), dtype=torch.long, device=device)
+                    Y[i, idx] = 1.0
+        pos_counts = Y.sum(dim=1, keepdim=True)
+        neg_counts = (self.num_entities - pos_counts)
+        w_pos = 0.5 / pos_counts.clamp_min(1.0)
+        w_neg = 0.5 / neg_counts.clamp_min(1.0)
+        W = torch.where(Y > 0.5, w_pos, w_neg)
+        return Y, W
+
+    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, split: str):
+        Y, W = self._build_tail_labels_weights(heads=heads, split=split)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, Y, weight=W, reduction='sum')
+        return loss / W.sum().clamp_min(1.0)
+
+    def _has_tail_supervision(self, split: str) -> bool:
+        if split == 'train':
+            return len(self.head_to_tails_train) > 0
+        if split == 'valid':
+            return len(self.head_to_tails_val) > 0
+        if split == 'test':
+            return len(self.head_to_tails_test) > 0
+        return False
+
     def training_step(self, batch, batch_idx):
-        if not self.use_manual_optimization:
-            return super().training_step(batch, batch_idx)
-        
-        # Manual optimization mode
-        relation_opt, link_opt = self.optimizers()
-        
         # Forward pass
-        logits_rp, logits_lp = self.model_forward(batch)
-
-        # Calculate separate losses (unscaled for logging)
+        logits_rp, logits_tail = self.model_forward(batch)
         targets = batch["target"] - 2
-        rp_loss_unscaled = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
-        use_link = (self.train_num_negatives > 0)
-        lp_loss_unscaled = self.compute_lp_loss(logits_lp, self.train_num_negatives) if use_link else torch.zeros((), device=self.device)
-        if torch.isnan(rp_loss_unscaled) or torch.isnan(lp_loss_unscaled):
-            logger.warning("Training stopped due to NaN loss.")
-            self.trainer.should_stop = True
-            self.trainer.limit_val_batches = 0
+        heads = batch['ori_triple'][:, 0].to(self.device)
 
-        # Scale for accumulation
+        # Losses (unscaled)
+        rp_loss_unscaled = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
+        if self._has_tail_supervision('train'):
+            tail_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads=heads, split='train')
+        else:
+            tail_loss_unscaled = torch.zeros((), device=self.device)
+
+        if not self.use_manual_optimization:
+            total = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tail_loss_unscaled
+            self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
+            self.log("train_lp_loss", tail_loss_unscaled, prog_bar=True)
+            self.log("train_total_loss", total, prog_bar=True)
+            return total
+
+        # Manual optimization mode
+        relation_opt, tail_opt = self.optimizers()
         scale = 1.0 / self.accumulate_gradient
         rp_loss = rp_loss_unscaled * scale
-        lp_loss = lp_loss_unscaled * scale
+        tail_loss = tail_loss_unscaled * scale
 
         # Backward passes
         self.toggle_optimizer(optimizer=relation_opt, optimizer_idx=0)
-        self.manual_backward(rp_loss, retain_graph=(use_link and (not self.link_head_detached)))
+        self.manual_backward(rp_loss, retain_graph=(not self.link_head_detached))
         self.untoggle_optimizer(optimizer_idx=0)
 
-        if use_link:
-            self.toggle_optimizer(optimizer=link_opt, optimizer_idx=1)
-            self.manual_backward(lp_loss, retain_graph=False)
+        if tail_loss.requires_grad:
+            print(f"require grad for tail loss!!!!!!!!!!")
+            self.toggle_optimizer(optimizer=tail_opt, optimizer_idx=1)
+            self.manual_backward(tail_loss, retain_graph=False)
             self.untoggle_optimizer(optimizer_idx=1)
-        
-        # Step and zero grads when enough batches have been accumulated or at last batch
+
+        # Step and zero grads
         is_boundary = ((batch_idx + 1) % self.accumulate_gradient) == 0
         total_batches = getattr(self.trainer, "num_training_batches", None)
         is_last = (total_batches is not None) and ((batch_idx + 1) == int(total_batches))
         if is_boundary or is_last:
             self.clip_gradients(relation_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
-            relation_opt.step()
-            relation_opt.zero_grad()
+            relation_opt.step(); relation_opt.zero_grad()
+            self.clip_gradients(tail_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
+            tail_opt.step(); tail_opt.zero_grad()
 
-            if use_link:
-                self.clip_gradients(link_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
-                link_opt.step()
-                link_opt.zero_grad()
-        
         # Logging unscaled losses
         self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
-        if use_link:
-            self.log("train_lp_loss", lp_loss_unscaled, prog_bar=True)
-            self.log("train_total_loss", rp_loss_unscaled + lp_loss_unscaled)
-        else:
-            self.log("train_total_loss", rp_loss_unscaled)
-        
-        return {"rp_loss": rp_loss_unscaled, "lp_loss": lp_loss_unscaled}
+        self.log("train_lp_loss", tail_loss_unscaled, prog_bar=True)
+        self.log("train_total_loss", rp_loss_unscaled + tail_loss_unscaled)
+        return {"rp_loss": rp_loss_unscaled, "lp_loss": tail_loss_unscaled}
     
     def validation_step(self, batch, batch_idx):
-        if not self.use_manual_optimization:
-            return super().validation_step(batch, batch_idx)
-
         # Forward pass
-        logits_rp, logits_lp = self.model_forward(batch)
+        logits_rp, logits_tail = self.model_forward(batch)
         targets = batch["target"] - 2
         tuples = batch['ori_triple']
+        heads = tuples[:, 0].to(self.device)
 
-        # Compute losses
+        # Losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
-        lp_loss = self.compute_lp_loss(logits_lp, self.val_num_negatives)
+        tp_loss = self.compute_tail_bce_loss(logits_tail, heads=heads, split='valid') if self._has_tail_supervision('valid') else torch.zeros((), device=self.device)
 
         # Logging losses
         self.log("valid_rp_loss", rp_loss, prog_bar=True)
-        self.log("valid_lp_loss", lp_loss, prog_bar=(self.val_num_negatives > 0))
-        self.log("valid_total_loss", rp_loss + lp_loss)
+        self.log("valid_tp_loss", tp_loss, prog_bar=True)
+        self.log("valid_total_loss", rp_loss + tp_loss)
 
         # Metrics for tuples (relation prediction)
         assert(tuples.size()[0] == logits_rp.size()[0])
         logits_rp_only_positives = logits_rp[torch.arange(0, logits_rp.size()[0], self.val_num_negatives + 1)]
         tuples_only_positives = tuples[torch.arange(0, tuples.size()[0], self.val_num_negatives + 1)]
 
-        # Accumulate for epoch-level metric computation (avoid per-batch heavy metrics)
+        # Accumulate for epoch-level metric computation
         if not hasattr(self, "_val_acc"):
             assert(batch_idx == 0), "Somehow accumulating validation data was not deleted in validation_epoch_end() after last epoch. Risking incorrect metrics!"
-            self._val_acc = {"tuples_rp": [], "tuples_lp": [], "logits_rp": [], "logits_lp": []}
-        else:
-            assert(batch_idx > 0), "Somehow accumulating validation data was not initialized in previous validation_steps. Risking incorrect metrics!"
+            self._val_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": []}
         self._val_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
-        self._val_acc["tuples_lp"].append(tuples.detach().cpu())
+        self._val_acc["tuples_tp"].append(tuples.detach().cpu())
         self._val_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
-        self._val_acc["logits_lp"].append(logits_lp.detach().cpu())
+        self._val_acc["logits_tp"].append(logits_tail.detach().cpu())
 
-        return {"rp_loss": rp_loss, "lp_loss": lp_loss}
+        return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
     def validation_epoch_end(self, outputs):
         if not hasattr(self, "_val_acc"):
             logger.warning("validation_epoch_end() called without any accumulated validation data!")
             return
-        # Rename accumulated validation data for usage in triples' metric calculation function
-        if "tuples_rp" in self._val_acc:
-            self._val_acc['triples_rp'] = self._val_acc.pop('tuples_rp')
-        if "tuples_lp" in self._val_acc:
-            self._val_acc['triples_lp'] = self._val_acc.pop('tuples_lp')
-        return super().validation_epoch_end(outputs)
+        # Only relation metrics for tuples here
+        triples_rp = torch.cat(self._val_acc["tuples_rp"], dim=0)
+        logits_rp = torch.cat(self._val_acc["logits_rp"], dim=0)
+        assert(logits_rp.size(0) == triples_rp.size(0))
+        self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
+
+
+        # --- NEW: Tail metrics -------------------------------------------
+        # All (possibly duplicated) heads with tail logits
+        tuples_all = torch.cat(self._val_acc["tuples_tp"], dim=0)          # (N, 2) (h, r)
+        logits_tail_all = torch.cat(self._val_acc["logits_tp"], dim=0)     # (N, E)
+
+        heads_all = tuples_all[:, 0]                                       # (N,)
+        # Group by head: aggregate (mean) scores across multiple (h,r) rows
+        unique_heads, inverse = heads_all.unique(return_inverse=True, sorted=False)
+        # If torch_scatter available (already imported), use it:
+        scores_agg = torch_scatter.scatter_mean(logits_tail_all, inverse, dim=0)
+
+        # Update tail metrics
+        self.val_tailMRR.update(unique_heads, scores_agg)
+        self.val_tailHitsAt1.update(unique_heads, scores_agg)
+        self.val_tailHitsAt3.update(unique_heads, scores_agg)
+        self.val_tailHitsAt5.update(unique_heads, scores_agg)
+        self.val_tailHitsAt10.update(unique_heads, scores_agg)
+
+        # Log tail metrics
+        self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True)
+
+        # Cleanup
+        del self._val_acc
 
     def predict_step(self, batch, batch_idx, dataloader_idx = 0):
-        logits_rp, logits_lp = self.pathe_forward_step_tuples(batch)
+        logits_rp, logits_tp = self.pathe_forward_step_tuples(batch)
         tuples = batch['ori_triple']  # (num_samples, 2) -> (h, r)
         return {
             "tuples": tuples.detach().cpu(),
             "logits_rp": logits_rp.detach().cpu(),
-            "logits_lp": logits_lp.detach().cpu()
+            "logits_tp": logits_tp.detach().cpu()
         }
     
     
     # quite similar to validation_step but with different logging names and metric calculation functions
     def test_step(self, batch, batch_idx):
-        if not self.use_manual_optimization:
-            return super().test_step(batch, batch_idx)
-
         # Forward pass
-        logits_rp, logits_lp = self.model_forward(batch)
+        logits_rp, logits_tail = self.model_forward(batch)
         targets = batch["target"] - 2
         tuples = batch['ori_triple']
+        heads = tuples[:, 0].to(self.device)
 
         # Compute losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
-        lp_loss = self.compute_lp_loss(logits_lp, self.test_num_negatives)
+        tp_loss = self.compute_tail_bce_loss(logits_tail, heads=heads, split='test') if self._has_tail_supervision('test') else torch.zeros((), device=self.device)
 
         # Logging losses
         self.log("test_rp_loss", rp_loss, prog_bar=True)
-        self.log("test_lp_loss", lp_loss, prog_bar=True)
-        self.log("test_total_loss", rp_loss + lp_loss)
+        self.log("test_tp_loss", tp_loss, prog_bar=True)
+        self.log("test_total_loss", rp_loss + tp_loss)
 
-        # Metrics for tuples (relation prediction)
+        # Relation metrics (tuples)
         assert(tuples.size()[0] == logits_rp.size()[0])
         logits_rp_only_positives = logits_rp[torch.arange(0, logits_rp.size()[0], self.test_num_negatives + 1)]
         tuples_only_positives = tuples[torch.arange(0, tuples.size()[0], self.test_num_negatives + 1)]
-        self.calculate_and_log_test_relation_metrics(tuples_only_positives, logits_rp_only_positives)
-        self.calculate_and_log_test_links_metrics(tuples, logits_lp)
-    
+
+        if not hasattr(self, "_test_acc"):
+            assert batch_idx == 0, "Accumulation not cleared from previous test epoch."
+            self._test_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": []}
+
+        self._test_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
+        self._test_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
+        self._test_acc["tuples_tp"].append(tuples.detach().cpu())
+        self._test_acc["logits_tp"].append(logits_tail.detach().cpu())
+
+        return {"rp_loss": rp_loss, "tp_loss": tp_loss}
+
+        # self.calculate_and_log_test_relation_metrics(tuples_only_positives, logits_rp_only_positives)
+
+    def on_test_epoch_end(self):
+        if not hasattr(self, "_test_acc"):
+            return
+        # Relation metrics
+        tuples_rp = torch.cat(self._test_acc["tuples_rp"], dim=0)
+        logits_rp = torch.cat(self._test_acc["logits_rp"], dim=0)
+        assert logits_rp.size(0) == tuples_rp.size(0)
+        self.calculate_and_log_test_relation_metrics(tuples_rp, logits_rp)
+
+        # Tail metrics
+        tuples_all = torch.cat(self._test_acc["tuples_tp"], dim=0)
+        logits_tail_all = torch.cat(self._test_acc["logits_tp"], dim=0)
+        heads_all = tuples_all[:, 0]
+        unique_heads, inverse = heads_all.unique(return_inverse=True, sorted=False)
+        scores_agg = torch_scatter.scatter_mean(logits_tail_all, inverse, dim=0)
+
+        self.test_tailMRR.update(unique_heads, scores_agg)
+        self.test_tailHitsAt1.update(unique_heads, scores_agg)
+        self.test_tailHitsAt3.update(unique_heads, scores_agg)
+        self.test_tailHitsAt5.update(unique_heads, scores_agg)
+        self.test_tailHitsAt10.update(unique_heads, scores_agg)
+
+        self.log("test_tail_mrr", self.test_tailMRR, on_step=False, on_epoch=True)
+        self.log("test_tail_hits1", self.test_tailHitsAt1, on_step=False, on_epoch=True)
+        self.log("test_tail_hits3", self.test_tailHitsAt3, on_step=False, on_epoch=True)
+        self.log("test_tail_hits5", self.test_tailHitsAt5, on_step=False, on_epoch=True)
+        self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
+
+        del self._test_acc
+
     def model_forward(self, batch):
         return self.pathe_forward_step_tuples(batch)
 
@@ -1085,7 +1233,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         head_idxs = head_idxs * 2
         ppt = batch["ppt"]
 
-        logits_rp, logits_lp = self.model(
+        logits_rp, logits_tp = self.model(
             ent_paths=ent_paths,
             rel_paths=rel_paths,
             head_idxs=head_idxs,
@@ -1096,241 +1244,5 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             detach_link_head=self.link_head_detached
         )
         # loss_rp = self.criterion(logits_rp, targets)
-        return logits_rp, logits_lp
+        return logits_rp, logits_tp
     
-    def _global_topk_joint_streaming(
-        self,
-        log_p_head_2d: torch.Tensor,
-        log_p_tail_2d: torch.Tensor,
-        alpha: float,
-        k: int,
-        rel_block_size: int = 1,
-    ):
-        """
-        Memory-efficient global top-k over all (head, relation, tail) triples.
-
-        Vectorized over relation chunks:
-        - Process at most `rel_block_size` relations at a time (no tail-splitting).
-        - For a chunk r in [r0:r1), build a joint score tensor S with shape (C, E, E),
-          where C = r1 - r0 and:
-              S[c, h, t] = alpha * log_p_head_2d[h, r0+c] + (1 - alpha) * log_p_tail_2d[r0+c, t]
-        - Run a single topk over the whole chunk (flattened), then decode to (r, h, t).
-        - Merge the chunk top-k into a running global top-k buffer of size k.
-
-        Args:
-            log_p_head_2d: Tensor (E, R) with log P(r | h)
-            log_p_tail_2d: Tensor (R, E) with log P(r^{-1} | t), aligned by relation index
-            alpha: Weight in [0,1] for head vs tail terms
-            k: Number of top entries to keep globally
-            rel_block_size: Max number of relations to process per chunk
-
-        Returns:
-            top_vals: (k',) tensor of joint log-probs (k' <= k)
-            top_r:    (k',) tensor of relation indices
-            top_h:    (k',) tensor of head indices
-            top_t:    (k',) tensor of tail indices
-        """
-        assert 0.0 <= alpha <= 1.0, "alpha must be in [0,1]"
-        E, R = log_p_head_2d.shape
-        assert log_p_tail_2d.shape == (R, E), "log_p_tail_2d must be (R, E)"
-
-        # Work on CPU float32 to minimize memory pressure
-        log_p_head_2d = log_p_head_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (E, R)
-        log_p_tail_2d = log_p_tail_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (R, E)
-
-        # Running global top-k buffers (pre-allocated, updated incrementally)
-        top_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
-        top_r    = torch.full((k,), -1, dtype=torch.long)
-        top_h    = torch.full((k,), -1, dtype=torch.long)
-        top_t    = torch.full((k,), -1, dtype=torch.long)
-        filled = 0  # number of valid entries currently stored in the buffers
-
-        a_h = float(alpha)
-        a_t = float(1.0 - alpha)
-
-        # Progress bar disappears after loop (leave=False)
-        for r0 in tqdm(range(0, R, max(1, int(rel_block_size))),
-                       desc=f"Computing global top-k candidates.", unit=f"{rel_block_size} relations", leave=False):
-            r1 = min(R, r0 + max(1, int(rel_block_size)))
-            C = r1 - r0  # number of relations in this chunk
-
-            # Vectorized joint scores for the relation chunk
-            # h_chunk: (E, C), t_chunk: (C, E)
-            h_chunk = (a_h * log_p_head_2d[:, r0:r1])         # (E, C)
-            t_chunk = (a_t * log_p_tail_2d[r0:r1, :])         # (C, E)
-            # S: (C, E, E) with broadcasting: per relation c, S[c] = h_chunk[:, c][:, None] + t_chunk[c][None, :]
-            S = h_chunk.t().unsqueeze(2) + t_chunk.unsqueeze(1)  # (C, E, E)
-
-            # Single top-k for the whole chunk
-            numel_chunk = S.numel()
-            if numel_chunk == 0:
-                continue
-            k_chunk = min(k, numel_chunk)
-            vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
-
-            # Decode flat indices to (c, h, t) and map to global r = r0 + c
-            per_rel = E * E
-            c_idx = idx_chunk_flat // per_rel
-            rem   = idx_chunk_flat % per_rel
-            h_idx = rem // E
-            t_idx = rem %  E
-            r_idx = (c_idx + r0).to(torch.long)
-
-            # Merge with running global top-k heap
-            # General idea:
-            # - Maintain the best 'k' triples seen so far across processed relation chunks.
-            # - Concatenate current global list with this chunk's list, then take top-k again.
-            # - We never allocate or sort the full (E*R*E) array; memory stays bounded by
-            #   O(C*E*E) for the current chunk plus O(k) for the heap.
-            if filled == 0:
-                take = min(k, vals_chunk.numel())
-                top_vals[:take] = vals_chunk[:take]
-                top_r[:take]    = r_idx[:take]
-                top_h[:take]    = h_idx[:take]
-                top_t[:take]    = t_idx[:take]
-                filled = take
-            else:
-                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
-                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
-                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
-                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
-
-                if cand_vals.numel() > k:
-                    vtop, order = torch.topk(cand_vals, k=k, largest=True)
-                    top_vals[:k] = vtop
-                    top_r[:k]    = cand_r[order]
-                    top_h[:k]    = cand_h[order]
-                    top_t[:k]    = cand_t[order]
-                    filled = k
-                else:
-                    top_vals[:cand_vals.numel()] = cand_vals
-                    top_r[:cand_vals.numel()]    = cand_r
-                    top_h[:cand_vals.numel()]    = cand_h
-                    top_t[:cand_vals.numel()]    = cand_t
-                    filled = cand_vals.numel()
-
-        # Trim to filled size
-        return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
-
-    def build_triple_candidates_adaptive(
-        self,
-        tuples: torch.Tensor,
-        relation_maps: RelationMaps,
-        logits_rp: torch.Tensor,
-        p: float = None,          # keep candidates with P >= p (global threshold)
-        q: float = None,          # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
-        temperature: float = 1.0, # temperature for softmax calibration
-        alpha: float = 0.5,       # weight for head vs tail log-probs
-        cap_candidates: int = None # final cap after thresholding only keep top-k candidates
-    ):
-        """
-        Efficiently generate candidate (head, relation, tail) triples and their joint probabilities
-        for two-phase PathE training, using global top-k streaming to avoid OOM on large graphs.
-
-        Candidate selection logic:
-          1. Compute an effective cap from quantile q (cap_q = ceil((1-q) * E*R*E)), and/or cap_candidates.
-             The final cap is min(cap_candidates, cap_q) if both are set.
-          2. Compute joint log-probabilities for all (h, r, t) triples using:
-                joint(h, r, t) = alpha * log P(r|h) + (1-alpha) * log P(r^{-1}|t)
-             without materializing the full (E, R, E) tensor.
-          3. Use a streaming top-k algorithm to keep only the highest-probability candidates globally.
-          4. Stack all candidate triples and their scores.
-          5. If a global probability threshold p is set, filter candidates by score >= p.
-             Always keep at least one candidate to avoid empty sets downstream.
-
-        Args:
-            tuples: (num_samples, 2) tensor, entity in col 0.
-            relation_maps: RelationMaps object mapping original to inverse relations.
-            logits_rp: (num_samples, num_relations) tensor of per-sample relation logits.
-            p: Optional[float], global probability threshold for candidate filtering.
-            q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
-            temperature: float, softmax temperature for calibration.
-            alpha: float in [0,1], weight for head vs tail log-probabilities.
-            cap_candidates: Optional[int], hard cap on number of candidates.
-
-        Returns:
-            candidates: (N, 3) tensor of (head_id, relation_id, tail_id) triples.
-            scores: (N,) tensor of joint probabilities for each candidate.
-        """
-        assert logits_rp is not None, "logits_rp required."
-        assert temperature > 0, "temperature must be > 0"
-        assert 0.0 <= alpha <= 1.0, "alpha must be in [0,1]"
-
-        # 1. Collect unique head entities (local indexing)
-        entities, inverse_entity_indices = tuples[:, 0].unique(return_inverse=True, sorted=False)
-        E = entities.size(0)
-        if E == 0:
-            return tuples.new_zeros((0, 3)), tuples.new_zeros((0,), dtype=torch.float32)
-
-        # 2. Aggregate logits per local head index
-        logits_rp_grouped = torch_scatter.scatter_mean(logits_rp, inverse_entity_indices, dim=0)
-        device = logits_rp_grouped.device
-
-        # 3. Resolve original & inverse relation ids
-        r_map = torch.tensor(list(relation_maps.original_relation_to_inverse_relation.items()), device=device, dtype=torch.long)
-        original_relations = r_map[:, 0]
-        inverse_relations = r_map[:, 1]
-        assert original_relations.numel() == inverse_relations.numel(), "Mismatch originals/inverses."
-        for i, rel in enumerate(original_relations):
-            assert relation_maps.original_relation_to_inverse_relation[rel.item()] == inverse_relations[i], "Inconsistent relation maps."
-        R = original_relations.size(0)
-
-        # 4. Slice logits for original and inverse relation columns
-        head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
-        tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
-
-        # 5. Calibrated log-probabilities (avoid tiny exp, use log_softmax); keep as 2D on CPU
-        log_p_head_2d = torch.log_softmax(head_logits_subset / temperature, dim=1).to(torch.float32).cpu()  # (E, R)
-        # transpose to (R, E) to index by relation first on tail-side
-        log_p_tail_2d = torch.log_softmax(tail_logits_subset / temperature, dim=1).to(torch.float32).cpu().transpose(0, 1)  # (R, E)
-
-        # Derive effective cap from q first (before any threshold). This bounds the search space.
-        total = int(E) * int(R) * int(E)
-        effective_cap = cap_candidates
-        if q is not None:
-            q = float(q)
-            assert 0.0 <= q < 1.0, "q must be in [0,1)"
-            cap_q = max(1, int(math.ceil((1.0 - q) * total)))
-            if effective_cap is not None and effective_cap < cap_q:
-                logger.warning(f"cap_candidates < cap_q  from q-quantile. Using smaller cap_candidates {cap_candidates} instead of {cap_q}.")
-            effective_cap = cap_q if effective_cap is None else min(effective_cap, cap_q)
-        if effective_cap is None:
-            raise ValueError("Candidate generation requires a cap (q or cap_candidates). Threshold-only (p) is unsafe for large graphs.")
-
-        # Compute global top-k in a streaming fashion without O(E*R*E) memory
-        # Peak RAM ~ rel_block_size * E * E * 4 bytes
-        # memory_limit_gb = 1.0  # target RAM limit in GB
-        # bytes_per_float = 4
-        # max_bytes = int(memory_limit_gb * (1024**3))
-        # rel_block_size = max(1, max_bytes // max(1, (E * E * bytes_per_float)))
-
-        top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
-            log_p_head_2d=log_p_head_2d,
-            log_p_tail_2d=log_p_tail_2d,
-            alpha=float(alpha),
-            k=int(effective_cap),
-            rel_block_size=int(10)  # tune based on memory constraints,
-        )
-
-        # Build candidate triples (global entity indexing)
-        heads_tensor = entities[h_idx]
-        rels_tensor  = original_relations[r_idx].cpu()
-        tails_tensor = entities[t_idx]
-        candidates = torch.stack([heads_tensor, rels_tensor, tails_tensor], dim=1)
-
-        # Convert to probabilities for thresholding
-        scores = torch.exp(top_log_vals)
-        # 6. Apply global threshold p if provided
-        if p is not None:
-            p = float(p)
-            keep_mask = scores >= p
-            if keep_mask.any():
-                candidates = candidates[keep_mask]
-                scores = scores[keep_mask]
-            else:
-                # Keep at least the best entry to avoid empty sets downstream
-                best = torch.argmax(scores)
-                candidates = candidates[best:best+1]
-                scores = scores[best:best+1]
-
-        return candidates, scores

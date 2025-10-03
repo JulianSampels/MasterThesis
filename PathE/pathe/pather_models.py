@@ -147,8 +147,8 @@ class AdaptiveNodeEncoder(nn.Module):
         @return: None
         @rtype: None
         """
-        encoding_inc = encodings[1].cuda()
-        encoding_out = encodings[2].cuda()  # FIXME
+        encoding_inc = encodings[1]
+        encoding_out = encodings[2]
         self.incoming_gcn = DummyProjector(encodings=encoding_inc,
                                     d_out=self.d_input)
         self.outgoing_gcn = DummyProjector(encodings=encoding_out,
@@ -214,7 +214,9 @@ class DummyProjector(nn.Module):
                  activation: Union[str, Callable] = F.tanh) -> None:
         super().__init__()
         self.model = None
-        self.encodings = encodings
+        # self.encodings = encodings
+        # Register encodings as a buffer so it follows the module device
+        self.register_buffer('encodings', encodings)
         self.activation_f = activation
 
         self.d_out = d_out
@@ -249,6 +251,7 @@ class DummyProjector(nn.Module):
             A tensor of shape ``[num_paths * path length, embedding dim]``
 
         """
+        # self.encodings is a registered buffer and will be on the correct device
         enc = self.encodings[x, :]
         enc_flattened = enc.reshape(enc.size()[0] * enc.size()[1], -1)
         node_features = self.model(enc_flattened)
@@ -953,6 +956,16 @@ class PathEModelTuples(PathEModelTriples):
         self.relpredict_head_avg = nn.Linear(d_model * 1, vocab_size - 2)
         self.link_predict_head1 = nn.Linear(d_model * 2, d_model)
         self.link_predict_head2 = nn.Linear(d_model, 1)
+
+        # Tail classification head over all entities (predict t | h)
+        # Infer number of entities from the relational context encodings (offset=2)
+        try:
+            num_entities = int(relcontext_graph[0].shape[0] - 2)
+        except Exception:
+            # Fallback in case the provided relcontext_graph has unexpected structure
+            num_entities = vocab_size - 2  # safe fallback; will be corrected by trainer usage
+        self.num_entities = num_entities
+        self.tail_predict_head = nn.Linear(d_model * 1, self.num_entities)
     
     def select_separated_head_embeddings(self, memory, head_idxs, entity_origin):
         """
@@ -1041,16 +1054,20 @@ class PathEModelTuples(PathEModelTriples):
         # Ensure head_emb has the correct shape
         head_emb = head_emb.unsqueeze(0) if head_emb.ndim < 2 else head_emb
 
-        # Relation prediction (always with gradients)
+        # Relation prediction P(r | h) (always with gradients)
         logits_rp = self.predict_relation_from_h(head_emb)
         
-        # Link prediction (optionally detached)
-        if detach_link_head:
-            logits_link = self.link_predict_from_h(head_emb.detach(), targets)
-        else:
-            logits_link = self.link_predict_from_h(head_emb, targets)
+        # # Link prediction (optionally detached)
+        # if detach_link_head:
+        #     logits_link = self.link_predict_from_h(head_emb.detach(), targets)
+        # else:
+        #     logits_link = self.link_predict_from_h(head_emb, targets)
 
-        return logits_rp, logits_link
+        # Tail prediction P(t | h, r) (optionally detached)
+        logits_tail = self.tail_predict_from_h(head_emb.detach() if detach_link_head else head_emb)
+
+        # return logits_rp, logits_link
+        return logits_rp, logits_tail
 
     def predict_relation_from_h(self, head_emb):
         # Predict relation class logits from head embedding only
@@ -1067,6 +1084,13 @@ class PathEModelTuples(PathEModelTriples):
         predictions = nn.functional.relu(predictions)
         predictions = self.link_predict_head2(predictions)
         return predictions
+    
+    def tail_predict_from_h(self, head_emb: torch.Tensor) -> torch.Tensor:
+        """
+        Predict tail logits over all entities for a given head.
+        Shape: (batch_size, num_entities)
+        """
+        return self.tail_predict_head(head_emb)
 
     # ---------------------------
     # DIFFERENCE TO TRIPLES PREDICTION:

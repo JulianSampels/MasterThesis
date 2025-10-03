@@ -714,6 +714,142 @@ class EntityHitsAtKTuples(EntityHitsAtKTriples):
         # Update the total number of evaluated samples
         self.total += realistic_rank.numel()
 
+
+
+# --- NEW: Tail (entity) metrics for tuples mode --------------------------------
+
+
+class TailMRRTuples(Metric):
+    """
+    Filtered MRR for tail prediction P(t | h) in tuples mode.
+    - eval_head_to_tails: tails we actually evaluate (e.g. validation split)
+    - filter_head_to_tails: all true tails for each head across ALL splits (used to filter)
+    """
+    higher_is_better = True
+
+    def __init__(self,
+                 eval_head_to_tails: Dict[int, set[int]],
+                 filter_head_to_tails: Dict[int, set[int]] | None = None):
+        super().__init__()
+        self.eval_head_to_tails = {int(h): {int(t) for t in tails}
+                                   for h, tails in (eval_head_to_tails or {}).items()}
+        # If no global filter map provided fall back to eval map
+        base = filter_head_to_tails or eval_head_to_tails or {}
+        self.filter_head_to_tails = {int(h): {int(t) for t in tails}
+                                     for h, tails in base.items()}
+        self.add_state("reciprocal_ranks", default=torch.tensor(0.0),
+                       dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0),
+                       dist_reduce_fx="sum")
+
+    @torch.no_grad()
+    def update(self, heads: torch.Tensor, scores: torch.Tensor):
+        """
+        heads : (H,) tensor of head ids
+        scores: (H, E) tensor of tail scores (logits) for each head
+        """
+        assert scores.ndim == 2
+        assert heads.ndim == 1
+        assert scores.size(0) == heads.size(0)
+
+        for i in range(heads.size(0)):
+            h = int(heads[i].item())
+            eval_set = self.eval_head_to_tails.get(h)
+            if not eval_set:
+                continue
+            filter_set = self.filter_head_to_tails.get(h, eval_set)
+            row = scores[i]
+
+            # Iterate only over evaluation (split) tails
+            for t in eval_set:
+                score_t = row[t]
+                # Rank counts before filtering
+                gt_all = (row > score_t).sum()
+                ge_all = (row >= score_t).sum()
+                # Remove ALL other true tails (global) except the target
+                if len(filter_set) > 1:
+                    others = [o for o in filter_set if o != t]
+                    others_tensor = torch.tensor(others, device=row.device,
+                                                 dtype=torch.long)
+                    gt_all -= (row[others_tensor] > score_t).sum()
+                    ge_all -= (row[others_tensor] >= score_t).sum()
+
+                optimistic_rank = gt_all + 1
+                pessimistic_rank = ge_all + 1
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+                self.reciprocal_ranks += (1.0 / realistic_rank)
+                self.total += 1
+
+    def compute(self):
+        return self.reciprocal_ranks / self.total.clamp_min(1)
+
+
+class TailHitsAtKTuples(Metric):
+    """
+    Filtered Hits@K for tail prediction P(t | h) in tuples mode.
+    Uses:
+      - eval_head_to_tails: per-split positives to evaluate
+      - filter_head_to_tails: global positives (all splits) to filter
+    """
+    higher_is_better = True
+
+    def __init__(self,
+                 eval_head_to_tails: Dict[int, set[int]],
+                 k: int,
+                 filter_head_to_tails: Dict[int, set[int]] | None = None):
+        super().__init__()
+        self.k = int(k)
+        self.eval_head_to_tails = {int(h): {int(t) for t in tails}
+                                   for h, tails in (eval_head_to_tails or {}).items()}
+        base = filter_head_to_tails or eval_head_to_tails or {}
+        self.filter_head_to_tails = {int(h): {int(t) for t in tails}
+                                     for h, tails in base.items()}
+        self.add_state("hits", default=torch.tensor(0.0),
+                       dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0),
+                       dist_reduce_fx="sum")
+
+    @torch.no_grad()
+    def update(self, heads: torch.Tensor, scores: torch.Tensor):
+        """
+        heads : (H,) tensor
+        scores: (H, E) tail scores
+        """
+        assert scores.ndim == 2
+        assert heads.ndim == 1
+        assert scores.size(0) == heads.size(0)
+
+        for i in range(heads.size(0)):
+            h = int(heads[i].item())
+            eval_set = self.eval_head_to_tails.get(h)
+            if not eval_set:
+                continue
+            filter_set = self.filter_head_to_tails.get(h, eval_set)
+            row = scores[i]
+
+            for t in eval_set:
+                score_t = row[t]
+                gt_all = (row > score_t).sum()
+                ge_all = (row >= score_t).sum()
+                if len(filter_set) > 1:
+                    others = [o for o in filter_set if o != t]
+                    others_tensor = torch.tensor(others, device=row.device,
+                                                 dtype=torch.long)
+                    gt_all -= (row[others_tensor] > score_t).sum()
+                    ge_all -= (row[others_tensor] >= score_t).sum()
+
+                optimistic_rank = gt_all + 1
+                pessimistic_rank = ge_all + 1
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+                self.hits += (realistic_rank <= self.k).to(self.hits.dtype)
+                self.total += 1
+
+    def compute(self):
+        return self.hits / self.total.clamp_min(1)
+
+
+
+
 class CandidateHitsAtKPerSampleFiltered(Metric):
     """
     Filtered Hits@K per positive sample within candidate groups (group_ids).
