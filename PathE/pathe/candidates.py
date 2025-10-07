@@ -316,7 +316,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk and returns partial results, which are merged globally
-        with mp.Pool(processes=num_processes) as pool:
+        with mp.Pool(processes=min(num_processes, math.ceil(R / rel_block_size))) as pool:
             # Prepare chunk ranges
             chunk_ranges = [(r0, min(R, r0 + rel_block_size)) for r0 in range(0, R, rel_block_size)]
             # Submit jobs
@@ -738,7 +738,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
-        with mp.Pool(processes=num_processes) as pool:
+        with mp.Pool(processes=min(num_processes, math.ceil(R / rel_block_size))) as pool:
             chunk_ranges = [(r0, min(R, r0 + rel_block_size)) for r0 in range(0, R, rel_block_size)]
             results = [pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R, head_block_size)) for r0, r1 in chunk_ranges]
             # results = [pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk2, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R)) for r0, r1 in chunk_ranges]
