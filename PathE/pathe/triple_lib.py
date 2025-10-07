@@ -138,6 +138,25 @@ def get_adjacency_matrix(triples: torch.tensor):
     return adj_matrix
 
 
+def get_full_adjacency_matrix(triples: torch.Tensor, num_entities: int) -> torch.Tensor:
+    """
+    Get the full adjacency matrix (num_entities x num_entities) of a KG based on the triples
+    Parameters
+    ----------
+    triples : A torch tensor of the triples with shape (num triples, 3)
+    num_entities : The total number of entities in the KG
+    Returns
+    -------
+    The adjacency matrix of shape (num_entities, num_entities)
+    """
+    assert triples[:, 0].unique().max() < num_entities, "Entity index in triples head exceeds num_entities"
+    assert triples[:, 2].unique().max() < num_entities, "Entity index in triples tail exceeds num_entities"
+    adj = torch.zeros((num_entities, num_entities), dtype=torch.bool, device="cpu")
+    for h, r, t in triples.tolist():
+        adj[h, t] = True
+    return adj
+
+
 def get_triple_completions(triples: torch.tensor, triple: torch.tensor,
                            missing: int):
     """

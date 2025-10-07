@@ -722,61 +722,65 @@ class EntityHitsAtKTuples(EntityHitsAtKTriples):
 class TailMRRTuples(Metric):
     """
     Filtered MRR for tail prediction P(t | h) in tuples mode.
-    - eval_head_to_tails: tails we actually evaluate (e.g. validation split)
-    - filter_head_to_tails: all true tails for each head across ALL splits (used to filter)
+    - eval_labels: True tails for evaluation (from batch, per-split).
+    - filter_global_adjacency: Global true tails across all splits for filtering (optional).
     """
     higher_is_better = True
 
-    def __init__(self,
-                 eval_head_to_tails: Dict[int, set[int]],
-                 filter_head_to_tails: Dict[int, set[int]] | None = None):
+    def __init__(self, filter_global_adjacency: torch.Tensor | None = None):
         super().__init__()
-        self.eval_head_to_tails = {int(h): {int(t) for t in tails}
-                                   for h, tails in (eval_head_to_tails or {}).items()}
-        # If no global filter map provided fall back to eval map
-        base = filter_head_to_tails or eval_head_to_tails or {}
-        self.filter_head_to_tails = {int(h): {int(t) for t in tails}
-                                     for h, tails in base.items()}
-        self.add_state("reciprocal_ranks", default=torch.tensor(0.0),
-                       dist_reduce_fx="sum")
-        self.add_state("total", default=torch.tensor(0),
-                       dist_reduce_fx="sum")
+        self.filter_global_adjacency = filter_global_adjacency  # [E, E] boolean tensor on CPU
+        self.add_state("reciprocal_ranks", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
     @torch.no_grad()
-    def update(self, heads: torch.Tensor, scores: torch.Tensor):
+    def update(self, heads: torch.Tensor, scores: torch.Tensor, eval_labels: torch.Tensor):
         """
-        heads : (H,) tensor of head ids
-        scores: (H, E) tensor of tail scores (logits) for each head
+        heads: (H,) tensor of head ids
+        scores: (H, E) tensor of tail scores (logits)
+        eval_labels: (H, E) tensor with 1s for true tails in eval split
         """
-        assert scores.ndim == 2
-        assert heads.ndim == 1
-        assert scores.size(0) == heads.size(0)
+        assert scores.ndim == 2 and eval_labels.ndim == 2
+        assert heads.ndim == 1 and scores.size(0) == heads.size(0) == eval_labels.size(0)
+
+        # Get all known true tails from global adjacency if available, otherwise use eval labels
+        if self.filter_global_adjacency is not None:
+            # Note: ensure filter_global_adjacency is on the correct device or move it
+            filter_labels = self.filter_global_adjacency[heads.cpu()].to(scores.device, non_blocking=True)
+        else:
+            filter_labels = eval_labels  # Fallback to eval labels for filtering
 
         for i in range(heads.size(0)):
-            h = int(heads[i].item())
-            eval_set = self.eval_head_to_tails.get(h)
-            if not eval_set:
+            # These are the tails from the current split we want to evaluate
+            tails_to_evaluate = torch.where(eval_labels[i] > 0.5)[0]
+            if tails_to_evaluate.numel() == 0:
                 continue
-            filter_set = self.filter_head_to_tails.get(h, eval_set)
-            row = scores[i]
 
-            # Iterate only over evaluation (split) tails
-            for t in eval_set:
-                score_t = row[t]
-                # Rank counts before filtering
-                gt_all = (row > score_t).sum()
-                ge_all = (row >= score_t).sum()
-                # Remove ALL other true tails (global) except the target
-                if len(filter_set) > 1:
-                    others = [o for o in filter_set if o != t]
-                    others_tensor = torch.tensor(others, device=row.device,
-                                                 dtype=torch.long)
-                    gt_all -= (row[others_tensor] > score_t).sum()
-                    ge_all -= (row[others_tensor] >= score_t).sum()
+            # These are all known true tails for this head (from all splits)
+            all_known_true_tails = torch.where(filter_labels[i] > 0.5)[0]
+            
+            row_scores = scores[i]
 
-                optimistic_rank = gt_all + 1
-                pessimistic_rank = ge_all + 1
-                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+            for t in tails_to_evaluate:
+                score_t = row_scores[t]
+
+                # Create a copy of scores for filtering to avoid in-place modification issues
+                filtered_scores = row_scores.clone()
+
+                # Filter out other known true tails by setting their scores to a very low value
+                # This prevents them from affecting the rank of the current tail `t`
+                if all_known_true_tails.numel() > 1:
+                    other_true_tails = all_known_true_tails[all_known_true_tails != t]
+                    filtered_scores[other_true_tails] = SMALLEST_FLOAT
+                
+                # The currently evaluated tail `t` should not be filtered
+                filtered_scores[t] = score_t
+
+                # Calculate rank against all entities (including negatives and excluding other positives)
+                optimistic_rank = (filtered_scores > score_t).sum() + 1
+                pessimistic_rank = (filtered_scores >= score_t).sum()
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).float()
+
                 self.reciprocal_ranks += (1.0 / realistic_rank)
                 self.total += 1
 
@@ -787,60 +791,64 @@ class TailMRRTuples(Metric):
 class TailHitsAtKTuples(Metric):
     """
     Filtered Hits@K for tail prediction P(t | h) in tuples mode.
-    Uses:
-      - eval_head_to_tails: per-split positives to evaluate
-      - filter_head_to_tails: global positives (all splits) to filter
+    - eval_labels: True tails for evaluation (from batch, per-split).
+    - filter_global_adjacency: Global true tails across all splits for filtering (optional).
     """
     higher_is_better = True
 
-    def __init__(self,
-                 eval_head_to_tails: Dict[int, set[int]],
-                 k: int,
-                 filter_head_to_tails: Dict[int, set[int]] | None = None):
+    def __init__(self, k: int, filter_global_adjacency: torch.Tensor | None = None):
         super().__init__()
         self.k = int(k)
-        self.eval_head_to_tails = {int(h): {int(t) for t in tails}
-                                   for h, tails in (eval_head_to_tails or {}).items()}
-        base = filter_head_to_tails or eval_head_to_tails or {}
-        self.filter_head_to_tails = {int(h): {int(t) for t in tails}
-                                     for h, tails in base.items()}
-        self.add_state("hits", default=torch.tensor(0.0),
-                       dist_reduce_fx="sum")
-        self.add_state("total", default=torch.tensor(0),
-                       dist_reduce_fx="sum")
+        self.filter_global_adjacency = filter_global_adjacency  # [E, E] boolean tensor on CPU
+        self.add_state("hits", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
     @torch.no_grad()
-    def update(self, heads: torch.Tensor, scores: torch.Tensor):
+    def update(self, heads: torch.Tensor, scores: torch.Tensor, eval_labels: torch.Tensor):
         """
-        heads : (H,) tensor
-        scores: (H, E) tail scores
+        heads: (H,) tensor of head ids
+        scores: (H, E) tensor of tail scores
+        eval_labels: (H, E) tensor with 1s for true tails in eval split
         """
-        assert scores.ndim == 2
-        assert heads.ndim == 1
-        assert scores.size(0) == heads.size(0)
+        assert scores.ndim == 2 and eval_labels.ndim == 2
+        assert heads.ndim == 1 and scores.size(0) == heads.size(0) == eval_labels.size(0)
+
+        # Get all known true tails from global adjacency if available, otherwise use eval labels
+        if self.filter_global_adjacency is not None:
+            # Note: ensure filter_global_adjacency is on the correct device or move it
+            filter_labels = self.filter_global_adjacency[heads.cpu()].to(scores.device, non_blocking=True)
+        else:
+            filter_labels = eval_labels  # Fallback to eval labels for filtering
 
         for i in range(heads.size(0)):
-            h = int(heads[i].item())
-            eval_set = self.eval_head_to_tails.get(h)
-            if not eval_set:
+            # These are the tails from the current split we want to evaluate
+            tails_to_evaluate = torch.where(eval_labels[i] > 0.5)[0]
+            if tails_to_evaluate.numel() == 0:
                 continue
-            filter_set = self.filter_head_to_tails.get(h, eval_set)
-            row = scores[i]
 
-            for t in eval_set:
-                score_t = row[t]
-                gt_all = (row > score_t).sum()
-                ge_all = (row >= score_t).sum()
-                if len(filter_set) > 1:
-                    others = [o for o in filter_set if o != t]
-                    others_tensor = torch.tensor(others, device=row.device,
-                                                 dtype=torch.long)
-                    gt_all -= (row[others_tensor] > score_t).sum()
-                    ge_all -= (row[others_tensor] >= score_t).sum()
+            # These are all known true tails for this head (from all splits)
+            all_known_true_tails = torch.where(filter_labels[i] > 0.5)[0]
 
-                optimistic_rank = gt_all + 1
-                pessimistic_rank = ge_all + 1
-                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank)
+            row_scores = scores[i]
+
+            for t in tails_to_evaluate:
+                score_t = row_scores[t]
+
+                # Create a copy of scores for filtering
+                filtered_scores = row_scores.clone()
+
+                # Filter out other known true tails
+                if all_known_true_tails.numel() > 1:
+                    other_true_tails = all_known_true_tails[all_known_true_tails != t]
+                    filtered_scores[other_true_tails] = SMALLEST_FLOAT
+                
+                filtered_scores[t] = score_t
+
+                # Calculate rank against all entities
+                optimistic_rank = (filtered_scores > score_t).sum() + 1
+                pessimistic_rank = (filtered_scores >= score_t).sum()
+                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).float()
+
                 self.hits += (realistic_rank <= self.k).to(self.hits.dtype)
                 self.total += 1
 

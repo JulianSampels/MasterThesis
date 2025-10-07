@@ -373,6 +373,14 @@ def collate_multipaths(
 
     if "lp_weight" in samples[0]:
         batch["lp_weights"] = torch.tensor([s["lp_weight"] for s in samples], dtype=torch.float32)
+    
+    if "tail_labels" in samples[0]:
+        tail_labels = torch.stack([s["tail_labels"] for s in samples], dim=0)  # (batch_size, num_entities)
+        batch["tail_labels"] = tail_labels
+        
+    if "tail_weights" in samples[0]:
+        tail_weights = torch.stack([s["tail_weights"] for s in samples], dim=0)  # (batch_size, num_entities)
+        batch["tail_weights"] = tail_weights
 
 
     return batch

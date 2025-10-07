@@ -215,7 +215,7 @@ class BaseCandidateGenerator(ABC):
         
         
         # Print statistics
-        print(f"{f'[Group count::{name}].':<50} {len(per_group_cov)}")
+        print(f"{f'[Group count::{name}].':<50}{len(per_group_cov)}")
         print(f"{f'[Coverage per group::{name}] Macro. ':<50}"
             f"Avg: {statistics.mean(per_group_cov.values()):.4f} | "
             f"Min: {min(per_group_cov.values()):.4f} | "

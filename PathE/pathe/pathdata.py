@@ -1299,6 +1299,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
                  parallel = False,
                  num_workers: int = 0,
                  neg_tuple_store = None,
+                 head_tail_adjacency: torch.Tensor = None, #[E, E] adjacency matrix of head-tail pairs
                  ):
         """
         Parameters
@@ -1340,6 +1341,10 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
 
         self.relation_maps = RelationMaps(original_relation_to_inverse_relation)
         self.relation_maps.sanity_check_relation_mappings(tuple_store)
+
+        assert head_tail_adjacency.shape[0] == head_tail_adjacency.shape[1], "Adjacency matrix should be square"
+        self.head_tail_adjacency = head_tail_adjacency
+        self.num_entities = head_tail_adjacency.shape[0] if head_tail_adjacency is not None else None
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved
         # relcontext_df = pd.read_csv(relcontext_store)
@@ -1437,7 +1442,14 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         h_idxs = h_idxs
         # print(f"ori_triple: {tuple}, \nh_epaths: {h_epaths}, \nh_rpaths: {h_rpaths}, \nh_idxs: {h_idxs}, \nh_erpos: {h_erpos}\n")
         
-        #JS: fix ori_triple where used? need to create ori_tuple?
+        # Precompute tail weights for loss calculation on the fly
+        tail_labels = self.head_tail_adjacency[head].to(torch.float32)  # (num_entities,)
+        pos_counts = tail_labels.sum()
+        neg_counts = self.num_entities - pos_counts
+        w_pos = 0.5 / pos_counts.clamp_min(1.0)
+        w_neg = 0.5 / neg_counts.clamp_min(1.0)
+        tail_weights = torch.where(tail_labels > 0.5, w_pos, w_neg).to(torch.float32)  # (num_entities,)
+        
         return {
             "id": index,
             "pos": h_erpos, 
@@ -1446,6 +1458,8 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             "head_indexes": h_idxs,
             "relation": self.tokens_to_idxs[rel.item()],
             "ori_triple": tuple, "path_origins": path_ori,
+            "tail_labels": tail_labels,          # (num_entities,)
+            "tail_weights": tail_weights,        # (num_entities,)
         }
 
 

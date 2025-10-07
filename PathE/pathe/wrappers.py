@@ -813,22 +813,15 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
     """
 
     def __init__(self, 
-                 pathe_model: PathEModelTuples, filtration_dict, num_negatives=0,
-                 optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
-                 weight_decay=0, class_weights=None, label_smoothing=0.0,
-                 train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
-                 val_num_negatives=0, full_test=False, max_ppt=None, accumulate_gradient=1.0, 
-                 margin=10, nssa_alpha=1, lp_loss_fn="nssa", link_head_detached: bool = True, use_manual_optimization: bool = False,
-                 loss_weight: float = 0.5, 
-                train_relation_maps: RelationMaps = None,
-                val_relation_maps: RelationMaps = None,
-                test_relation_maps: RelationMaps = None,
-                head_to_tails_train: dict | None = None,
-                head_to_tails_val: dict | None = None,
-                head_to_tails_test: dict | None = None,
-                num_entities: int | None = None,
-                dense_head_tail_adj: torch.Tensor | None = None,
-                 **hparams):
+                pathe_model: PathEModelTuples, filtration_dict, 
+                global_head_tail_adjacency: torch.Tensor = None, num_negatives=0,
+                optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
+                weight_decay=0, class_weights=None, label_smoothing=0.0,
+                train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
+                val_num_negatives=0, full_test=False, max_ppt=None, accumulate_gradient=1.0, 
+                margin=10, nssa_alpha=1, lp_loss_fn="nssa", link_head_detached: bool = True, use_manual_optimization: bool = False,
+                loss_weight: float = 0.5,
+                **hparams):
         super().__init__(pathe_model, filtration_dict, num_negatives,
                          optimiser, scheduler, lr, momentum, weight_decay,
                          class_weights, label_smoothing,
@@ -844,23 +837,12 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.accumulate_gradient = max(1, int(round(accumulate_gradient)))
         self.use_manual_optimization = use_manual_optimization
         self.link_head_detached = link_head_detached
-        self.train_relation_maps = train_relation_maps
-        self.val_relation_maps = val_relation_maps
-        self.test_relation_maps = test_relation_maps
-
-        # Supervision for tail prediction (P(t|h))
-        self.head_to_tails_train = head_to_tails_train or {}
-        self.head_to_tails_val = head_to_tails_val or {}
-        self.head_to_tails_test = head_to_tails_test or {}
-        self.num_entities = num_entities
-        # Optional dense adjacency [E x E] with True at (h,t) if t is valid for h
-        if dense_head_tail_adj is not None:
-            self.register_buffer('dense_head_tail_adj', dense_head_tail_adj.to(torch.bool))
-        else:
-            self.dense_head_tail_adj = None
 
         # Set automatic optimization based on parameter
         self.automatic_optimization = not self.use_manual_optimization
+
+        # Store head-tail adjacency for tail metrics filtering
+        self.global_head_tail_adjacency = global_head_tail_adjacency
 
         # unnecessary as done in super but for clarity
         self.model = pathe_model
@@ -884,31 +866,18 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.test_relationHitsAt5 = RelationHitsAtKTuples(filtration_dict, k=5)
         self.test_relationHitsAt10 = RelationHitsAtKTuples(filtration_dict, k=10)
 
-        # NEW: Tail (entity) metrics for validation only (can extend to test similarly)
+        # Tail metrics with global adjacency
+        self.val_tailMRR = TailMRRTuples(filter_global_adjacency=self.global_head_tail_adjacency)
+        self.val_tailHitsAt1 = TailHitsAtKTuples(k=1, filter_global_adjacency=self.global_head_tail_adjacency)
+        self.val_tailHitsAt3 = TailHitsAtKTuples(k=3, filter_global_adjacency=self.global_head_tail_adjacency)
+        self.val_tailHitsAt5 = TailHitsAtKTuples(k=5, filter_global_adjacency=self.global_head_tail_adjacency)
+        self.val_tailHitsAt10 = TailHitsAtKTuples(k=10, filter_global_adjacency=self.global_head_tail_adjacency)
 
-        # Build global union map for filtering (train ∪ val ∪ test)
-        global_head_to_tails = {}
-        for d in [self.head_to_tails_train, self.head_to_tails_val, self.head_to_tails_test]:
-            for h, tails in d.items():
-                gt = global_head_to_tails.get(h)
-                if gt is None:
-                    global_head_to_tails[h] = set(tails)
-                else:
-                    gt.update(tails)
-        self.global_head_to_tails = global_head_to_tails
-
-        # Tail metrics now get (eval_map, global_map)
-        self.val_tailMRR = TailMRRTuples(self.head_to_tails_val, self.global_head_to_tails)
-        self.val_tailHitsAt1 = TailHitsAtKTuples(self.head_to_tails_val, k=1, filter_head_to_tails=self.global_head_to_tails)
-        self.val_tailHitsAt3 = TailHitsAtKTuples(self.head_to_tails_val, k=3, filter_head_to_tails=self.global_head_to_tails)
-        self.val_tailHitsAt5 = TailHitsAtKTuples(self.head_to_tails_val, k=5, filter_head_to_tails=self.global_head_to_tails)
-        self.val_tailHitsAt10 = TailHitsAtKTuples(self.head_to_tails_val, k=10, filter_head_to_tails=self.global_head_to_tails)
-
-        self.test_tailMRR = TailMRRTuples(self.head_to_tails_test, self.global_head_to_tails)
-        self.test_tailHitsAt1 = TailHitsAtKTuples(self.head_to_tails_test, k=1, filter_head_to_tails=self.global_head_to_tails)
-        self.test_tailHitsAt3 = TailHitsAtKTuples(self.head_to_tails_test, k=3, filter_head_to_tails=self.global_head_to_tails)
-        self.test_tailHitsAt5 = TailHitsAtKTuples(self.head_to_tails_test, k=5, filter_head_to_tails=self.global_head_to_tails)
-        self.test_tailHitsAt10 = TailHitsAtKTuples(self.head_to_tails_test, k=10, filter_head_to_tails=self.global_head_to_tails)
+        self.test_tailMRR = TailMRRTuples(filter_global_adjacency=self.global_head_tail_adjacency)
+        self.test_tailHitsAt1 = TailHitsAtKTuples(k=1, filter_global_adjacency=self.global_head_tail_adjacency)
+        self.test_tailHitsAt3 = TailHitsAtKTuples(k=3, filter_global_adjacency=self.global_head_tail_adjacency)
+        self.test_tailHitsAt5 = TailHitsAtKTuples(k=5, filter_global_adjacency=self.global_head_tail_adjacency)
+        self.test_tailHitsAt10 = TailHitsAtKTuples(k=10, filter_global_adjacency=self.global_head_tail_adjacency)
 
         # watch link prediction metrics
         if self.val_num_negatives > 0:  
@@ -970,52 +939,14 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # legacy path not used in tuples tail training
         loss_lp = self.lp_loss_fn(logits, num_negatives)
         return loss_lp
-
-    def _build_tail_labels_weights(self, heads: torch.Tensor, split: str):
-        assert self.num_entities is not None, "num_entities is required for tail supervision"
-        H = heads.size(0)
-        device = heads.device
-        # If we have a dense adjacency, use it for O(1) label construction per head
-        if getattr(self, 'dense_head_tail_adj', None) is not None:
-            adj = self.dense_head_tail_adj.to(device)
-            Y = adj[heads].to(torch.float32)
-        else:
-            Y = torch.zeros((H, self.num_entities), dtype=torch.float32, device=device)
-        if split == 'train':
-            h2t = self.head_to_tails_train
-        elif split == 'valid':
-            h2t = self.head_to_tails_val
-        elif split == 'test':
-            h2t = self.head_to_tails_test
-        else:
-            raise ValueError("split must be 'train' | 'valid' | 'test'")
-        if getattr(self, 'dense_head_tail_adj', None) is None:
-            for i in range(H):
-                h = int(heads[i].item())
-                tails = h2t.get(h)
-                if tails:
-                    idx = torch.tensor(list(tails), dtype=torch.long, device=device)
-                    Y[i, idx] = 1.0
-        pos_counts = Y.sum(dim=1, keepdim=True)
-        neg_counts = (self.num_entities - pos_counts)
-        w_pos = 0.5 / pos_counts.clamp_min(1.0)
-        w_neg = 0.5 / neg_counts.clamp_min(1.0)
-        W = torch.where(Y > 0.5, w_pos, w_neg)
-        return Y, W
-
-    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, split: str):
-        Y, W = self._build_tail_labels_weights(heads=heads, split=split)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, Y, weight=W, reduction='sum')
-        return loss / W.sum().clamp_min(1.0)
-
-    def _has_tail_supervision(self, split: str) -> bool:
-        if split == 'train':
-            return len(self.head_to_tails_train) > 0
-        if split == 'valid':
-            return len(self.head_to_tails_val) > 0
-        if split == 'test':
-            return len(self.head_to_tails_test) > 0
-        return False
+    
+    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor):
+        if targets is None or weights is None:
+            raise ValueError("Y and W must be provided from batch.")
+        targets = targets.to(device=self.device, dtype=torch.float32, non_blocking=True)
+        weights = weights.to(device=self.device, dtype=torch.float32, non_blocking=True)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, targets, weight=weights, reduction='sum')
+        return loss / weights.sum().clamp_min(1.0)
 
     def training_step(self, batch, batch_idx):
         # Forward pass
@@ -1025,15 +956,12 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Losses (unscaled)
         rp_loss_unscaled = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
-        if self._has_tail_supervision('train'):
-            tail_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads=heads, split='train')
-        else:
-            tail_loss_unscaled = torch.zeros((), device=self.device)
+        tail_loss_unscaled = self.compute_tail_bce_loss(logits_tail, batch.get('tail_labels'), batch.get('tail_weights'))
 
         if not self.use_manual_optimization:
             total = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tail_loss_unscaled
             self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
-            self.log("train_lp_loss", tail_loss_unscaled, prog_bar=True)
+            self.log("train_tp_loss", tail_loss_unscaled, prog_bar=True)
             self.log("train_total_loss", total, prog_bar=True)
             return total
 
@@ -1049,7 +977,6 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.untoggle_optimizer(optimizer_idx=0)
 
         if tail_loss.requires_grad:
-            print(f"require grad for tail loss!!!!!!!!!!")
             self.toggle_optimizer(optimizer=tail_opt, optimizer_idx=1)
             self.manual_backward(tail_loss, retain_graph=False)
             self.untoggle_optimizer(optimizer_idx=1)
@@ -1066,9 +993,9 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Logging unscaled losses
         self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
-        self.log("train_lp_loss", tail_loss_unscaled, prog_bar=True)
+        self.log("train_tp_loss", tail_loss_unscaled, prog_bar=True)
         self.log("train_total_loss", rp_loss_unscaled + tail_loss_unscaled)
-        return {"rp_loss": rp_loss_unscaled, "lp_loss": tail_loss_unscaled}
+        return {"rp_loss": rp_loss_unscaled, "tp_loss": tail_loss_unscaled}
     
     def validation_step(self, batch, batch_idx):
         # Forward pass
@@ -1079,7 +1006,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, heads=heads, split='valid') if self._has_tail_supervision('valid') else torch.zeros((), device=self.device)
+        tp_loss = self.compute_tail_bce_loss(logits_tail, batch.get('tail_labels'), batch.get('tail_weights'))
 
         # Logging losses
         self.log("valid_rp_loss", rp_loss, prog_bar=True)
@@ -1094,11 +1021,12 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # Accumulate for epoch-level metric computation
         if not hasattr(self, "_val_acc"):
             assert(batch_idx == 0), "Somehow accumulating validation data was not deleted in validation_epoch_end() after last epoch. Risking incorrect metrics!"
-            self._val_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": []}
+            self._val_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": [], "tail_labels": []}
         self._val_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
         self._val_acc["tuples_tp"].append(tuples.detach().cpu())
         self._val_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
         self._val_acc["logits_tp"].append(logits_tail.detach().cpu())
+        self._val_acc["tail_labels"].append(batch["tail_labels"].detach().cpu())
 
         return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
@@ -1123,13 +1051,16 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         unique_heads, inverse = heads_all.unique(return_inverse=True, sorted=False)
         # If torch_scatter available (already imported), use it:
         scores_agg = torch_scatter.scatter_mean(logits_tail_all, inverse, dim=0)
+        # Aggregate eval labels per unique head (take first since identical)
+        tail_labels_all = torch.cat(self._val_acc["tail_labels"], dim=0)
+        eval_labels_agg = tail_labels_all[inverse.unique()]
 
-        # Update tail metrics
-        self.val_tailMRR.update(unique_heads, scores_agg)
-        self.val_tailHitsAt1.update(unique_heads, scores_agg)
-        self.val_tailHitsAt3.update(unique_heads, scores_agg)
-        self.val_tailHitsAt5.update(unique_heads, scores_agg)
-        self.val_tailHitsAt10.update(unique_heads, scores_agg)
+        # Update tail metrics with eval labels
+        self.val_tailMRR.update(unique_heads, scores_agg, eval_labels_agg)
+        self.val_tailHitsAt1.update(unique_heads, scores_agg, eval_labels_agg)
+        self.val_tailHitsAt3.update(unique_heads, scores_agg, eval_labels_agg)
+        self.val_tailHitsAt5.update(unique_heads, scores_agg, eval_labels_agg)
+        self.val_tailHitsAt10.update(unique_heads, scores_agg, eval_labels_agg)
 
         # Log tail metrics
         self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True)
@@ -1161,7 +1092,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Compute losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, heads=heads, split='test') if self._has_tail_supervision('test') else torch.zeros((), device=self.device)
+        tp_loss = self.compute_tail_bce_loss(logits_tail, batch.get('tail_labels'), batch.get('tail_weights'))
 
         # Logging losses
         self.log("test_rp_loss", rp_loss, prog_bar=True)
@@ -1175,12 +1106,13 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         if not hasattr(self, "_test_acc"):
             assert batch_idx == 0, "Accumulation not cleared from previous test epoch."
-            self._test_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": []}
+            self._test_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": [], "tail_labels": []}
 
         self._test_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
         self._test_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
         self._test_acc["tuples_tp"].append(tuples.detach().cpu())
         self._test_acc["logits_tp"].append(logits_tail.detach().cpu())
+        self._test_acc["tail_labels"].append(batch["tail_labels"].detach().cpu())
 
         return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
@@ -1201,12 +1133,15 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         heads_all = tuples_all[:, 0]
         unique_heads, inverse = heads_all.unique(return_inverse=True, sorted=False)
         scores_agg = torch_scatter.scatter_mean(logits_tail_all, inverse, dim=0)
+        # Aggregate eval labels per unique head
+        tail_labels_all = torch.cat(self._test_acc["tail_labels"], dim=0)
+        eval_labels_agg = tail_labels_all[inverse.unique()]
 
-        self.test_tailMRR.update(unique_heads, scores_agg)
-        self.test_tailHitsAt1.update(unique_heads, scores_agg)
-        self.test_tailHitsAt3.update(unique_heads, scores_agg)
-        self.test_tailHitsAt5.update(unique_heads, scores_agg)
-        self.test_tailHitsAt10.update(unique_heads, scores_agg)
+        self.test_tailMRR.update(unique_heads, scores_agg, eval_labels_agg)
+        self.test_tailHitsAt1.update(unique_heads, scores_agg, eval_labels_agg)
+        self.test_tailHitsAt3.update(unique_heads, scores_agg, eval_labels_agg)
+        self.test_tailHitsAt5.update(unique_heads, scores_agg, eval_labels_agg)
+        self.test_tailHitsAt10.update(unique_heads, scores_agg, eval_labels_agg)
 
         self.log("test_tail_mrr", self.test_tailMRR, on_step=False, on_epoch=True)
         self.log("test_tail_hits1", self.test_tailHitsAt1, on_step=False, on_epoch=True)
