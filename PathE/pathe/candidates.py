@@ -723,37 +723,6 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         return chunk_vals[:chunk_filled], chunk_r[:chunk_filled], chunk_h[:chunk_filled], chunk_t[:chunk_filled]
 
-    @staticmethod
-    def _process_chunk2(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, log_p_t_given_h_2d: torch.Tensor, alpha: float, beta: float, k: int, E: int, R: int):
-        """Vectorized chunk processing with tail prediction (no blocking, similar to CandidateGeneratorGlobal._process_chunk)."""
-        torch.set_num_threads(1)  # Minimal threads per worker
-        C = r1 - r0
-        gamma = 1.0 - alpha - beta
-        a_h = float(alpha)
-        a_t_pred = float(beta)
-        a_t_inv = float(gamma)
-
-        # Compute full (C, E, E) scores vectorized
-        head_term = a_h * log_p_head_2d[:, r0:r1].t()  # (C, E)
-        tail_pred_term = a_t_pred * log_p_t_given_h_2d  # (E, E)
-        tail_inv_term = a_t_inv * log_p_tail_2d[r0:r1, :]  # (C, E)
-
-        S = head_term.unsqueeze(2) + tail_pred_term.unsqueeze(0) + tail_inv_term.unsqueeze(1)  # (C, E, E)
-
-        numel_chunk = S.numel()
-        k_chunk = min(k, numel_chunk)
-        vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
-
-        per_rel = E * E
-        c_idx = idx_chunk_flat // per_rel
-        rem = idx_chunk_flat % per_rel
-        h_idx = rem // E
-        t_idx = rem % E
-        r_idx = (c_idx + r0).to(torch.long)
-
-        return vals_chunk, r_idx, h_idx, t_idx
-
-
     def _global_topk_joint_streaming(
         self,
         log_p_head_2d: torch.Tensor,
@@ -786,7 +755,6 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.pool = self._get_or_create_pool(min(self.max_num_workers, math.ceil(R / self.rel_block_size)))
         chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
         results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, self.alpha, self.beta, k_total, E, R, self.head_block_size)) for r0, r1 in chunk_ranges]
-        # results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk2, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R)) for r0, r1 in chunk_ranges]
         for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
             vals_chunk, r_idx, h_idx, t_idx = res.get()
             # Merge into global top-k (same as before)
