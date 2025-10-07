@@ -375,7 +375,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Prepare chunk ranges
         chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
         # Submit jobs
-        results = [self.pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, self.alpha, k_total, E, R)) for r0, r1 in chunk_ranges]
+        results = [self.pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, self.alpha, k_total, E, R, self.head_block_size)) for r0, r1 in chunk_ranges]
         # Collect and merge
         for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
             vals_chunk, r_idx, h_idx, t_idx = res.get()

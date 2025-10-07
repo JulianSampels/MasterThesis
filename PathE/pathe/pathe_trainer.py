@@ -41,7 +41,7 @@ MAX_WORKERS_PREDICTION = 16
 MAX_WORKERS_TEST = 16
 
 
-def predict_all_old(trainer, model, loader, ckpt_path=None):
+def predict_all(trainer, model, loader, ckpt_path=None):
     """Old version: Create a new dataloader without persistent workers for more speed, with performance measuring."""
     # Create a new dataloader without persistent workers for more speed
     pred_loader = torch.utils.data.DataLoader(
@@ -803,13 +803,9 @@ def create_and_run_training_exp_two_phases(args):
     # ---------------------------
     stageprint(f"Phase 1b: Predicting over all tuples and building candidates...")
 
-    # tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
-    # va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
-    # te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
-
-    tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all_old(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
-    va_tuples_all, va_logits_all, va_logits_tp_all = predict_all_old(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
-    te_tuples_all, te_logits_all, te_logits_tp_all = predict_all_old(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
+    tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
+    va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
+    te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
     # Instantiate candidate generator based on args.candidate_generator
     if args.candidate_generator == 'global':
