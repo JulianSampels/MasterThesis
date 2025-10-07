@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from functools import partial
 import math
 import statistics
 import multiprocessing as mp
@@ -15,8 +16,26 @@ logger = logging.getLogger(__name__)
 class BaseCandidateGenerator(ABC):
     """Abstract base class for all candidate generation strategies."""
     
-    def __init__(self):
-        return
+    def __init__(self, max_num_workers: int = 1):
+        self.max_num_workers = max_num_workers if max_num_workers and max_num_workers > 0 else os.cpu_count() // 2
+        self.pool = None
+
+    def _get_or_create_pool(self, num_processes):
+        """Generate or reuse the multiprocessing pool if the pool is empty or has fewer processes."""
+        if self.pool is None or self.pool._processes < num_processes:
+            if self.pool is not None:
+                self.close_pool()
+            self.pool = mp.Pool(processes=num_processes)
+        return self.pool
+
+    def close_pool(self):
+        if self.pool is not None:
+            self.pool.close()
+            self.pool.join()
+            self.pool = None
+
+    def __del__(self):
+        self.close_pool()
 
     @abstractmethod
     def generate_candidates(self,
@@ -236,10 +255,10 @@ class BaseCandidateGenerator(ABC):
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
                  rel_block_size: int = 4,
-                 num_workers: int | None = None,
+                 max_num_workers: int | None = None,
                 #  num_threads: int | None = None
                  ):
-        super().__init__()
+        super().__init__(max_num_workers=max_num_workers)
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
@@ -249,7 +268,6 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         # new knobs for memory and parallelism
         self.rel_block_size = max(1, int(rel_block_size))
-        self.num_processes = num_workers if num_workers and num_workers > 0 else os.cpu_count() // 2
         # self.num_threads = num_threads or os.cpu_count() or 1
 
         # sanity checks
@@ -286,20 +304,16 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         return vals_chunk, r_idx, h_idx, t_idx
 
-    @staticmethod
     def _global_topk_joint_streaming(
+        self,
         log_p_head_2d: torch.Tensor,
         log_p_tail_2d: torch.Tensor,
-        alpha: float,
-        k: int,
-        rel_block_size: int = 4,
-        num_processes: int = 1,
+        k_total: int,
     ):
         """
         Parallel global top-k over all (h, r, t), processing relation chunks in parallel.
         Builds full (C, E, E) per chunk but distributes across processes.
         """
-        assert 0.0 <= alpha <= 1.0
         E, R = log_p_head_2d.shape
         assert log_p_tail_2d.shape == (R, E)
 
@@ -308,48 +322,48 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         log_p_tail_2d.share_memory_()
 
         # Global buffers
-        top_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
-        top_r    = torch.full((k,), -1, dtype=torch.long)
-        top_h    = torch.full((k,), -1, dtype=torch.long)
-        top_t    = torch.full((k,), -1, dtype=torch.long)
+        top_vals = torch.full((k_total,), float("-inf"), dtype=torch.float32)
+        top_r    = torch.full((k_total,), -1, dtype=torch.long)
+        top_h    = torch.full((k_total,), -1, dtype=torch.long)
+        top_t    = torch.full((k_total,), -1, dtype=torch.long)
         filled = 0
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk and returns partial results, which are merged globally
-        with mp.Pool(processes=min(num_processes, math.ceil(R / rel_block_size))) as pool:
-            # Prepare chunk ranges
-            chunk_ranges = [(r0, min(R, r0 + rel_block_size)) for r0 in range(0, R, rel_block_size)]
-            # Submit jobs
-            results = [pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, alpha, k, E, R)) for r0, r1 in chunk_ranges]
-            # Collect and merge
-            for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
-                vals_chunk, r_idx, h_idx, t_idx = res.get()
-                # Merge into global top-k
-                if filled == 0:
-                    take = min(k, vals_chunk.numel())
-                    top_vals[:take] = vals_chunk[:take]
-                    top_r[:take]    = r_idx[:take]
-                    top_h[:take]    = h_idx[:take]
-                    top_t[:take]    = t_idx[:take]
-                    filled = take
+        self.pool = self._get_or_create_pool(min(self.max_num_workers, math.ceil(R / self.rel_block_size)))
+        # Prepare chunk ranges
+        chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
+        # Submit jobs
+        results = [self.pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, self.alpha, k_total, E, R)) for r0, r1 in tqdm(chunk_ranges, desc="Submitting jobs to pool", unit="chunk", leave=True)]
+        # Collect and merge
+        for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
+            vals_chunk, r_idx, h_idx, t_idx = res.get()
+            # Merge into global top-k
+            if filled == 0:
+                take = min(k_total, vals_chunk.numel())
+                top_vals[:take] = vals_chunk[:take]
+                top_r[:take]    = r_idx[:take]
+                top_h[:take]    = h_idx[:take]
+                top_t[:take]    = t_idx[:take]
+                filled = take
+            else:
+                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
+                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
+                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
+                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
+                if cand_vals.numel() > k_total:
+                    vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
+                    top_vals[:k_total] = vtop
+                    top_r[:k_total]    = cand_r[order]
+                    top_h[:k_total]    = cand_h[order]
+                    top_t[:k_total]    = cand_t[order]
+                    filled = k_total
                 else:
-                    cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
-                    cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
-                    cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
-                    cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
-                    if cand_vals.numel() > k:
-                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
-                        top_vals[:k] = vtop
-                        top_r[:k]    = cand_r[order]
-                        top_h[:k]    = cand_h[order]
-                        top_t[:k]    = cand_t[order]
-                        filled = k
-                    else:
-                        top_vals[:cand_vals.numel()] = cand_vals
-                        top_r[:cand_vals.numel()]    = cand_r
-                        top_h[:cand_vals.numel()]    = cand_h
-                        top_t[:cand_vals.numel()]    = cand_t
-                        filled = cand_vals.numel()
+                    top_vals[:cand_vals.numel()] = cand_vals
+                    top_r[:cand_vals.numel()]    = cand_r
+                    top_h[:cand_vals.numel()]    = cand_h
+                    top_t[:cand_vals.numel()]    = cand_t
+                    filled = cand_vals.numel()
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
@@ -445,10 +459,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
             log_p_head_2d=log_p_head_2d,
             log_p_tail_2d=log_p_tail_2d,
-            alpha=self.alpha,
-            k=int(effective_cap),
-            rel_block_size=int(self.rel_block_size),
-            num_processes=int(self.num_processes),
+            k_total=int(effective_cap),
         )
 
         # Build candidate triples (global entity indexing)
@@ -577,10 +588,10 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head",
                  rel_block_size: int = 4,
-                 num_workers: int | None = None,
+                 max_num_workers: int | None = None,
                 #  num_threads: int | None = None
                  ):
-        super().__init__()
+        super().__init__(max_num_workers=max_num_workers)
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
@@ -591,8 +602,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         # new knobs for memory and parallelism
         self.rel_block_size = max(1, int(rel_block_size))
-        self.num_processes = num_workers if num_workers and num_workers > 0 else os.cpu_count() // 2
-        # self.num_threads = num_threads or os.cpu_count() or 1
+        self.num_processes = max_num_workers if max_num_workers and max_num_workers > 0 else os.cpu_count() // 2
+        self.head_block_size = 256  # default head block size for memory control
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -630,7 +641,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             r_global = r0 + r
             t_inv = t_inv_chunk[r, :]  # (E,)
 
-            for h0 in range(0, E, B):
+            for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", leave=False):
                 h1 = min(E, h0 + B)
                 V = (a_t_pred * log_p_t_given_h_2d[h0:h1, :]) + t_inv.unsqueeze(0)  # (B, E)
                 v_top = V + (a_h * log_p_head_2d[h0:h1, r_global]).unsqueeze(1)     # (B, E)
@@ -703,23 +714,17 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         return vals_chunk, r_idx, h_idx, t_idx
 
 
-    @staticmethod
     def _global_topk_joint_streaming(
+        self,
         log_p_head_2d: torch.Tensor,
         log_p_tail_2d: torch.Tensor,
         log_p_t_given_h_2d: torch.Tensor,
-        alpha: float,
-        beta: float,
-        k: int,
-        rel_block_size: int = 4,
-        head_block_size: int = 256,
-        num_processes: int = 1,
+        k_total: int,
     ):
         """
         Parallel global top-k with tail prediction, processing relation chunks in parallel.
         Builds full scores per chunk but avoids E×E materialization via batched head processing.
         """
-        assert 0.0 <= alpha <= 1.0 and 0.0 <= beta <= 1.0 and alpha + beta <= 1.0
         E, R = log_p_head_2d.shape
         assert log_p_tail_2d.shape == (R, E)
         assert log_p_t_given_h_2d.shape == (E, E)
@@ -730,46 +735,46 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         log_p_t_given_h_2d.share_memory_()
 
         # Global buffers
-        top_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
-        top_r    = torch.full((k,), -1, dtype=torch.long)
-        top_h    = torch.full((k,), -1, dtype=torch.long)
-        top_t    = torch.full((k,), -1, dtype=torch.long)
+        top_vals = torch.full((k_total,), float("-inf"), dtype=torch.float32)
+        top_r    = torch.full((k_total,), -1, dtype=torch.long)
+        top_h    = torch.full((k_total,), -1, dtype=torch.long)
+        top_t    = torch.full((k_total,), -1, dtype=torch.long)
         filled = 0
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
-        with mp.Pool(processes=min(num_processes, math.ceil(R / rel_block_size))) as pool:
-            chunk_ranges = [(r0, min(R, r0 + rel_block_size)) for r0 in range(0, R, rel_block_size)]
-            results = [pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R, head_block_size)) for r0, r1 in chunk_ranges]
-            # results = [pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk2, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R)) for r0, r1 in chunk_ranges]
-            for res in tqdm(results, desc="Merging parallel chunks with tail", unit="chunk", leave=False):
-                vals_chunk, r_idx, h_idx, t_idx = res.get()
-                # Merge into global top-k (same as before)
-                if filled == 0:
-                    take = min(k, vals_chunk.numel())
-                    top_vals[:take] = vals_chunk[:take]
-                    top_r[:take]    = r_idx[:take]
-                    top_h[:take]    = h_idx[:take]
-                    top_t[:take]    = t_idx[:take]
-                    filled = take
+        self.pool = self._get_or_create_pool(min(self.num_processes, math.ceil(R / self.rel_block_size)))
+        chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
+        results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, self.alpha, self.beta, k_total, E, R, self.head_block_size)) for r0, r1 in tqdm(chunk_ranges, desc="Submitting jobs to pool", unit="chunk", leave=True)]
+        # results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk2, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R)) for r0, r1 in chunk_ranges]
+        for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
+            vals_chunk, r_idx, h_idx, t_idx = res.get()
+            # Merge into global top-k (same as before)
+            if filled == 0:
+                take = min(k_total, vals_chunk.numel())
+                top_vals[:take] = vals_chunk[:take]
+                top_r[:take]    = r_idx[:take]
+                top_h[:take]    = h_idx[:take]
+                top_t[:take]    = t_idx[:take]
+                filled = take
+            else:
+                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
+                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
+                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
+                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
+                if cand_vals.numel() > k_total:
+                    vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
+                    top_vals[:k_total] = vtop
+                    top_r[:k_total]    = cand_r[order]
+                    top_h[:k_total]    = cand_h[order]
+                    top_t[:k_total]    = cand_t[order]
+                    filled = k_total
                 else:
-                    cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
-                    cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
-                    cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
-                    cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
-                    if cand_vals.numel() > k:
-                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
-                        top_vals[:k] = vtop
-                        top_r[:k]    = cand_r[order]
-                        top_h[:k]    = cand_h[order]
-                        top_t[:k]    = cand_t[order]
-                        filled = k
-                    else:
-                        top_vals[:cand_vals.numel()] = cand_vals
-                        top_r[:cand_vals.numel()]    = cand_r
-                        top_h[:cand_vals.numel()]    = cand_h
-                        top_t[:cand_vals.numel()]    = cand_t
-                        filled = cand_vals.numel()
+                    top_vals[:cand_vals.numel()] = cand_vals
+                    top_r[:cand_vals.numel()]    = cand_r
+                    top_h[:cand_vals.numel()]    = cand_h
+                    top_t[:cand_vals.numel()]    = cand_t
+                    filled = cand_vals.numel()
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
@@ -873,11 +878,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             log_p_head_2d=log_p_head_2d,
             log_p_tail_2d=log_p_tail_2d,
             log_p_t_given_h_2d=log_p_t_given_h_2d,
-            alpha=self.alpha,
-            beta=self.beta,
-            k=int(effective_cap),
-            rel_block_size=int(self.rel_block_size),
-            num_processes=int(self.num_processes),
+            k_total=int(effective_cap),
         )
 
         # Build candidate triples (global entity indexing)
