@@ -299,11 +299,11 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Preload per-relation tail inverse
         t_chunk = a_t * log_p_tail_2d[r0:r1, :]  # (C, E)
 
-        for r in range(C):
+        for r in tqdm(range(C), desc="Processing relations in chunk", leave=False):
             r_global = r0 + r
             t_inv = t_chunk[r, :]  # (E,)
 
-            for h0 in range(0, E, B):
+            for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", leave=False):
                 h1 = min(E, h0 + B)
                 head_term = a_h * log_p_head_2d[h0:h1, r_global]  # (B,)
                 V = head_term.unsqueeze(1) + t_inv.unsqueeze(0)  # (B, E)
