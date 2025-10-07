@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 import math
 import statistics
+import multiprocessing as mp
+import os
 
 import torch
 import torch_scatter
@@ -232,7 +234,11 @@ class BaseCandidateGenerator(ABC):
         return
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head"):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
+                 rel_block_size: int = 4,
+                 num_workers: int | None = None,
+                #  num_threads: int | None = None
+                 ):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
@@ -240,6 +246,11 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         self.alpha = alpha                      # weight for head vs tail log-probs
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
+
+        # new knobs for memory and parallelism
+        self.rel_block_size = max(1, int(rel_block_size))
+        self.num_processes = num_workers if num_workers and num_workers > 0 else os.cpu_count() // 2
+        # self.num_threads = num_threads or os.cpu_count() or 1
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -251,118 +262,95 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             assert 0.0 <= self.q < 1.0, "q must be in [0,1)"
 
     @staticmethod
+    def _process_chunk(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, alpha: float, k: int, E: int, R: int):
+        """Worker function for parallel chunk processing."""
+        torch.set_num_threads(1)  # Minimal threads per worker; adjust if needed
+        C = r1 - r0
+        a_h = float(alpha)
+        a_t = float(1.0 - alpha)
+
+        h_chunk = (a_h * log_p_head_2d[:, r0:r1])         # (E, C)
+        t_chunk = (a_t * log_p_tail_2d[r0:r1, :])         # (C, E)
+        S = h_chunk.t().unsqueeze(2) + t_chunk.unsqueeze(1)  # (C, E, E)
+
+        numel_chunk = S.numel()
+        k_chunk = min(k, numel_chunk)
+        vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
+
+        per_rel = E * E
+        c_idx = idx_chunk_flat // per_rel
+        rem   = idx_chunk_flat % per_rel
+        h_idx = rem // E
+        t_idx = rem %  E
+        r_idx = (c_idx + r0).to(torch.long)
+
+        return vals_chunk, r_idx, h_idx, t_idx
+
+    @staticmethod
     def _global_topk_joint_streaming(
         log_p_head_2d: torch.Tensor,
         log_p_tail_2d: torch.Tensor,
         alpha: float,
         k: int,
-        rel_block_size: int = 1,
+        rel_block_size: int = 4,
+        num_processes: int = 1,
     ):
         """
-        Memory-efficient global top-k over all (head, relation, tail) triples.
-
-        Vectorized over relation chunks:
-        - Process at most `rel_block_size` relations at a time (no tail-splitting).
-        - For a chunk r in [r0:r1), build a joint score tensor S with shape (C, E, E),
-          where C = r1 - r0 and:
-              S[c, h, t] = alpha * log_p_head_2d[h, r0+c] + (1 - alpha) * log_p_tail_2d[r0+c, t]
-        - Run a single topk over the whole chunk (flattened), then decode to (r, h, t).
-        - Merge the chunk top-k into a running global top-k buffer of size k.
-
-        Args:
-            log_p_head_2d: Tensor (E, R) with log P(r | h)
-            log_p_tail_2d: Tensor (R, E) with log P(r^{-1} | t), aligned by relation index
-            alpha: Weight in [0,1] for head vs tail terms
-            k: Number of top entries to keep globally
-            rel_block_size: Max number of relations to process per chunk
-
-        Returns:
-            top_vals: (k',) tensor of joint log-probs (k' <= k)
-            top_r:    (k',) tensor of relation indices
-            top_h:    (k',) tensor of head indices
-            top_t:    (k',) tensor of tail indices
+        Parallel global top-k over all (h, r, t), processing relation chunks in parallel.
+        Builds full (C, E, E) per chunk but distributes across processes.
         """
-        assert 0.0 <= alpha <= 1.0, "alpha must be in [0,1]"
+        assert 0.0 <= alpha <= 1.0
         E, R = log_p_head_2d.shape
-        assert log_p_tail_2d.shape == (R, E), "log_p_tail_2d must be (R, E)"
+        assert log_p_tail_2d.shape == (R, E)
 
-        # Work on CPU float32 to minimize memory pressure
-        log_p_head_2d = log_p_head_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (E, R)
-        log_p_tail_2d = log_p_tail_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (R, E)
+        # Share tensors for multiprocessing
+        log_p_head_2d.share_memory_()
+        log_p_tail_2d.share_memory_()
 
-        # Running global top-k buffers (pre-allocated, updated incrementally)
+        # Global buffers
         top_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
         top_r    = torch.full((k,), -1, dtype=torch.long)
         top_h    = torch.full((k,), -1, dtype=torch.long)
         top_t    = torch.full((k,), -1, dtype=torch.long)
-        filled = 0  # number of valid entries currently stored in the buffers
+        filled = 0
 
-        a_h = float(alpha)
-        a_t = float(1.0 - alpha)
-
-        # Progress bar disappears after loop (leave=False)
-        for r0 in tqdm(range(0, R, max(1, int(rel_block_size))),
-                       desc=f"Computing global top-k candidates.", unit=f"{rel_block_size} relations", leave=False):
-            r1 = min(R, r0 + max(1, int(rel_block_size)))
-            C = r1 - r0  # number of relations in this chunk
-
-            # Vectorized joint scores for the relation chunk
-            # h_chunk: (E, C), t_chunk: (C, E)
-            h_chunk = (a_h * log_p_head_2d[:, r0:r1])         # (E, C)
-            t_chunk = (a_t * log_p_tail_2d[r0:r1, :])         # (C, E)
-            # S: (C, E, E) with broadcasting: per relation c, S[c] = h_chunk[:, c][:, None] + t_chunk[c][None, :]
-            S = h_chunk.t().unsqueeze(2) + t_chunk.unsqueeze(1)  # (C, E, E)
-            # S = h_chunk.t().unsqueeze(2) * t_chunk.unsqueeze(1)  # (C, E, E)
-
-            # Single top-k for the whole chunk
-            numel_chunk = S.numel()
-            if numel_chunk == 0:
-                continue
-            k_chunk = min(k, numel_chunk)
-            vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
-
-            # Decode flat indices to (c, h, t) and map to global r = r0 + c
-            per_rel = E * E
-            c_idx = idx_chunk_flat // per_rel
-            rem   = idx_chunk_flat % per_rel
-            h_idx = rem // E
-            t_idx = rem %  E
-            r_idx = (c_idx + r0).to(torch.long)
-
-            # Merge with running global top-k heap
-            # General idea:
-            # - Maintain the best 'k' triples seen so far across processed relation chunks.
-            # - Concatenate current global list with this chunk's list, then take top-k again.
-            # - We never allocate or sort the full (E*R*E) array; memory stays bounded by
-            #   O(C*E*E) for the current chunk plus O(k) for the heap.
-            if filled == 0:
-                take = min(k, vals_chunk.numel())
-                top_vals[:take] = vals_chunk[:take]
-                top_r[:take]    = r_idx[:take]
-                top_h[:take]    = h_idx[:take]
-                top_t[:take]    = t_idx[:take]
-                filled = take
-            else:
-                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
-                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
-                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
-                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
-
-                if cand_vals.numel() > k:
-                    vtop, order = torch.topk(cand_vals, k=k, largest=True)
-                    top_vals[:k] = vtop
-                    top_r[:k]    = cand_r[order]
-                    top_h[:k]    = cand_h[order]
-                    top_t[:k]    = cand_t[order]
-                    filled = k
+        # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
+        # Each process computes top-k for its chunk and returns partial results, which are merged globally
+        with mp.Pool(processes=num_processes) as pool:
+            # Prepare chunk ranges
+            chunk_ranges = [(r0, min(R, r0 + rel_block_size)) for r0 in range(0, R, rel_block_size)]
+            # Submit jobs
+            results = [pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, alpha, k, E, R)) for r0, r1 in chunk_ranges]
+            # Collect and merge
+            for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
+                vals_chunk, r_idx, h_idx, t_idx = res.get()
+                # Merge into global top-k
+                if filled == 0:
+                    take = min(k, vals_chunk.numel())
+                    top_vals[:take] = vals_chunk[:take]
+                    top_r[:take]    = r_idx[:take]
+                    top_h[:take]    = h_idx[:take]
+                    top_t[:take]    = t_idx[:take]
+                    filled = take
                 else:
-                    top_vals[:cand_vals.numel()] = cand_vals
-                    top_r[:cand_vals.numel()]    = cand_r
-                    top_h[:cand_vals.numel()]    = cand_h
-                    top_t[:cand_vals.numel()]    = cand_t
-                    filled = cand_vals.numel()
+                    cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
+                    cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
+                    cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
+                    cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
+                    if cand_vals.numel() > k:
+                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
+                        top_vals[:k] = vtop
+                        top_r[:k]    = cand_r[order]
+                        top_h[:k]    = cand_h[order]
+                        top_t[:k]    = cand_t[order]
+                        filled = k
+                    else:
+                        top_vals[:cand_vals.numel()] = cand_vals
+                        top_r[:cand_vals.numel()]    = cand_r
+                        top_h[:cand_vals.numel()]    = cand_h
+                        top_t[:cand_vals.numel()]    = cand_t
+                        filled = cand_vals.numel()
 
-        # Trim to filled size
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
     def generate_candidates(
@@ -452,12 +440,15 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # max_bytes = int(memory_limit_gb * (1024**3))
         # rel_block_size = max(1, max_bytes // max(1, (E * E * bytes_per_float)))
 
+        # torch.set_num_threads(int(self.num_threads))
+
         top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
             log_p_head_2d=log_p_head_2d,
             log_p_tail_2d=log_p_tail_2d,
             alpha=self.alpha,
             k=int(effective_cap),
-            rel_block_size=10  # tune based on memory constraints,
+            rel_block_size=int(self.rel_block_size),
+            num_processes=int(self.num_processes),
         )
 
         # Build candidate triples (global entity indexing)
@@ -584,7 +575,11 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
 
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head"):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head",
+                 rel_block_size: int = 4,
+                 num_workers: int | None = None,
+                #  num_threads: int | None = None
+                 ):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
@@ -593,6 +588,11 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.beta = beta                        # weight for tail prediction P(t|h)
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
+
+        # new knobs for memory and parallelism
+        self.rel_block_size = max(1, int(rel_block_size))
+        self.num_processes = num_workers if num_workers and num_workers > 0 else os.cpu_count() // 2
+        # self.num_threads = num_threads or os.cpu_count() or 1
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -606,6 +606,104 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             assert 0.0 <= self.q < 1.0, "q must be in [0,1)"
 
     @staticmethod
+    def _process_chunk(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, log_p_t_given_h_2d: torch.Tensor, alpha: float, beta: float, k: int, E: int, R: int, head_block_size: int):
+        """Worker function for parallel chunk processing with tail prediction."""
+        torch.set_num_threads(1)  # Minimal threads per worker
+        C = r1 - r0
+        gamma = 1.0 - alpha - beta
+        a_h = float(alpha)
+        a_t_pred = float(beta)
+        a_t_inv = float(gamma)
+        B = max(1, int(head_block_size))
+
+        # Global buffers for this chunk
+        chunk_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
+        chunk_r    = torch.full((k,), -1, dtype=torch.long)
+        chunk_h    = torch.full((k,), -1, dtype=torch.long)
+        chunk_t    = torch.full((k,), -1, dtype=torch.long)
+        chunk_filled = 0
+
+        # Preload per-relation tail inverse
+        t_inv_chunk = (a_t_inv * log_p_tail_2d[r0:r1, :])  # (C, E)
+
+        for r in tqdm(range(C), desc="Processing relations in chunk", leave=False):
+            r_global = r0 + r
+            t_inv = t_inv_chunk[r, :]  # (E,)
+
+            for h0 in range(0, E, B):
+                h1 = min(E, h0 + B)
+                V = (a_t_pred * log_p_t_given_h_2d[h0:h1, :]) + t_inv.unsqueeze(0)  # (B, E)
+                v_top = V + (a_h * log_p_head_2d[h0:h1, r_global]).unsqueeze(1)     # (B, E)
+
+                vals_flat = v_top.reshape(-1)
+                k_sub = min(k, vals_flat.numel())
+                vals_sub, idx_flat = torch.topk(vals_flat, k=k_sub, largest=True)
+
+                h_idx_sub = torch.arange(h0, h1, dtype=torch.long).unsqueeze(1).repeat(1, E).reshape(-1)[idx_flat]
+                t_idx_sub = torch.arange(E, dtype=torch.long).repeat(B)[idx_flat]
+                r_idx_sub = torch.full_like(h_idx_sub, r_global)
+
+                # Merge into chunk top-k
+                if chunk_filled == 0:
+                    take = min(k, vals_sub.numel())
+                    chunk_vals[:take] = vals_sub[:take]
+                    chunk_r[:take]    = r_idx_sub[:take]
+                    chunk_h[:take]    = h_idx_sub[:take]
+                    chunk_t[:take]    = t_idx_sub[:take]
+                    chunk_filled = take
+                else:
+                    cand_vals = torch.cat([chunk_vals[:chunk_filled], vals_sub], dim=0)
+                    cand_r    = torch.cat([chunk_r[:chunk_filled],    r_idx_sub], dim=0)
+                    cand_h    = torch.cat([chunk_h[:chunk_filled],    h_idx_sub], dim=0)
+                    cand_t    = torch.cat([chunk_t[:chunk_filled],    t_idx_sub], dim=0)
+                    if cand_vals.numel() > k:
+                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
+                        chunk_vals[:k] = vtop
+                        chunk_r[:k]    = cand_r[order]
+                        chunk_h[:k]    = cand_h[order]
+                        chunk_t[:k]    = cand_t[order]
+                        chunk_filled = k
+                    else:
+                        chunk_vals[:cand_vals.numel()] = cand_vals
+                        chunk_r[:cand_vals.numel()]    = cand_r
+                        chunk_h[:cand_vals.numel()]    = cand_h
+                        chunk_t[:cand_vals.numel()]    = cand_t
+                        chunk_filled = cand_vals.numel()
+
+        return chunk_vals[:chunk_filled], chunk_r[:chunk_filled], chunk_h[:chunk_filled], chunk_t[:chunk_filled]
+
+    @staticmethod
+    def _process_chunk2(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, log_p_t_given_h_2d: torch.Tensor, alpha: float, beta: float, k: int, E: int, R: int):
+        """Vectorized chunk processing with tail prediction (no blocking, similar to CandidateGeneratorGlobal._process_chunk)."""
+        torch.set_num_threads(1)  # Minimal threads per worker
+        C = r1 - r0
+        gamma = 1.0 - alpha - beta
+        a_h = float(alpha)
+        a_t_pred = float(beta)
+        a_t_inv = float(gamma)
+
+        # Compute full (C, E, E) scores vectorized
+        head_term = a_h * log_p_head_2d[:, r0:r1].t()  # (C, E)
+        tail_pred_term = a_t_pred * log_p_t_given_h_2d  # (E, E)
+        tail_inv_term = a_t_inv * log_p_tail_2d[r0:r1, :]  # (C, E)
+
+        S = head_term.unsqueeze(2) + tail_pred_term.unsqueeze(0) + tail_inv_term.unsqueeze(1)  # (C, E, E)
+
+        numel_chunk = S.numel()
+        k_chunk = min(k, numel_chunk)
+        vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
+
+        per_rel = E * E
+        c_idx = idx_chunk_flat // per_rel
+        rem = idx_chunk_flat % per_rel
+        h_idx = rem // E
+        t_idx = rem % E
+        r_idx = (c_idx + r0).to(torch.long)
+
+        return vals_chunk, r_idx, h_idx, t_idx
+
+
+    @staticmethod
     def _global_topk_joint_streaming(
         log_p_head_2d: torch.Tensor,
         log_p_tail_2d: torch.Tensor,
@@ -613,118 +711,66 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         alpha: float,
         beta: float,
         k: int,
-        rel_block_size: int = 1,
+        rel_block_size: int = 4,
+        head_block_size: int = 256,
+        num_processes: int = 1,
     ):
         """
-        Memory-efficient global top-k over all (head, relation, tail) triples, now including P(t|h).
-
-        Vectorized over relation chunks:
-        - Process at most `rel_block_size` relations at a time.
-        - For a chunk r in [r0:r1), build a joint score tensor S with shape (C, E, E),
-          where C = r1 - r0 and:
-              S[c, h, t] = alpha * log_p_head_2d[h, r0+c] + beta * log_p_t_given_h_2d[h, t] + gamma * log_p_tail_2d[r0+c, t]
-              (gamma = 1 - alpha - beta)
-        - Run a single topk over the whole chunk (flattened), then decode to (r, h, t).
-        - Merge the chunk top-k into a running global top-k buffer of size k.
-
-        Args:
-            log_p_head_2d: Tensor (E, R) with log P(r | h)
-            log_p_tail_2d: Tensor (R, E) with log P(r^{-1} | t), aligned by relation index
-            log_p_t_given_h_2d: Tensor (E, E) with log P(t | h)
-            alpha: Weight in [0,1] for head log-probs P(r|h)
-            beta: Weight in [0,1] for tail prediction P(t|h)
-            k: Number of top entries to keep globally
-            rel_block_size: Max number of relations to process per chunk
-
-        Returns:
-            top_vals: (k',) tensor of joint log-probs (k' <= k)
-            top_r:    (k',) tensor of relation indices
-            top_h:    (k',) tensor of head indices
-            top_t:    (k',) tensor of tail indices
+        Parallel global top-k with tail prediction, processing relation chunks in parallel.
+        Builds full scores per chunk but avoids E×E materialization via batched head processing.
         """
-        assert 0.0 <= alpha <= 1.0, "alpha must be in [0,1]"
-        assert 0.0 <= beta <= 1.0, "beta must be in [0,1]"
-        assert alpha + beta <= 1.0, "alpha + beta must be <= 1.0"
-        gamma = 1.0 - alpha - beta
+        assert 0.0 <= alpha <= 1.0 and 0.0 <= beta <= 1.0 and alpha + beta <= 1.0
         E, R = log_p_head_2d.shape
-        assert log_p_tail_2d.shape == (R, E), "log_p_tail_2d must be (R, E)"
-        assert log_p_t_given_h_2d.shape == (E, E), "log_p_t_given_h_2d must be (E, E)"
+        assert log_p_tail_2d.shape == (R, E)
+        assert log_p_t_given_h_2d.shape == (E, E)
 
-        # Work on CPU float32 to minimize memory pressure
-        log_p_head_2d = log_p_head_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (E, R)
-        log_p_tail_2d = log_p_tail_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (R, E)
-        log_p_t_given_h_2d = log_p_t_given_h_2d.to(dtype=torch.float32, device="cpu", copy=False)  # (E, E)
+        # Share tensors
+        log_p_head_2d.share_memory_()
+        log_p_tail_2d.share_memory_()
+        log_p_t_given_h_2d.share_memory_()
 
-        # Running global top-k buffers (pre-allocated, updated incrementally)
+        # Global buffers
         top_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
         top_r    = torch.full((k,), -1, dtype=torch.long)
         top_h    = torch.full((k,), -1, dtype=torch.long)
         top_t    = torch.full((k,), -1, dtype=torch.long)
-        filled = 0  # number of valid entries currently stored in the buffers
+        filled = 0
 
-        a_h = float(alpha)
-        a_t_pred = float(beta)
-        a_t_inv = float(gamma)
-
-        # Progress bar disappears after loop (leave=False)
-        for r0 in tqdm(range(0, R, max(1, int(rel_block_size))),
-                       desc=f"Computing global top-k candidates with tail.", unit=f"{rel_block_size} relations", leave=False):
-            r1 = min(R, r0 + max(1, int(rel_block_size)))
-            C = r1 - r0  # number of relations in this chunk
-
-            # Vectorized joint scores for the relation chunk
-            # h_chunk: (E, C), t_inv_chunk: (C, E), t_pred_chunk: (E, E)
-            h_chunk = (a_h * log_p_head_2d[:, r0:r1])         # (E, C)
-            t_inv_chunk = (a_t_inv * log_p_tail_2d[r0:r1, :])  # (C, E)
-            # S: (C, E, E) with broadcasting:
-            # S[c, h, t] = h_chunk[h, c] + t_inv_chunk[c, t] + a_t_pred * log_p_t_given_h_2d[h, t]
-            S = h_chunk.t().unsqueeze(2) + t_inv_chunk.unsqueeze(1) + (a_t_pred * log_p_t_given_h_2d).unsqueeze(0)  # (C, E, E)
-            # S = h_chunk.t().unsqueeze(2) * t_inv_chunk.unsqueeze(1) * (a_t_pred * log_p_t_given_h_2d).unsqueeze(0)  # (C, E, E)
-
-            # Single top-k for the whole chunk
-            numel_chunk = S.numel()
-            if numel_chunk == 0:
-                continue
-            k_chunk = min(k, numel_chunk)
-            vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
-
-            # Decode flat indices to (c, h, t) and map to global r = r0 + c
-            per_rel = E * E
-            c_idx = idx_chunk_flat // per_rel
-            rem   = idx_chunk_flat % per_rel
-            h_idx = rem // E
-            t_idx = rem %  E
-            r_idx = (c_idx + r0).to(torch.long)
-
-            # Merge with running global top-k heap
-            if filled == 0:
-                take = min(k, vals_chunk.numel())
-                top_vals[:take] = vals_chunk[:take]
-                top_r[:take]    = r_idx[:take]
-                top_h[:take]    = h_idx[:take]
-                top_t[:take]    = t_idx[:take]
-                filled = take
-            else:
-                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
-                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
-                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
-                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
-
-                if cand_vals.numel() > k:
-                    vtop, order = torch.topk(cand_vals, k=k, largest=True)
-                    top_vals[:k] = vtop
-                    top_r[:k]    = cand_r[order]
-                    top_h[:k]    = cand_h[order]
-                    top_t[:k]    = cand_t[order]
-                    filled = k
+        # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
+        # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
+        with mp.Pool(processes=num_processes) as pool:
+            chunk_ranges = [(r0, min(R, r0 + rel_block_size)) for r0 in range(0, R, rel_block_size)]
+            results = [pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R, head_block_size)) for r0, r1 in chunk_ranges]
+            # results = [pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk2, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R)) for r0, r1 in chunk_ranges]
+            for res in tqdm(results, desc="Merging parallel chunks with tail", unit="chunk", leave=False):
+                vals_chunk, r_idx, h_idx, t_idx = res.get()
+                # Merge into global top-k (same as before)
+                if filled == 0:
+                    take = min(k, vals_chunk.numel())
+                    top_vals[:take] = vals_chunk[:take]
+                    top_r[:take]    = r_idx[:take]
+                    top_h[:take]    = h_idx[:take]
+                    top_t[:take]    = t_idx[:take]
+                    filled = take
                 else:
-                    top_vals[:cand_vals.numel()] = cand_vals
-                    top_r[:cand_vals.numel()]    = cand_r
-                    top_h[:cand_vals.numel()]    = cand_h
-                    top_t[:cand_vals.numel()]    = cand_t
-                    filled = cand_vals.numel()
+                    cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
+                    cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
+                    cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
+                    cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
+                    if cand_vals.numel() > k:
+                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
+                        top_vals[:k] = vtop
+                        top_r[:k]    = cand_r[order]
+                        top_h[:k]    = cand_h[order]
+                        top_t[:k]    = cand_t[order]
+                        filled = k
+                    else:
+                        top_vals[:cand_vals.numel()] = cand_vals
+                        top_r[:cand_vals.numel()]    = cand_r
+                        top_h[:cand_vals.numel()]    = cand_h
+                        top_t[:cand_vals.numel()]    = cand_t
+                        filled = cand_vals.numel()
 
-        # Trim to filled size
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
     def generate_candidates(
@@ -821,6 +867,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             raise ValueError("Candidate generation requires a cap (q or cap_candidates). Threshold-only (p) is unsafe for large graphs.")
 
         # Compute global top-k in a streaming fashion without O(E*R*E) memory
+        # torch.set_num_threads(int(self.num_threads))
+
         top_log_vals, r_idx, h_idx, t_idx = self._global_topk_joint_streaming(
             log_p_head_2d=log_p_head_2d,
             log_p_tail_2d=log_p_tail_2d,
@@ -828,7 +876,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             alpha=self.alpha,
             beta=self.beta,
             k=int(effective_cap),
-            rel_block_size=10  # tune based on memory constraints
+            rel_block_size=int(self.rel_block_size),
+            num_processes=int(self.num_processes),
         )
 
         # Build candidate triples (global entity indexing)
