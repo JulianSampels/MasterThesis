@@ -199,7 +199,7 @@ def create_and_run_training_exp_tuples(args):
         test_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
         pin_memory=use_cuda, num_workers=args.num_workers,
-        persistent_workers=use_persist,
+        persistent_workers=False,
         sampler=NegativeTripleSampler(te_positives, args.val_num_negatives))
 
     stageprint("Creating model and loading checkpoints")
@@ -468,7 +468,7 @@ def create_and_run_training_exp_triples(args):
         test_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
         pin_memory=use_cuda, num_workers=args.num_workers,
-        persistent_workers=use_persist,
+        persistent_workers=False,
         sampler=NegativeTripleSampler(te_positives, args.val_num_negatives))
 
     stageprint("Creating model and loading checkpoints")
@@ -677,7 +677,7 @@ def create_and_run_training_exp_two_phases(args):
     te_loader_t = torch.utils.data.DataLoader(
         test_set_t, batch_size=args.val_batch_size, collate_fn=collate_fn,
         shuffle=False, pin_memory=use_cuda, num_workers=args.num_workers,
-        persistent_workers=use_persist)
+        persistent_workers=False)
 
     # Model + wrapper
     stageprint("Creating model and loading checkpoints")
@@ -779,10 +779,20 @@ def create_and_run_training_exp_two_phases(args):
     stageprint(f"Phase 1b: Predicting over all tuples and building candidates...")
 
     def predict_all(trainer, model, loader, ckpt_path=None):
-        outs = trainer.predict(model, dataloaders=loader, ckpt_path=ckpt_path)
+        # Create a new dataloader without persistent workers for more speed
+        pred_loader = torch.utils.data.DataLoader(
+            loader.dataset, batch_size=loader.batch_size, 
+            collate_fn=loader.collate_fn, shuffle=False,
+            pin_memory=loader.pin_memory, 
+            num_workers=loader.num_workers,
+            persistent_workers=False
+        )
+
+        outs = trainer.predict(model, dataloaders=pred_loader, ckpt_path=ckpt_path)
         tuples_all = torch.cat([o["tuples"].cpu() for o in outs], dim=0)
         logits_all = torch.cat([o["logits_rp"].cpu() for o in outs], dim=0)
         logits_tp_all = torch.cat([o["logits_tp"].cpu() for o in outs], dim=0)
+        del outs
         return tuples_all, logits_all, logits_tp_all
 
     tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
@@ -899,7 +909,7 @@ def create_and_run_training_exp_two_phases(args):
         test_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
         shuffle=True, pin_memory=use_cuda,
         num_workers=args_phase3.num_workers,
-        persistent_workers=use_persist)
+        persistent_workers=False)
 
     model_tri = PathEModelTriples(
         vocab_size=train_set_tri.vocab_size,
@@ -991,3 +1001,11 @@ def create_and_run_training_exp_two_phases(args):
         ckpt_path=triple_ckpt
     )[0]
     print("\nFinal testing results (triple model): {}".format(test_dict))
+
+    # Cleanup before exit
+    print("Cleaning up resources...")
+    import gc
+    gc.collect()
+    if args.device == "cuda":
+        torch.cuda.empty_cache()
+    print("Done! You can enter the next command.")
