@@ -84,9 +84,9 @@ def main():
                         help='Global quantile threshold for candidate triples (keep top (1-q) quantile).')
     parser.add_argument('--candidates_temperature', type=float, default=1.0,
                         help='Temperature for candidate probability calibration.')
-    parser.add_argument('--candidates_alpha', type=float, default=0.5,
-                        help='Weight for head vs tail log-prob in candidate scoring (0=head only, 1=tail only, 0.5=balanced).')
-    parser.add_argument('--candidates_beta', type=float, default=0.3,
+    parser.add_argument('--candidates_alpha', type=float,
+                        help='Weight for head vs tail log-prob in candidate scoring (0=head only, 1=tail only, 0.5=balanced, 1/3 for global_with_tail).')
+    parser.add_argument('--candidates_beta', type=float, default=1/3,
                         help='Weight for relation vs tail log-prob in candidate scoring (used in global_with_tail generator).')
     parser.add_argument('--candidates_cap', type=int, default=100,
                         help='Maximum number of top-k candidates to keep per group (e.g., per head entity).')
@@ -217,6 +217,12 @@ def main():
     args.val_num_negatives = args.num_negatives if args.val_num_negatives is None else args.val_num_negatives
     if args.link_head_detached and not args.use_manual_optimization:
         raise ValueError("link_head_detached=True has no effect when use_manual_optimization=False")
+    
+    # Set candidates_alpha based on candidate_generator
+    if not args.candidates_alpha and 'tail' in args.candidate_generator:
+        args.candidates_alpha = 1/3
+    else:
+        args.candidates_alpha = 0.5
 
     # Setting the random seed for all modules
     set_random_seed(args.seed, args.device)
