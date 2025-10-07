@@ -791,17 +791,22 @@ def create_and_run_training_exp_two_phases(args):
 
     # Instantiate candidate generator based on args.candidate_generator
     if args.candidate_generator == 'global':
-        candidate_generator = CandidateGeneratorGlobal(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, per_group_cap=args.candidates_cap, group_strategy=args.group_strategy)
+        candidate_generator = CandidateGeneratorGlobal(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, per_group_cap=args.candidates_cap)
     elif args.candidate_generator == 'global_with_tail':
-        candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, per_group_cap=args.candidates_cap, group_strategy=args.group_strategy)
+        candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, per_group_cap=args.candidates_cap)
     elif args.candidate_generator == 'per_head':
-        candidate_generator = CandidateGeneratorPerHead(per_group_cap=args.candidates_cap, group_strategy=args.group_strategy)
+        candidate_generator = CandidateGeneratorPerHead(per_group_cap=args.candidates_cap)
     else:
         raise ValueError(f"Unknown candidate_generator: {args.candidate_generator}")
 
-    candidates_train, _scores_train = candidate_generator.generate_candidates(tr_tuples_all, tr_logits_all, train_set_t.relation_maps, logits_tp=tr_logits_tp_all)
-    candidates_val, _scores_val = candidate_generator.generate_candidates(va_tuples_all, va_logits_all, valid_set_t.relation_maps, logits_tp=va_logits_tp_all)
-    candidates_test, _scores_test = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, logits_tp=te_logits_tp_all)
+    # Compute number of groups for each split based on triples
+    num_groups_train = len(torch.unique(train_triples[:, args.group_strategy], dim=0))
+    num_groups_val = len(torch.unique(val_triples[:, args.group_strategy], dim=0))
+    num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
+
+    candidates_train, _scores_train = candidate_generator.generate_candidates(tr_tuples_all, tr_logits_all, train_set_t.relation_maps, num_groups_train, logits_tp=tr_logits_tp_all)
+    candidates_val, _scores_val = candidate_generator.generate_candidates(va_tuples_all, va_logits_all, valid_set_t.relation_maps, num_groups_val, logits_tp=va_logits_tp_all)
+    candidates_test, _scores_test = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
 
     del tr_tuples_all, tr_logits_all, tr_logits_tp_all
     del va_tuples_all, va_logits_all, va_logits_tp_all

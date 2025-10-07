@@ -1,6 +1,3 @@
-
-
-
 from abc import ABC, abstractmethod
 import math
 import statistics
@@ -24,6 +21,7 @@ class BaseCandidateGenerator(ABC):
         tuples: torch.Tensor,
         logits_rp: torch.Tensor,
         relation_maps: RelationMaps,
+        num_groups: int,
         logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate candidate triples from tuple predictions.
@@ -234,14 +232,13 @@ class BaseCandidateGenerator(ABC):
         return
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, group_strategy: str):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
         self.alpha = alpha                      # weight for head vs tail log-probs
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
-        self.group_strategy = group_strategy    # 'global' or 'global_with_tail'
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -371,6 +368,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         tuples: torch.Tensor,
         logits_rp: torch.Tensor,
         relation_maps: RelationMaps,
+        num_groups: int,
         logits_tp: torch.Tensor = None,
     ):
         """
@@ -392,6 +390,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             tuples: (num_samples, 2) tensor, entity in col 0.
             relation_maps: RelationMaps object mapping original to inverse relations.
             logits_rp: (num_samples, num_relations) tensor of per-sample relation logits.
+            num_groups: int, number of groups for candidate cap.
             p: Optional[float], global probability threshold for candidate filtering.
             q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
             temperature: float, softmax temperature for calibration.
@@ -428,7 +427,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
         # Compute base cap from group strategy
-        num_groups = len(torch.unique(tuples[:, self.group_strategy], dim=0))
+        print(f"Number of groups for candidate cap: {num_groups}")
         effective_cap = num_groups * self.per_group_cap
         if self.q is not None:
             cap_q = max(1, int(math.ceil((1.0 - self.q) * total)))
@@ -476,10 +475,9 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         return candidates, scores
 
 class CandidateGeneratorPerHead(BaseCandidateGenerator):
-    def __init__(self, per_group_cap: int, group_strategy: str):
+    def __init__(self, per_group_cap: int):
         super().__init__()
         self.per_group_cap = per_group_cap    # number of (r,t) pairs to keep per head entity
-        self.group_strategy = group_strategy  # 'per_head'
         assert self.per_group_cap and self.per_group_cap > 0, "per_group_cap must be > 0"
 
     def _aggregate_logits_per_entity(tuples_2col: torch.Tensor,
@@ -500,6 +498,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
             tuples_all: torch.Tensor,
             logits_rp_all: torch.Tensor,
             relation_maps: RelationMaps,
+            num_groups: int,
             logits_tp: torch.Tensor = None) -> dict[int, torch.Tensor]:
         """
         For each head entity h present in tuples_all:
@@ -577,7 +576,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
 
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, group_strategy: str):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
@@ -585,7 +584,6 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.alpha = alpha                      # weight for head log-probs P(r|h)
         self.beta = beta                        # weight for tail prediction P(t|h)
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
-        self.group_strategy = group_strategy    # 'global_with_tail'
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -660,7 +658,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         # Progress bar disappears after loop (leave=False)
         for r0 in tqdm(range(0, R, max(1, int(rel_block_size))),
-                       desc=f"Computing global top-k candidates.", unit=f"{rel_block_size} relations", leave=False):
+                       desc=f"Computing global top-k candidates with tail.", unit=f"{rel_block_size} relations", leave=False):
             r1 = min(R, r0 + max(1, int(rel_block_size)))
             C = r1 - r0  # number of relations in this chunk
 
@@ -724,6 +722,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         tuples: torch.Tensor,
         logits_rp: torch.Tensor,
         relation_maps: RelationMaps,
+        num_groups: int,
         logits_tp: torch.Tensor = None,
     ):
         """
@@ -795,7 +794,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
         # Compute base cap from group strategy
-        num_groups = len(torch.unique(tuples[:, self.group_strategy], dim=0))
+        print(f"Number of groups for candidate cap: {num_groups}")
         effective_cap = num_groups * self.per_group_cap
         if self.q is not None:
             cap_q = max(1, int(math.ceil((1.0 - self.q) * total)))
