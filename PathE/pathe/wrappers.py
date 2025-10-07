@@ -794,7 +794,11 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
     def __init__(self, 
                 pathe_model: PathEModelTuples, filtration_dict, 
-                global_head_tail_adjacency: torch.Tensor = None, num_negatives=0,
+                global_head_tail_adjacency: torch.Tensor = None, 
+                train_head_tail_adjacency: torch.Tensor = None,
+                val_head_tail_adjacency: torch.Tensor = None,
+                test_head_tail_adjacency: torch.Tensor = None,
+                num_negatives=0,
                 optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
                 weight_decay=0, class_weights=None, label_smoothing=0.0,
                 train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
@@ -821,8 +825,11 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # Set automatic optimization based on parameter
         self.automatic_optimization = not self.use_manual_optimization
 
-        # Store head-tail adjacency for tail metrics filtering
+        # Store head-tail adjacency matrices
         self.global_head_tail_adjacency = global_head_tail_adjacency
+        self.train_head_tail_adjacency = train_head_tail_adjacency
+        self.val_head_tail_adjacency = val_head_tail_adjacency
+        self.test_head_tail_adjacency = test_head_tail_adjacency
 
         # unnecessary as done in super but for clarity
         self.model = pathe_model
@@ -920,23 +927,34 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         loss_lp = self.lp_loss_fn(logits, num_negatives)
         return loss_lp
     
-    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor):
-        if targets is None or weights is None:
-            raise ValueError("Y and W must be provided from batch.")
-        targets = targets.to(device=self.device, dtype=torch.float32, non_blocking=True)
-        weights = weights.to(device=self.device, dtype=torch.float32, non_blocking=True)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, targets, weight=weights, reduction='sum')
-        return loss / weights.sum().clamp_min(1.0)
+    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, adjacency_matrix: torch.Tensor):
+        if adjacency_matrix is None:
+            raise ValueError("An adjacency matrix must be provided for on-the-fly loss calculation.")
+        
+        # Generate labels and weights on the fly using the provided adjacency matrix
+        tail_labels = adjacency_matrix[heads.cpu()].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        
+        pos_counts = tail_labels.sum(dim=1)
+        neg_counts = tail_labels.shape[1] - pos_counts
+        
+        w_pos = 0.5 / pos_counts.clamp_min(1.0)
+        w_neg = 0.5 / neg_counts.clamp_min(1.0)
+        
+        tail_weights = torch.where(tail_labels > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
+        
+        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, tail_labels, weight=tail_weights, reduction='sum')
+        return loss / tail_weights.sum().clamp_min(1.0)
 
     def training_step(self, batch, batch_idx):
         # Forward pass
         logits_rp, logits_tail = self.model_forward(batch)
         targets = batch["target"] - 2
-        heads = batch['ori_triple'][:, 0].to(self.device)
+        tuples = batch["ori_triple"]                    # (N, 2) => (h, r)
+        heads = tuples[:, 0].to(self.device)
 
         # Losses (unscaled)
         rp_loss_unscaled = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
-        tail_loss_unscaled = self.compute_tail_bce_loss(logits_tail, batch.get('tail_labels'), batch.get('tail_weights'))
+        tail_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads, self.train_head_tail_adjacency)
 
         if not self.use_manual_optimization:
             total = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tail_loss_unscaled
@@ -986,27 +1004,26 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, batch.get('tail_labels'), batch.get('tail_weights'))
+        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.val_head_tail_adjacency)
 
         # Logging losses
         self.log("valid_rp_loss", rp_loss, prog_bar=True)
         self.log("valid_tp_loss", tp_loss, prog_bar=True)
         self.log("valid_total_loss", rp_loss + tp_loss)
 
-        # Metrics for tuples (relation prediction)
-        assert(tuples.size()[0] == logits_rp.size()[0])
-        logits_rp_only_positives = logits_rp[torch.arange(0, logits_rp.size()[0], self.val_num_negatives + 1)]
-        tuples_only_positives = tuples[torch.arange(0, tuples.size()[0], self.val_num_negatives + 1)]
+        # --- Relation prediction metrics (only positives) --------------------
+        pos_indices = torch.arange(0, tuples.size(0), self.val_num_negatives + 1)
+        tuples_only_positives = tuples[pos_indices]
+        logits_rp_only_positives = logits_rp[pos_indices]
 
-        # Accumulate for epoch-level metric computation
+        # Accumulate validation data for epoch-end processing
         if not hasattr(self, "_val_acc"):
             assert(batch_idx == 0), "Somehow accumulating validation data was not deleted in validation_epoch_end() after last epoch. Risking incorrect metrics!"
-            self._val_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": [], "tail_labels": []}
+            self._val_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": []}
         self._val_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
         self._val_acc["tuples_tp"].append(tuples.detach().cpu())
         self._val_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
         self._val_acc["logits_tp"].append(logits_tail.detach().cpu())
-        self._val_acc["tail_labels"].append(batch["tail_labels"].detach().cpu())
 
         return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
@@ -1025,15 +1042,14 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # All (possibly duplicated) heads with tail logits
         tuples_all = torch.cat(self._val_acc["tuples_tp"], dim=0)          # (N, 2) (h, r)
         logits_tail_all = torch.cat(self._val_acc["logits_tp"], dim=0)     # (N, E)
-
         heads_all = tuples_all[:, 0]                                       # (N,)
+
         # Group by head: aggregate (mean) scores across multiple (h,r) rows
         unique_heads, inverse = heads_all.unique(return_inverse=True, sorted=False)
         # If torch_scatter available (already imported), use it:
         scores_agg = torch_scatter.scatter_mean(logits_tail_all, inverse, dim=0)
         # Aggregate eval labels per unique head (take first since identical)
-        tail_labels_all = torch.cat(self._val_acc["tail_labels"], dim=0)
-        eval_labels_agg = tail_labels_all[inverse.unique()]
+        eval_labels_agg = self.val_head_tail_adjacency[unique_heads].to(torch.float32)
 
         # Update tail metrics with eval labels
         self.val_tailMRR.update(unique_heads, scores_agg, eval_labels_agg)

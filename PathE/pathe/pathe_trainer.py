@@ -224,6 +224,9 @@ def create_and_run_training_exp_tuples(args):
         pathe_model=model,
         filtration_dict=map_head_to_relationsets_tuples,
         global_head_tail_adjacency=global_head_tail_adjacency,
+        train_head_tail_adjacency=train_head_tail_adjacency,
+        val_head_tail_adjacency=val_head_tail_adjacency,
+        test_head_tail_adjacency=test_head_tail_adjacency,
         class_weights=class_weights,  # for rel imbalance
         **namespace_to_dict(args),  # model hparameters
     )
@@ -695,6 +698,9 @@ def create_and_run_training_exp_two_phases(args):
         pathe_model=model_t,
         filtration_dict=map_head_to_relsets,
         global_head_tail_adjacency=global_head_tail_adjacency,
+        train_head_tail_adjacency=train_head_tail_adjacency,
+        val_head_tail_adjacency=val_head_tail_adjacency,
+        test_head_tail_adjacency=test_head_tail_adjacency,
         class_weights=class_weights,
         **namespace_to_dict(args),
     )

@@ -1442,14 +1442,6 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         h_idxs = h_idxs
         # print(f"ori_triple: {tuple}, \nh_epaths: {h_epaths}, \nh_rpaths: {h_rpaths}, \nh_idxs: {h_idxs}, \nh_erpos: {h_erpos}\n")
         
-        # Precompute tail weights for loss calculation on the fly
-        tail_labels = self.head_tail_adjacency[head].to(torch.float32)  # (num_entities,)
-        pos_counts = tail_labels.sum()
-        neg_counts = self.num_entities - pos_counts
-        w_pos = 0.5 / pos_counts.clamp_min(1.0)
-        w_neg = 0.5 / neg_counts.clamp_min(1.0)
-        tail_weights = torch.where(tail_labels > 0.5, w_pos, w_neg).to(torch.float32)  # (num_entities,)
-        
         return {
             "id": index,
             "pos": h_erpos, 
@@ -1458,8 +1450,6 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             "head_indexes": h_idxs,
             "relation": self.tokens_to_idxs[rel.item()],
             "ori_triple": tuple, "path_origins": path_ori,
-            "tail_labels": tail_labels,          # (num_entities,)
-            "tail_weights": tail_weights,        # (num_entities,)
         }
 
 
