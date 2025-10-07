@@ -789,12 +789,16 @@ def create_and_run_training_exp_two_phases(args):
     va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
     te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
+    # Instantiate candidate generator based on args.candidate_generator
+    if args.candidate_generator == 'global':
+        candidate_generator = CandidateGeneratorGlobal(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, per_group_cap=args.candidates_cap, group_strategy=args.group_strategy)
+    elif args.candidate_generator == 'global_with_tail':
+        candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, per_group_cap=args.candidates_cap, group_strategy=args.group_strategy)
+    elif args.candidate_generator == 'per_head':
+        candidate_generator = CandidateGeneratorPerHead(per_group_cap=args.candidates_cap, group_strategy=args.group_strategy)
+    else:
+        raise ValueError(f"Unknown candidate_generator: {args.candidate_generator}")
 
-    # args.candidates_beta = 1/3
-    # args.candidates_alpha = 1/3
-    # candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, cap_candidates=args.candidates_cap)
-    # candidate_generator = CandidateGeneratorGlobal(p = args.candidates_threshold_p, q = args.candidates_quantile_q, temperature = args.candidates_temperature, alpha = args.candidates_alpha, cap_candidates = args.candidates_cap)
-    candidate_generator = CandidateGeneratorPerHead(topk=args.candidates_cap)
     candidates_train, _scores_train = candidate_generator.generate_candidates(tr_tuples_all, tr_logits_all, train_set_t.relation_maps, logits_tp=tr_logits_tp_all)
     candidates_val, _scores_val = candidate_generator.generate_candidates(va_tuples_all, va_logits_all, valid_set_t.relation_maps, logits_tp=va_logits_tp_all)
     candidates_test, _scores_test = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, logits_tp=te_logits_tp_all)
@@ -812,13 +816,12 @@ def create_and_run_training_exp_two_phases(args):
     test_labels = triple_lib.build_labels_for_triples(candidates_test, test_triples)
 
     # create group mappings for group ids
-    group_strategy = [0] # for grouping by head entity
     all_triples = torch.cat([train_triples, val_triples, test_triples, candidates_train, candidates_val, candidates_test], dim=0)
-    get_group_ids = triple_lib.generate_group_id_function(all_triples, group_strategy)
-    print(f"Unique {group_strategy} in all triples: {all_triples[:, group_strategy].unique().size(0)}")
-    print(f"Unique {group_strategy} in train triples: {train_triples[:, group_strategy].unique().size(0)}")
-    print(f"Unique {group_strategy} in val triples: {val_triples[:, group_strategy].unique().size(0)}")
-    print(f"Unique {group_strategy} in test triples: {test_triples[:, group_strategy].unique().size(0)}")
+    get_group_ids = triple_lib.generate_group_id_function(all_triples, args.group_strategy)
+    print(f"Unique {args.group_strategy} in all triples: {all_triples[:, args.group_strategy].unique().size(0)}")
+    print(f"Unique {args.group_strategy} in train triples: {train_triples[:, args.group_strategy].unique().size(0)}")
+    print(f"Unique {args.group_strategy} in val triples: {val_triples[:, args.group_strategy].unique().size(0)}")
+    print(f"Unique {args.group_strategy} in test triples: {test_triples[:, args.group_strategy].unique().size(0)}")
     del all_triples # free memory
 
     # Candidate statistics

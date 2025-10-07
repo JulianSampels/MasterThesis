@@ -234,13 +234,14 @@ class BaseCandidateGenerator(ABC):
         return
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, cap_candidates: int):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, group_strategy: str):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
         self.alpha = alpha                      # weight for head vs tail log-probs
-        self.cap_candidates = cap_candidates    # final cap after thresholding only keep top-k candidates
+        self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
+        self.group_strategy = group_strategy    # 'global' or 'global_with_tail'
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -426,14 +427,16 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
-        effective_cap = self.cap_candidates
+        # Compute base cap from group strategy
+        num_groups = len(torch.unique(tuples[:, self.group_strategy], dim=0))
+        effective_cap = num_groups * self.per_group_cap
         if self.q is not None:
             cap_q = max(1, int(math.ceil((1.0 - self.q) * total)))
             if effective_cap is not None and effective_cap < cap_q:
-                logger.warning(f"cap_candidates < cap_q  from q-quantile. Using smaller cap_candidates {self.cap_candidates} instead of {cap_q}.")
+                logger.warning(f"effective_cap < cap_q from q-quantile. Using smaller effective_cap {effective_cap} instead of {cap_q}.")
             effective_cap = cap_q if effective_cap is None else min(effective_cap, cap_q)
         if effective_cap is None:
-            raise ValueError("Candidate generation requires a cap (q or cap_candidates). Threshold-only (p) is unsafe for large graphs.")
+            raise ValueError("Candidate generation requires a cap (q or per_group_cap). Threshold-only (p) is unsafe for large graphs.")
 
         # Compute global top-k in a streaming fashion without O(E*R*E) memory
         # Peak RAM ~ rel_block_size * E * E * 4 bytes
@@ -473,10 +476,11 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         return candidates, scores
 
 class CandidateGeneratorPerHead(BaseCandidateGenerator):
-    def __init__(self, topk: int):
+    def __init__(self, per_group_cap: int, group_strategy: str):
         super().__init__()
-        self.topk = topk    # number of (r,t) pairs to keep per head entity
-        assert self.topk and self.topk > 0, "topk must be > 0"
+        self.per_group_cap = per_group_cap    # number of (r,t) pairs to keep per head entity
+        self.group_strategy = group_strategy  # 'per_head'
+        assert self.per_group_cap and self.per_group_cap > 0, "per_group_cap must be > 0"
 
     def _aggregate_logits_per_entity(tuples_2col: torch.Tensor,
                                      logits_rp: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -542,7 +546,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
         # return head_to_topk
         E, R = prob_r_given_h.shape
-        k_eff = min(self.topk, R * E)
+        k_eff = min(self.per_group_cap, R * E)
         
         all_candidates = []
         all_scores = []
@@ -573,14 +577,15 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
 
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, cap_candidates: int):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, group_strategy: str):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
         self.alpha = alpha                      # weight for head log-probs P(r|h)
         self.beta = beta                        # weight for tail prediction P(t|h)
-        self.cap_candidates = cap_candidates    # final cap after thresholding only keep top-k candidates
+        self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
+        self.group_strategy = group_strategy    # 'global_with_tail'
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -666,6 +671,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             # S: (C, E, E) with broadcasting:
             # S[c, h, t] = h_chunk[h, c] + t_inv_chunk[c, t] + a_t_pred * log_p_t_given_h_2d[h, t]
             S = h_chunk.t().unsqueeze(2) + t_inv_chunk.unsqueeze(1) + (a_t_pred * log_p_t_given_h_2d).unsqueeze(0)  # (C, E, E)
+            # S = h_chunk.t().unsqueeze(2) * t_inv_chunk.unsqueeze(1) * (a_t_pred * log_p_t_given_h_2d).unsqueeze(0)  # (C, E, E)
 
             # Single top-k for the whole chunk
             numel_chunk = S.numel()
@@ -718,7 +724,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         tuples: torch.Tensor,
         logits_rp: torch.Tensor,
         relation_maps: RelationMaps,
-        logits_tp: torch.Tensor = None,  # NEW: Tail logits (batch_size, num_entities)
+        logits_tp: torch.Tensor = None,
     ):
         """
         Efficiently generate candidate (head, relation, tail) triples and their joint probabilities
@@ -760,6 +766,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         entities, logits_rp_grouped = self._aggregate_logits_per_head(tuples, logits_rp)
         _, logits_tp_grouped = self._aggregate_logits_per_head(tuples, logits_tp)  # Aggregate tail logits
         E = entities.size(0)
+
         # Restrict to known entities
         logits_tp_grouped = logits_tp_grouped[:, entities]
 
@@ -780,14 +787,20 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=1).to(torch.float32).cpu().transpose(0, 1)  # (R, E)
         # For tail prediction P(t|h)
         log_p_t_given_h_2d = torch.log_softmax(logits_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()  # (E, E)
+        
+        # log_p_head_2d = (head_logits_subset / self.temperature).cpu()  # (E, R)
+        # log_p_tail_2d = (tail_logits_subset / self.temperature).cpu().transpose(0, 1)  # (R, E)
+        # log_p_t_given_h_2d = (logits_tp_grouped / self.temperature).cpu()  # (E, E)
 
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
-        effective_cap = self.cap_candidates
+        # Compute base cap from group strategy
+        num_groups = len(torch.unique(tuples[:, self.group_strategy], dim=0))
+        effective_cap = num_groups * self.per_group_cap
         if self.q is not None:
             cap_q = max(1, int(math.ceil((1.0 - self.q) * total)))
             if effective_cap is not None and effective_cap < cap_q:
-                logger.warning(f"cap_candidates < cap_q from q-quantile. Using smaller cap_candidates {self.cap_candidates} instead of {cap_q}.")
+                logger.warning(f"effective_cap < cap_q from q-quantile. Using smaller effective_cap {effective_cap} instead of {cap_q}.")
             effective_cap = cap_q if effective_cap is None else min(effective_cap, cap_q)
         if effective_cap is None:
             raise ValueError("Candidate generation requires a cap (q or cap_candidates). Threshold-only (p) is unsafe for large graphs.")
