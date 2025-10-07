@@ -232,17 +232,19 @@ class BaseCandidateGenerator(ABC):
         return
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head"):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
         self.alpha = alpha                      # weight for head vs tail log-probs
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
+        self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
+        assert self.normalize_mode in ("per_head", "global_joint", "none"), "normalize_mode invalid"
         if self.p is not None:
             assert 0.0 <= self.p <= 1.0, "p must be in [0,1]"
         if self.q is not None:
@@ -417,12 +419,18 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
 
-        # 5. Calibrated log-probabilities (avoid tiny exp, use log_softmax); keep as 2D on CPU
-        log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=1).to(torch.float32).cpu()  # (E, R)
-        # transpose to (R, E) to index by relation first on tail-side
-        log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=1).to(torch.float32).cpu().transpose(0, 1)  # (R, E)
-        # log_p_head_2d = (head_logits_subset / self.temperature).cpu()  # (E, R)
-        # log_p_tail_2d = (tail_logits_subset / self.temperature).cpu().transpose(0, 1)  # (R, E)
+        # 5. Calibrated log-probabilities or raw logits based on normalize_mode
+        if self.normalize_mode == "per_head":
+            log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=1).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=1).to(torch.float32).cpu().transpose(0,1) # (R, E)
+        elif self.normalize_mode == "global_joint":
+            z_hr = (head_logits_subset / self.temperature).to(torch.float32).cpu()             # (E, R)
+            log_p_head_2d = torch.log_softmax(z_hr.reshape(-1), dim=0).reshape(E, R)          # joint over all (h,r)
+            z_tr = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1)  # (R, E)
+            log_p_tail_2d = torch.log_softmax(z_tr.reshape(-1), dim=0).reshape(R, E)          # joint over all (r,t)
+        else:  # "none" -> use temperature-scaled logits as log-scores
+            log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
 
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
@@ -576,7 +584,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
 
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
-    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int):
+    def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head"):
         super().__init__()
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
@@ -584,12 +592,14 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.alpha = alpha                      # weight for head log-probs P(r|h)
         self.beta = beta                        # weight for tail prediction P(t|h)
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
+        self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
         assert 0.0 <= self.beta <= 1.0, "beta must be in [0,1]"
         assert self.alpha + self.beta <= 1.0, "alpha + beta must be <= 1.0 (gamma = 1 - alpha - beta)"
+        assert self.normalize_mode in ("per_head", "global_joint", "none"), "normalize_mode invalid"
         if self.p is not None:
             assert 0.0 <= self.p <= 1.0, "p must be in [0,1]"
         if self.q is not None:
@@ -780,16 +790,22 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
 
-        # 5. Calibrated log-probabilities (avoid tiny exp, use log_softmax); keep as 2D on CPU
-        log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=1).to(torch.float32).cpu()  # (E, R)
-        # transpose to (R, E) to index by relation first on tail-side
-        log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=1).to(torch.float32).cpu().transpose(0, 1)  # (R, E)
-        # For tail prediction P(t|h)
-        log_p_t_given_h_2d = torch.log_softmax(logits_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()  # (E, E)
-        
-        # log_p_head_2d = (head_logits_subset / self.temperature).cpu()  # (E, R)
-        # log_p_tail_2d = (tail_logits_subset / self.temperature).cpu().transpose(0, 1)  # (R, E)
-        # log_p_t_given_h_2d = (logits_tp_grouped / self.temperature).cpu()  # (E, E)
+        # 5. Calibrated log-probabilities or raw logits based on normalize_mode
+        if self.normalize_mode == "per_head":
+            log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=1).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=1).to(torch.float32).cpu().transpose(0,1) # (R, E)
+            log_p_t_given_h_2d = torch.log_softmax(logits_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()          # (E, E)
+        elif self.normalize_mode == "global_joint":
+            z_hr = (head_logits_subset / self.temperature).to(torch.float32).cpu()             # (E, R)
+            log_p_head_2d = torch.log_softmax(z_hr.reshape(-1), dim=0).reshape(E, R)          # joint over (h,r)
+            z_tr = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1)  # (R, E)
+            log_p_tail_2d = torch.log_softmax(z_tr.reshape(-1), dim=0).reshape(R, E)          # joint over (r,t)
+            z_ht = (logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
+            log_p_t_given_h_2d = torch.log_softmax(z_ht.reshape(-1), dim=0).reshape(E, E)     # joint over (h,t)
+        else:  # "none"
+            log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
+            log_p_t_given_h_2d = (logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
 
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
