@@ -256,8 +256,8 @@ class BaseCandidateGenerator(ABC):
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
                  rel_block_size: int = 1,
+                 head_block_size: int = 256,
                  max_num_workers: int | None = None,
-                #  num_threads: int | None = None
                  ):
         super().__init__(max_num_workers=max_num_workers)
         self.p = p                              # keep candidates with P >= p (global threshold)
@@ -269,7 +269,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         # new knobs for memory and parallelism
         self.rel_block_size = max(1, int(rel_block_size))
-        # self.num_threads = num_threads or os.cpu_count() or 1
+        self.head_block_size = max(1, int(head_block_size))
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -281,29 +281,69 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             assert 0.0 <= self.q < 1.0, "q must be in [0,1)"
 
     @staticmethod
-    def _process_chunk(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, alpha: float, k: int, E: int, R: int):
-        """Worker function for parallel chunk processing."""
-        torch.set_num_threads(1)  # Minimal threads per worker; adjust if needed
+    def _process_chunk(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, alpha: float, k: int, E: int, R: int, head_block_size: int):
+        """Worker function for parallel chunk processing with head blocking to control memory."""
+        torch.set_num_threads(1)  # 1 thread per worker as we parallelize over processes, otherwise it breaks
         C = r1 - r0
         a_h = float(alpha)
         a_t = float(1.0 - alpha)
+        B = max(1, int(head_block_size))
 
-        h_chunk = (a_h * log_p_head_2d[:, r0:r1])         # (E, C)
-        t_chunk = (a_t * log_p_tail_2d[r0:r1, :])         # (C, E)
-        S = h_chunk.t().unsqueeze(2) + t_chunk.unsqueeze(1)  # (C, E, E)
+        # Global buffers for this chunk
+        chunk_vals = torch.full((k,), float("-inf"), dtype=torch.float32)
+        chunk_r    = torch.full((k,), -1, dtype=torch.long)
+        chunk_h    = torch.full((k,), -1, dtype=torch.long)
+        chunk_t    = torch.full((k,), -1, dtype=torch.long)
+        chunk_filled = 0
 
-        numel_chunk = S.numel()
-        k_chunk = min(k, numel_chunk)
-        vals_chunk, idx_chunk_flat = torch.topk(S.reshape(-1), k=k_chunk, largest=True)
+        # Preload per-relation tail inverse
+        t_chunk = a_t * log_p_tail_2d[r0:r1, :]  # (C, E)
 
-        per_rel = E * E
-        c_idx = idx_chunk_flat // per_rel
-        rem   = idx_chunk_flat % per_rel
-        h_idx = rem // E
-        t_idx = rem %  E
-        r_idx = (c_idx + r0).to(torch.long)
+        for r in range(C):
+            r_global = r0 + r
+            t_inv = t_chunk[r, :]  # (E,)
 
-        return vals_chunk, r_idx, h_idx, t_idx
+            for h0 in range(0, E, B):
+                h1 = min(E, h0 + B)
+                head_term = a_h * log_p_head_2d[h0:h1, r_global]  # (B,)
+                V = head_term.unsqueeze(1) + t_inv.unsqueeze(0)  # (B, E)
+
+                vals_flat = V.reshape(-1)
+                k_sub = min(k, vals_flat.numel())
+                vals_sub, idx_flat = torch.topk(vals_flat, k=k_sub, largest=True)
+
+                h_idx_sub = torch.arange(h0, h1, dtype=torch.long).unsqueeze(1).repeat(1, E).reshape(-1)[idx_flat]
+                t_idx_sub = torch.arange(E, dtype=torch.long).repeat(B)[idx_flat]
+                r_idx_sub = torch.full_like(h_idx_sub, r_global)
+
+                # Merge into chunk top-k
+                if chunk_filled == 0:
+                    take = min(k, vals_sub.numel())
+                    chunk_vals[:take] = vals_sub[:take]
+                    chunk_r[:take]    = r_idx_sub[:take]
+                    chunk_h[:take]    = h_idx_sub[:take]
+                    chunk_t[:take]    = t_idx_sub[:take]
+                    chunk_filled = take
+                else:
+                    cand_vals = torch.cat([chunk_vals[:chunk_filled], vals_sub], dim=0)
+                    cand_r    = torch.cat([chunk_r[:chunk_filled],    r_idx_sub], dim=0)
+                    cand_h    = torch.cat([chunk_h[:chunk_filled],    h_idx_sub], dim=0)
+                    cand_t    = torch.cat([chunk_t[:chunk_filled],    t_idx_sub], dim=0)
+                    if cand_vals.numel() > k:
+                        vtop, order = torch.topk(cand_vals, k=k, largest=True)
+                        chunk_vals[:k] = vtop
+                        chunk_r[:k]    = cand_r[order]
+                        chunk_h[:k]    = cand_h[order]
+                        chunk_t[:k]    = cand_t[order]
+                        chunk_filled = k
+                    else:
+                        chunk_vals[:cand_vals.numel()] = cand_vals
+                        chunk_r[:cand_vals.numel()]    = cand_r
+                        chunk_h[:cand_vals.numel()]    = cand_h
+                        chunk_t[:cand_vals.numel()]    = cand_t
+                        chunk_filled = cand_vals.numel()
+
+        return chunk_vals[:chunk_filled], chunk_r[:chunk_filled], chunk_h[:chunk_filled], chunk_t[:chunk_filled]
 
     def _global_topk_joint_streaming(
         self,
@@ -438,7 +478,6 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
         # Compute base cap from group strategy
-        print(f"Number of groups for candidate cap: {num_groups}")
         effective_cap = num_groups * self.per_group_cap
         if self.q is not None:
             cap_q = max(1, int(math.ceil((1.0 - self.q) * total)))
@@ -589,6 +628,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head",
                  rel_block_size: int = 1,
+                 head_block_size: int = 256,
                  max_num_workers: int | None = None,
                 #  num_threads: int | None = None
                  ):
@@ -603,8 +643,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         # new knobs for memory and parallelism
         self.rel_block_size = max(1, int(rel_block_size))
-        self.num_processes = max_num_workers if max_num_workers and max_num_workers > 0 else os.cpu_count() // 2
-        self.head_block_size = 256  # default head block size for memory control
+        self.head_block_size = max(1, int(head_block_size))
 
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
@@ -620,7 +659,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
     @staticmethod
     def _process_chunk(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, log_p_t_given_h_2d: torch.Tensor, alpha: float, beta: float, k: int, E: int, R: int, head_block_size: int):
         """Worker function for parallel chunk processing with tail prediction."""
-        torch.set_num_threads(1)  # Minimal threads per worker
+        torch.set_num_threads(1)  # 1 thread per worker as we parallelize over processes, otherwise it breaks
         C = r1 - r0
         gamma = 1.0 - alpha - beta
         a_h = float(alpha)
@@ -744,7 +783,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
-        self.pool = self._get_or_create_pool(min(self.num_processes, math.ceil(R / self.rel_block_size)))
+        self.pool = self._get_or_create_pool(min(self.max_num_workers, math.ceil(R / self.rel_block_size)))
         chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
         results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, self.alpha, self.beta, k_total, E, R, self.head_block_size)) for r0, r1 in chunk_ranges]
         # results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk2, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R)) for r0, r1 in chunk_ranges]
@@ -862,7 +901,6 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
         # Compute base cap from group strategy
-        print(f"Number of groups for candidate cap: {num_groups}")
         effective_cap = num_groups * self.per_group_cap
         if self.q is not None:
             cap_q = max(1, int(math.ceil((1.0 - self.q) * total)))
