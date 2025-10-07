@@ -844,10 +844,6 @@ def create_and_run_training_exp_two_phases(args):
     # create group mappings for group ids
     all_triples = torch.cat([train_triples, val_triples, test_triples, candidates_train, candidates_val, candidates_test], dim=0)
     get_group_ids = triple_lib.generate_group_id_function(all_triples, args.group_strategy)
-    print(f"Unique {args.group_strategy} in all triples: {all_triples[:, args.group_strategy].unique().size(0)}")
-    print(f"Unique {args.group_strategy} in train triples: {train_triples[:, args.group_strategy].unique().size(0)}")
-    print(f"Unique {args.group_strategy} in val triples: {val_triples[:, args.group_strategy].unique().size(0)}")
-    print(f"Unique {args.group_strategy} in test triples: {test_triples[:, args.group_strategy].unique().size(0)}")
     del all_triples # free memory
 
     # Candidate statistics
