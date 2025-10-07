@@ -10,6 +10,7 @@ from functools import partial
 from typing import Callable
 
 import torch
+torch.set_float32_matmul_precision('high') # Set high precision for matrix multiplications for fast training on tensor cores
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
