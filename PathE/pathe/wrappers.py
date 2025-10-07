@@ -350,48 +350,28 @@ class PathEModelWrapperTriples(LightningModule):
         #     "attachedavg", format="png")
 
     def calculate_and_log_val_relation_metrics(self, triples, logits):
-        self.val_relationMRR(triples=triples,
-                             scores=logits)
-        self.val_relationHitsAt1(triples=triples,
-                                 scores=logits)
-        self.val_relationHitsAt3(triples=triples,
-                                 scores=logits)
-        self.val_relationHitsAt5(triples=triples,
-                                 scores=logits)
-        self.val_relationHitsAt10(triples=triples,
-                                  scores=logits)
-        self.log("valid_mrr", self.val_relationMRR, on_step=False,
-                 on_epoch=True, prog_bar=True)
-        self.log("valid_hits1", self.val_relationHitsAt1, on_step=False,
-                 on_epoch=True)
-        self.log("valid_hits3", self.val_relationHitsAt3, on_step=False,
-                 on_epoch=True)
-        self.log("valid_hits5", self.val_relationHitsAt5, on_step=False,
-                 on_epoch=True)
-        self.log("valid_hits10", self.val_relationHitsAt10, on_step=False,
-                 on_epoch=True)
+        self.val_relationMRR(triples=triples, scores=logits)
+        self.val_relationHitsAt1(triples=triples, scores=logits)
+        self.val_relationHitsAt3(triples=triples, scores=logits)
+        self.val_relationHitsAt5(triples=triples, scores=logits)
+        self.val_relationHitsAt10(triples=triples, scores=logits)
+        self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
+        self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
+        self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
+        self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True)
 
     def calculate_and_log_test_relation_metrics(self, triples, logits):
-        self.test_relationMRR(triples=triples,
-                              scores=logits)
-        self.test_relationHitsAt1(triples=triples,
-                                  scores=logits)
-        self.test_relationHitsAt3(triples=triples,
-                                  scores=logits)
-        self.test_relationHitsAt5(triples=triples,
-                                  scores=logits)
-        self.test_relationHitsAt10(triples=triples,
-                                   scores=logits)
-        self.log("test_mrr", self.test_relationMRR, on_step=False,
-                 on_epoch=True)
-        self.log("test_hits1", self.test_relationHitsAt1, on_step=False,
-                 on_epoch=True)
-        self.log("test_hits3", self.test_relationHitsAt3, on_step=False,
-                 on_epoch=True)
-        self.log("test_hits5", self.test_relationHitsAt5, on_step=False,
-                 on_epoch=True)
-        self.log("test_hits10", self.test_relationHitsAt10, on_step=False,
-                 on_epoch=True)
+        self.test_relationMRR(triples=triples, scores=logits)
+        self.test_relationHitsAt1(triples=triples, scores=logits)
+        self.test_relationHitsAt3(triples=triples, scores=logits)
+        self.test_relationHitsAt5(triples=triples, scores=logits)
+        self.test_relationHitsAt10(triples=triples, scores=logits)
+        self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
+        self.log("test_hits1", self.test_relationHitsAt1, on_step=False, on_epoch=True)
+        self.log("test_hits3", self.test_relationHitsAt3, on_step=False, on_epoch=True)
+        self.log("test_hits5", self.test_relationHitsAt5, on_step=False, on_epoch=True)
+        self.log("test_hits10", self.test_relationHitsAt10, on_step=False, on_epoch=True)
 
     def calculate_and_log_val_links_metrics(self, rp_triples, logits_rp):
         if self.val_num_negatives == 0:
