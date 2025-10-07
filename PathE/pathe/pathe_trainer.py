@@ -42,79 +42,22 @@ MAX_WORKERS_TEST = 16
 
 def predict_all_old(trainer, model, loader, ckpt_path=None):
     """Old version: Create a new dataloader without persistent workers for more speed, with performance measuring."""
-    import time
-    t0 = time.time()
-    
     # Create a new dataloader without persistent workers for more speed
     pred_loader = torch.utils.data.DataLoader(
         loader.dataset, batch_size=loader.batch_size, 
         collate_fn=loader.collate_fn, shuffle=False,
         pin_memory=loader.pin_memory, 
         num_workers=min(loader.num_workers, MAX_WORKERS_PREDICTION),  # Cap workers globally
-        persistent_workers=False
+        persistent_workers=False # disable persistent workers for prediction as they are not needed afterwards
     )
-    t1 = time.time()
-    print(f"  DataLoader creation took: {t1-t0:.5f}s")
-
     outs = trainer.predict(model, dataloaders=pred_loader, ckpt_path=ckpt_path)
-    t2 = time.time()
-    print(f"  Prediction took: {t2-t1:.5f}s")
-    
+
     tuples_all = torch.cat([o["tuples"].cpu() for o in outs], dim=0)
     logits_all = torch.cat([o["logits_rp"].cpu() for o in outs], dim=0)
     logits_tp_all = torch.cat([o["logits_tp"].cpu() for o in outs], dim=0)
-    t3 = time.time()
-    print(f"  Concatenation took: {t3-t2:.5f}s (total: {t3-t0:.5f}s)")
     
     del outs, pred_loader
     return tuples_all, logits_all, logits_tp_all
-
-
-def predict_all(trainer, model, loader, ckpt_path=None):
-    """Predict using the original loader directly, with optimized concatenation."""
-    import time
-    t0 = time.time()
-    
-    # Run prediction
-    outs = trainer.predict(model, dataloaders=loader, ckpt_path=ckpt_path)
-    t1 = time.time()
-    print(f"  Prediction took: {t1-t0:.2f}s")
-    
-    if not outs:
-        return torch.empty(0), torch.empty(0), torch.empty(0)
-    
-    # Get shapes from first output
-    tuples_shape = outs[0]["tuples"].shape[1:]
-    logits_rp_shape = outs[0]["logits_rp"].shape[1:]
-    logits_tp_shape = outs[0]["logits_tp"].shape[1:]
-    
-    # Estimate total samples (assuming uniform batch sizes)
-    total_samples = sum(o["tuples"].shape[0] for o in outs)
-    
-    # Pre-allocate tensors on CPU (or GPU if memory allows)
-    device = torch.device("cpu")  # Change to "cuda" if you have GPU memory headroom
-    tuples_all = torch.empty((total_samples,) + tuples_shape, dtype=outs[0]["tuples"].dtype, device=device)
-    logits_all = torch.empty((total_samples,) + logits_rp_shape, dtype=outs[0]["logits_rp"].dtype, device=device)
-    logits_tp_all = torch.empty((total_samples,) + logits_tp_shape, dtype=outs[0]["logits_tp"].dtype, device=device)
-    
-    # Fill pre-allocated tensors incrementally
-    start_idx = 0
-    for o in outs:
-        batch_size = o["tuples"].shape[0]
-        end_idx = start_idx + batch_size
-        
-        tuples_all[start_idx:end_idx] = o["tuples"].to(device, non_blocking=True)
-        logits_all[start_idx:end_idx] = o["logits_rp"].to(device, non_blocking=True)
-        logits_tp_all[start_idx:end_idx] = o["logits_tp"].to(device, non_blocking=True)
-        
-        start_idx = end_idx
-    
-    del outs  # Free memory early
-    t2 = time.time()
-    print(f"  Concatenation took: {t2-t1:.5f}s (total: {t2-t0:.5f}s)")
-    
-    return tuples_all, logits_all, logits_tp_all
-
 
 def create_and_run_training_exp_tuples(args):
     """
