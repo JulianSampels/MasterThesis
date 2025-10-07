@@ -25,6 +25,7 @@ class BaseCandidateGenerator(ABC):
         if self.pool is None or self.pool._processes < num_processes:
             if self.pool is not None:
                 self.close_pool()
+            logger.info(f"Creating multiprocessing pool with {num_processes} processes. This may take a while...")
             self.pool = mp.Pool(processes=num_processes)
         return self.pool
 
@@ -254,7 +255,7 @@ class BaseCandidateGenerator(ABC):
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
-                 rel_block_size: int = 4,
+                 rel_block_size: int = 1,
                  max_num_workers: int | None = None,
                 #  num_threads: int | None = None
                  ):
@@ -334,7 +335,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Prepare chunk ranges
         chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
         # Submit jobs
-        results = [self.pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, self.alpha, k_total, E, R)) for r0, r1 in tqdm(chunk_ranges, desc="Submitting jobs to pool", unit="chunk", leave=True)]
+        results = [self.pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, self.alpha, k_total, E, R)) for r0, r1 in chunk_ranges]
         # Collect and merge
         for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
             vals_chunk, r_idx, h_idx, t_idx = res.get()
@@ -587,7 +588,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head",
-                 rel_block_size: int = 4,
+                 rel_block_size: int = 1,
                  max_num_workers: int | None = None,
                 #  num_threads: int | None = None
                  ):
@@ -745,7 +746,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
         self.pool = self._get_or_create_pool(min(self.num_processes, math.ceil(R / self.rel_block_size)))
         chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
-        results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, self.alpha, self.beta, k_total, E, R, self.head_block_size)) for r0, r1 in tqdm(chunk_ranges, desc="Submitting jobs to pool", unit="chunk", leave=True)]
+        results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, self.alpha, self.beta, k_total, E, R, self.head_block_size)) for r0, r1 in chunk_ranges]
         # results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk2, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, alpha, beta, k, E, R)) for r0, r1 in chunk_ranges]
         for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
             vals_chunk, r_idx, h_idx, t_idx = res.get()
