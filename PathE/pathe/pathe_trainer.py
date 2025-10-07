@@ -14,6 +14,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
+import gc
 
 from .candidates import CandidateGeneratorGlobal, CandidateGeneratorGlobalWithTail, CandidateGeneratorPerHead
 
@@ -34,6 +35,10 @@ from . import data_utils as du
 
 logger = logging.getLogger(__name__)
 
+# Global max workers to avoid excessive spawning when num_workers is large
+MAX_WORKERS_PREDICTION = 16
+MAX_WORKERS_TEST = 16
+
 
 def predict_all_old(trainer, model, loader, ckpt_path=None):
     """Old version: Create a new dataloader without persistent workers for more speed, with performance measuring."""
@@ -45,7 +50,7 @@ def predict_all_old(trainer, model, loader, ckpt_path=None):
         loader.dataset, batch_size=loader.batch_size, 
         collate_fn=loader.collate_fn, shuffle=False,
         pin_memory=loader.pin_memory, 
-        num_workers=loader.num_workers,
+        num_workers=min(loader.num_workers, MAX_WORKERS_PREDICTION),  # Cap workers globally
         persistent_workers=False
     )
     t1 = time.time()
@@ -274,7 +279,7 @@ def create_and_run_training_exp_tuples(args):
     te_dataloader = torch.utils.data.DataLoader(
         test_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=use_cuda, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=min(args.num_workers, MAX_WORKERS_TEST),
         persistent_workers=False,
         sampler=NegativeTripleSampler(te_positives, args.val_num_negatives))
 
@@ -543,7 +548,7 @@ def create_and_run_training_exp_triples(args):
     te_dataloader = torch.utils.data.DataLoader(
         test_set, batch_size=args.val_batch_size,
         collate_fn=collate_fn, shuffle=False,
-        pin_memory=use_cuda, num_workers=args.num_workers,
+        pin_memory=use_cuda, num_workers=min(args.num_workers, MAX_WORKERS_TEST),
         persistent_workers=False,
         sampler=NegativeTripleSampler(te_positives, args.val_num_negatives))
 
@@ -752,7 +757,7 @@ def create_and_run_training_exp_two_phases(args):
         persistent_workers=use_persist)
     te_loader_t = torch.utils.data.DataLoader(
         test_set_t, batch_size=args.val_batch_size, collate_fn=collate_fn,
-        shuffle=False, pin_memory=use_cuda, num_workers=args.num_workers,
+        shuffle=False, pin_memory=use_cuda, num_workers=min(args.num_workers, MAX_WORKERS_TEST),
         persistent_workers=False)
 
     # Model + wrapper
@@ -854,9 +859,9 @@ def create_and_run_training_exp_two_phases(args):
     # ---------------------------
     stageprint(f"Phase 1b: Predicting over all tuples and building candidates...")
 
-    tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
-    va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
-    te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
+    # tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
+    # va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
+    # te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
     tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all_old(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
     va_tuples_all, va_logits_all, va_logits_tp_all = predict_all_old(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
@@ -909,9 +914,12 @@ def create_and_run_training_exp_two_phases(args):
     print()
     candidate_generator.print_candidate_statistics(candidates_test, get_group_ids(candidates_test), test_triples, get_group_ids(test_triples), test_set_t.relation_maps, name="Test")
 
-    # Free large tensors before Phase 3
+    # Cleanup Phase 1 resources to stop workers and free memory
+    del tr_loader_t, va_loader_t, te_loader_t
+    del train_set_t, valid_set_t, test_set_t
     if args.device == "cuda":
         torch.cuda.empty_cache()
+    gc.collect()
 
     # ---------------------------
     # Phase 3: Triple training on candidates (no negatives) and test on gold
@@ -971,7 +979,7 @@ def create_and_run_training_exp_two_phases(args):
     te_loader_tri = torch.utils.data.DataLoader(
         test_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
         shuffle=True, pin_memory=use_cuda,
-        num_workers=args_phase3.num_workers,
+        num_workers=min(args_phase3.num_workers, MAX_WORKERS_TEST),
         persistent_workers=False)
 
     model_tri = PathEModelTriples(
@@ -1067,7 +1075,6 @@ def create_and_run_training_exp_two_phases(args):
 
     # Cleanup before exit
     print("Cleaning up resources...")
-    import gc
     gc.collect()
     if args.device == "cuda":
         torch.cuda.empty_cache()
