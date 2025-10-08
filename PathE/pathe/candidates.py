@@ -1027,7 +1027,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     Assumes CandidateGeneratorGlobalWithTail is used.
     """
     # Define candidate sizes (adjust as needed)
-    candidate_sizes = list(range(10, 310, 10)) + [1]
+    candidate_sizes = list(range(10, 310, 10)) + [1] + list(range(310, 610, 20))
     
     print(f"Grid search over {len(candidate_sizes)} candidate sizes.")
     
