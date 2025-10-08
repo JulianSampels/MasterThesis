@@ -167,6 +167,7 @@ class BaseCandidateGenerator(ABC):
         gold_group_ids: torch.Tensor,
         relation_maps: RelationMaps,
         name: str = "Set",
+        print_results: bool = True,
     ) -> None:
         """
         Print per-group (macro) coverage stats by calling analyze_total_coverage per group,
@@ -233,25 +234,25 @@ class BaseCandidateGenerator(ABC):
             print(f"[Coverage::{name}] No groups with gold triples. Per-group coverage unavailable.")
             return
         
-        
-        # Print statistics
-        print(f"{f'[Group count::{name}].':<50}{len(per_group_cov)}")
-        print(f"{f'[Coverage per group::{name}] Macro. ':<50}"
-            f"Avg: {statistics.mean(per_group_cov.values()):.4f} | "
-            f"Min: {min(per_group_cov.values()):.4f} | "
-            f"Max: {max(per_group_cov.values()):.4f} | "
-            f"Deciles: {[round(q, 2) for q in statistics.quantiles(per_group_cov.values(), n=10)]}")
-        print(f"{f'[Density per group::{name}] Density. ':<50}"
-            f"Avg: {statistics.mean(per_group_density.values()):.4f} | "
-            f"Min: {min(per_group_density.values()):.4f} | "
-            f"Max: {max(per_group_density.values()):.4f} | "
-            f"Deciles: {[round(q, 2) for q in statistics.quantiles(per_group_density.values(), n=10)]}")
-        print(f"{f'[Candidate Distribution over groups::{name}]. ':<50}"
-            f"Avg: {statistics.mean(per_group_count.values()):.2f} | "
-            f"Min: {min(per_group_count.values())} | "
-            f"Max: {max(per_group_count.values())} | "
-            f"Deciles: {[int(q) for q in statistics.quantiles(per_group_count.values(), n=10)]}")
-        return
+        if print_results:
+            # Print statistics
+            print(f"{f'[Group count::{name}].':<50}{len(per_group_cov)}")
+            print(f"{f'[Coverage per group::{name}] Macro. ':<50}"
+                f"Avg: {statistics.mean(per_group_cov.values()):.4f} | "
+                f"Min: {min(per_group_cov.values()):.4f} | "
+                f"Max: {max(per_group_cov.values()):.4f} | "
+                f"Deciles: {[round(q, 2) for q in statistics.quantiles(per_group_cov.values(), n=10)]}")
+            print(f"{f'[Density per group::{name}] Density. ':<50}"
+                f"Avg: {statistics.mean(per_group_density.values()):.4f} | "
+                f"Min: {min(per_group_density.values()):.4f} | "
+                f"Max: {max(per_group_density.values()):.4f} | "
+                f"Deciles: {[round(q, 2) for q in statistics.quantiles(per_group_density.values(), n=10)]}")
+            print(f"{f'[Candidate Distribution over groups::{name}]. ':<50}"
+                f"Avg: {statistics.mean(per_group_count.values()):.2f} | "
+                f"Min: {min(per_group_count.values())} | "
+                f"Max: {max(per_group_count.values())} | "
+                f"Deciles: {[int(q) for q in statistics.quantiles(per_group_count.values(), n=10)]}")
+        return statistics.mean(per_group_cov.values()), statistics.mean(per_group_density.values())
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
@@ -909,3 +910,87 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
                 scores = scores[best:best+1]
 
         return candidates, scores
+
+from . import triple_lib
+
+def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
+    """
+    Perform grid search over alpha, beta, temperature for CandidateGeneratorGlobalWithTail
+    to maximize total coverage and average recall per group on the test set.
+    Initializes the candidate generator once and manually changes alpha, beta, temperature.
+    Assumes CandidateGeneratorGlobalWithTail is used.
+    """
+    # Define grid ranges (adjust as needed)
+    L = list(range(0, 11, 1))
+    alpha_values = [a / 10.0 for a in L]
+    beta_values = [b / 10.0 for b in L]
+    temperature_values = [1.0]
+    # alpha_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+    # beta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+    # temperature_values = [0.5, 1.0, 2.0]
+    
+    # Filter combinations to ensure alpha + beta <= 1.0
+    param_combinations = [(a, b, t) for a in alpha_values for b in beta_values for t in temperature_values if a + b <= 1.0]
+    # param_combinations = list(itertools.product(alpha_values, beta_values, temperature_values))
+    print(f"Grid search over {len(param_combinations)} parameter combinations.")
+    
+    best_total_cov = -float('inf')
+    best_params_total = None
+    best_per_group = -float('inf')
+    best_params_per_group = None
+    results = []
+    
+    # Compute num_groups for test (only needed for test)
+    num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
+    
+    # Initialize candidate generator once with dummy values
+    candidate_generator = CandidateGeneratorGlobalWithTail(
+        p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=1.0, alpha=0.5, beta=0.5,  # dummy initial values
+        per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers
+    )
+
+    test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
+    
+    for alpha, beta, temp in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
+        # Manually change the parameters
+        candidate_generator.alpha = alpha
+        candidate_generator.beta = beta
+        candidate_generator.temperature = temp
+        
+        # Generate candidates only for test set
+        candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
+        
+        # Compute total coverage on test
+        total_cov, _ = candidate_generator.analyze_total_coverage(candidates_test, test_triples, test_set_t.relation_maps, print_results=False)
+        
+        # Compute per-group coverage on test (average recall per group)
+        # Assuming analyze_coverage_per_group is modified to return the average recall
+        avg_recall_per_group, _ = candidate_generator.analyze_coverage_per_group(
+            candidates_test, 
+            triple_lib.generate_group_id_function(torch.cat([test_triples, candidates_test], dim=0), args.group_strategy)(candidates_test), 
+            test_triples, 
+            test_triples_group_ids, 
+            test_set_t.relation_maps, 
+            name="Test",
+            print_results=False
+        )
+        
+        results.append((alpha, beta, temp, total_cov, avg_recall_per_group))
+        
+        if total_cov > best_total_cov:
+            best_total_cov = total_cov
+            best_params_total = (alpha, beta, temp)
+        
+        if avg_recall_per_group > best_per_group:
+            best_per_group = avg_recall_per_group
+            best_params_per_group = (alpha, beta, temp)
+        tqdm.write(f"Params: alpha={alpha}\tbeta={beta}\ttemp={temp}\t=> total_cov={total_cov:<4.4f}\tavg_recall_per_group={avg_recall_per_group:<4.4f}")
+
+    print(f"Best params for total coverage: alpha={best_params_total[0]}, beta={best_params_total[1]}, temperature={best_params_total[2]}, total_cov={best_total_cov:<.4f}")
+    print(f"Best params for per-group coverage: alpha={best_params_per_group[0]}, beta={best_params_per_group[1]}, temperature={best_params_per_group[2]}, avg_recall_per_group={best_per_group:<.4f}")
+    print()
+    results_sorted = sorted(results, key=lambda x: x[3], reverse=True)
+    print("All results sorted by total_cov (alpha, beta, temp, total_cov, avg_recall_per_group):")
+    for row in results_sorted:
+        print(row)
+    return best_params_total, best_params_per_group

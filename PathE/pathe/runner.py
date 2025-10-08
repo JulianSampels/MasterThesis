@@ -80,7 +80,7 @@ def main():
     # Parameters for candidate triple generation and filtering
     parser.add_argument('--candidates_threshold_p', type=float, default=None,
                         help='Global probability threshold for candidate triples (keep those with P >= p).')
-    parser.add_argument('--candidates_quantile_q', type=float, default=0.99,
+    parser.add_argument('--candidates_quantile_q', type=float, default=None,
                         help='Global quantile threshold for candidate triples (keep top (1-q) quantile).')
     parser.add_argument('--candidates_temperature', type=float, default=1.0,
                         help='Temperature for candidate probability calibration.')
