@@ -640,8 +640,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
-        self.alpha = alpha                      # weight for head log-probs P(r|h)
-        self.beta = beta                        # weight for tail prediction P(t|h)
+        self.alpha = alpha                      # weight for head vs tail
+        self.beta = beta                        # weight for tail prediction prob
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
 
@@ -665,10 +665,9 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         """Worker function for parallel chunk processing with tail prediction."""
         torch.set_num_threads(1)  # 1 thread per worker as we parallelize over processes, otherwise it breaks
         C = r1 - r0
-        gamma = 1.0 - alpha - beta
-        a_h = float(alpha)
-        a_t_pred = float(beta)
-        a_t_inv = float(gamma)
+        a_h = (1 - beta) * alpha
+        a_t_pred = beta
+        a_t_inv = (1 - beta) * (1 - alpha)
         B = max(1, int(head_block_size))
 
         # Global buffers for this chunk
@@ -807,8 +806,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
           1. Compute an effective cap from quantile q (cap_q = ceil((1-q) * E*R*E)), and/or cap_candidates.
              The final cap is min(cap_candidates, cap_q) if both are set.
           2. Compute joint log-probabilities for all (h, r, t) triples using:
-                joint(h, r, t) = alpha * log P(r|h) + beta * log P(t|h) + gamma * log P(r^{-1}|t)
-                where gamma = 1 - alpha - beta
+                joint(h, r, t) = a_h * log P(r|h) + a_t_inv * log P(r^{-1}|t) + a_t_pred * log P(t|h)
+                where a_h = (1-beta)*alpha, a_t_inv = (1-beta)*(1-alpha), a_t_pred = beta
              without materializing the full (E, R, E) tensor.
           3. Use a streaming top-k algorithm to keep only the highest-probability candidates globally.
           4. Stack all candidate triples and their scores.
@@ -823,8 +822,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             p: Optional[float], global probability threshold for candidate filtering.
             q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
             temperature: float, softmax temperature for calibration.
-            alpha: float in [0,1], weight for head log-probs P(r|h).
-            beta: float in [0,1], weight for tail prediction P(t|h).
+            alpha: float in [0,1], weight for head vs tail.
+            beta: float, weight for tail prediction probability.
             cap_candidates: Optional[int], hard cap on number of candidates.
 
         Returns:
@@ -915,6 +914,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         return candidates, scores
 
 from . import triple_lib
+import itertools
 
 def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
@@ -932,9 +932,7 @@ def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all,
     # beta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
     # temperature_values = [0.5, 1.0, 2.0]
     
-    # Filter combinations to ensure alpha + beta <= 1.0
-    param_combinations = [(a, b, t) for a in alpha_values for b in beta_values for t in temperature_values if a + b <= 1.0]
-    # param_combinations = list(itertools.product(alpha_values, beta_values, temperature_values))
+    param_combinations = list(itertools.product(temperature_values, beta_values, alpha_values))
     print(f"Grid search over {len(param_combinations)} parameter combinations.")
     
     best_total_cov = -float('inf')
@@ -954,7 +952,7 @@ def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all,
 
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
-    for alpha, beta, temp in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
+    for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
         # Manually change the parameters
         candidate_generator.alpha = alpha
         candidate_generator.beta = beta
