@@ -260,7 +260,7 @@ class BaseCandidateGenerator(ABC):
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
                  rel_block_size: int = 1,
-                 head_block_size: int = 256,
+                 head_block_size: int = 1024,
                  max_num_workers: int | None = None,
                  ):
         super().__init__(max_num_workers=max_num_workers)
@@ -632,7 +632,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head",
                  rel_block_size: int = 1,
-                 head_block_size: int = 256,
+                 head_block_size: int = 1024,
                  max_num_workers: int | None = None,
                 #  num_threads: int | None = None
                  ):
@@ -949,6 +949,8 @@ def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all,
         p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=1.0, alpha=0.5, beta=0.5,  # dummy initial values
         per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers
     )
+
+    candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
 
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
