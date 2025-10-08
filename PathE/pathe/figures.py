@@ -35,10 +35,27 @@ def create_heatmaps(results, save_dir="./figures"):
         total_cov_matrix[i, j] = total_cov
         recall_matrix[i, j] = avg_recall
 
+    # Function to create annot matrix with bold max
+    def create_annot_matrix(matrix):
+        max_val = np.nanmax(matrix)
+        annot = []
+        for row in matrix:
+            annot_row = []
+            for val in row:
+                if np.isnan(val):
+                    annot_row.append("")
+                elif val == max_val:
+                    annot_row.append(r'$\mathbf{' + f'{val:.3f}' + '}$')
+                else:
+                    annot_row.append(f'{val:.3f}')
+            annot.append(annot_row)
+        return annot
+
     # Plot total coverage heatmap
     plt.figure(figsize=(8, 6))
+    annot_total = create_annot_matrix(total_cov_matrix)
     sns.heatmap(total_cov_matrix, xticklabels=[f'{a:.1f}' for a in alpha_grid], 
-                yticklabels=[f'{b:.1f}' for b in beta_grid], annot=True, fmt='.3f', cmap='viridis', vmin=0, vmax=1)
+                yticklabels=[f'{b:.1f}' for b in beta_grid], annot=annot_total, fmt='', cmap='viridis', vmin=0, vmax=1)
     plt.xlabel('Alpha')
     plt.ylabel('Beta')
     plt.title('Total Coverage Heatmap')
@@ -47,8 +64,9 @@ def create_heatmaps(results, save_dir="./figures"):
 
     # Plot average recall per group heatmap
     plt.figure(figsize=(8, 6))
+    annot_recall = create_annot_matrix(recall_matrix)
     sns.heatmap(recall_matrix, xticklabels=[f'{a:.1f}' for a in alpha_grid], 
-                yticklabels=[f'{b:.1f}' for b in beta_grid], annot=True, fmt='.3f', cmap='viridis', vmin=0, vmax=1)
+                yticklabels=[f'{b:.1f}' for b in beta_grid], annot=annot_recall, fmt='', cmap='viridis', vmin=0, vmax=1)
     plt.xlabel('Alpha')
     plt.ylabel('Beta')
     plt.title('Average Coverage per Group Heatmap')
