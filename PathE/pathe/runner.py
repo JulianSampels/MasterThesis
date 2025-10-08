@@ -96,6 +96,8 @@ def main():
                         help='Type of candidate generator to use: global (threshold/quantile-based), global_with_tail (includes tail logits), per_head (top-k per head).')
     parser.add_argument('--group_strategy', type=int, nargs='+', default=[0],
                         help='Columns to group by for candidate generation (e.g., [0] for head entities).')
+    parser.add_argument('--figure_dir', action='store', default="./figures",
+                        help='Directory where figures will be saved.')
 
     # Logging and checkpointing
     parser.add_argument('--log_dir', action='store', default="experiments",

@@ -1,0 +1,58 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+
+def create_heatmaps(results, save_dir="./figures"):
+    """
+    Create heatmaps for total coverage and average recall per group from grid search results.
+    Also saves the results to a CSV file.
+
+    Args:
+        results: List of tuples (alpha, beta, temp, total_cov, avg_recall_per_group)
+        save_dir: Directory to save the PNG images and results file
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Save results to CSV
+    with open(f'{save_dir}/results.csv', 'w') as f:
+        f.write("alpha,beta,temp,total_cov,avg_recall_per_group\n")
+        for row in results:
+            f.write(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]}\n")
+    
+    # Extract unique alphas and betas
+    alpha_grid = sorted(set([r[0] for r in results]))  # Unique alphas
+    beta_grid = sorted(set([r[1] for r in results]))   # Unique betas
+
+    # Create 2D arrays for heatmaps
+    total_cov_matrix = np.full((len(beta_grid), len(alpha_grid)), np.nan)
+    recall_matrix = np.full((len(beta_grid), len(alpha_grid)), np.nan)
+
+    for alpha, beta, temp, total_cov, avg_recall in results:
+        i = beta_grid.index(beta)
+        j = alpha_grid.index(alpha)
+        total_cov_matrix[i, j] = total_cov
+        recall_matrix[i, j] = avg_recall
+
+    # Plot total coverage heatmap
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(total_cov_matrix, xticklabels=[f'{a:.1f}' for a in alpha_grid], 
+                yticklabels=[f'{b:.1f}' for b in beta_grid], annot=True, fmt='.3f', cmap='viridis', vmin=0, vmax=1)
+    plt.xlabel('Alpha')
+    plt.ylabel('Beta')
+    plt.title('Total Coverage Heatmap')
+    plt.savefig(f'{save_dir}/total_coverage_heatmap.svg')  # Saves as SVG image
+    plt.close()
+
+    # Plot average recall per group heatmap
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(recall_matrix, xticklabels=[f'{a:.1f}' for a in alpha_grid], 
+                yticklabels=[f'{b:.1f}' for b in beta_grid], annot=True, fmt='.3f', cmap='viridis', vmin=0, vmax=1)
+    plt.xlabel('Alpha')
+    plt.ylabel('Beta')
+    plt.title('Average Coverage per Group Heatmap')
+    plt.savefig(f'{save_dir}/avg_coverage_heatmap.svg')  # Saves as SVG image
+    plt.close()
+
+    print(f"Heatmaps and results saved to {save_dir}/")

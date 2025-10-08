@@ -915,6 +915,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
 from . import triple_lib
 import itertools
+from .figures import create_heatmaps
 
 def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
@@ -945,13 +946,17 @@ def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all,
     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
     
     # Initialize candidate generator once with dummy values
-    candidate_generator = CandidateGeneratorGlobalWithTail(
-        p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=1.0, alpha=0.5, beta=0.5,  # dummy initial values
-        per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers
-    )
+    if args.candidate_generator == 'global':
+        candidate_generator = CandidateGeneratorGlobal(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers)
+    elif args.candidate_generator == 'global_with_tail':
+        candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers)
+    elif args.candidate_generator == 'per_head':
+        candidate_generator = CandidateGeneratorPerHead(per_group_cap=args.candidates_cap)
+    else:
+        raise ValueError(f"Unknown candidate_generator: {args.candidate_generator}")
 
+    # Initialize multiprocessing pool and other resources once
     candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
-
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
@@ -996,4 +1001,9 @@ def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all,
     print("All results sorted by total_cov (alpha, beta, temp, total_cov, avg_recall_per_group):")
     for row in results_sorted:
         print(row)
+    
+    # Create heatmaps
+    filedir = args.figure_dir + f"/candidate_grid_search/{args.expname}/{args.candidate_generator}/{args.candidates_normalize_mode}"
+    create_heatmaps(results, save_dir=filedir)
+    
     return best_params_total, best_params_per_group
