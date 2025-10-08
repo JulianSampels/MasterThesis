@@ -18,7 +18,7 @@ def create_heatmaps(results, save_dir="./figures"):
     os.makedirs(save_dir, exist_ok=True)
     
     # Save results to CSV
-    with open(f'{save_dir}/results.csv', 'w') as f:
+    with open(f'{save_dir}/grid_search_results.csv', 'w') as f:
         f.write("alpha,beta,temp,total_cov,avg_recall_per_group\n")
         for row in results:
             f.write(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]}\n")
@@ -90,6 +90,11 @@ def create_coverage_vs_size_plot(results, save_dir="./figures", filename="covera
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     results.sort(key=lambda x: x[0])  # Sort by candidate size
+    # Save results to CSV
+    with open(f'{save_dir}/coverage_vs_size_results.csv', 'w') as f:
+        f.write("candidate_size,total_cov,avg_recall_per_group\n")
+        for row in results:
+            f.write(f"{row[0]},{row[1]},{row[2]}\n")
     # Extract data
     candidate_sizes = [r[0] for r in results]
     total_covs = [r[1] for r in results]
@@ -110,7 +115,7 @@ def create_coverage_vs_size_plot(results, save_dir="./figures", filename="covera
     plt.savefig(f'{save_dir}/{filename}')
     plt.close()
     
-    print(f"Plot saved to {save_dir}/{filename}")
+    print(f"Plot and results saved to {save_dir}/")
 
 def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, save_dir="./figures", filename="relation_coverage_bar.svg"):
     """
