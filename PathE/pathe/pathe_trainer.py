@@ -807,6 +807,16 @@ def create_and_run_training_exp_two_phases(args):
     va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
     te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
+    # Run grid search on test set to find best alpha, beta, temperature
+    best_params_total, best_params_per_group = grid_search_candidates(
+        args, 
+        tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
+        va_tuples_all, va_logits_all, va_logits_tp_all, 
+        te_tuples_all, te_logits_all, te_logits_tp_all, 
+        train_triples, val_triples, test_triples, 
+        train_set_t, valid_set_t, test_set_t
+    )
+
     # Instantiate candidate generator based on args.candidate_generator
     if args.candidate_generator == 'global':
         candidate_generator = CandidateGeneratorGlobal(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers)
@@ -821,16 +831,6 @@ def create_and_run_training_exp_two_phases(args):
     num_groups_train = len(torch.unique(train_triples[:, args.group_strategy], dim=0))
     num_groups_val = len(torch.unique(val_triples[:, args.group_strategy], dim=0))
     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
-
-    # Run grid search on test set to find best alpha, beta, temperature
-    best_params_total, best_params_per_group = grid_search_candidates(
-        args, 
-        tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
-        va_tuples_all, va_logits_all, va_logits_tp_all, 
-        te_tuples_all, te_logits_all, te_logits_tp_all, 
-        train_triples, val_triples, test_triples, 
-        train_set_t, valid_set_t, test_set_t
-    )
 
     candidates_train, _scores_train = candidate_generator.generate_candidates(tr_tuples_all, tr_logits_all, train_set_t.relation_maps, num_groups_train, logits_tp=tr_logits_tp_all)
     candidates_val, _scores_val = candidate_generator.generate_candidates(va_tuples_all, va_logits_all, valid_set_t.relation_maps, num_groups_val, logits_tp=va_logits_tp_all)

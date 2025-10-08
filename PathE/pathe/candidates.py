@@ -25,7 +25,10 @@ class BaseCandidateGenerator(ABC):
         if self.pool is None or self.pool._processes < num_processes:
             if self.pool is not None:
                 self.close_pool()
-            logger.info(f"Creating multiprocessing pool with {num_processes} processes. This may take a while...")
+            if num_processes >= 64:
+                logger.warning(f"Creating a large pool with {num_processes} processes. This may take a while and lead to high memory usage.")
+            else:
+                logger.info(f"Creating multiprocessing pool with {num_processes} processes.")
             self.pool = mp.Pool(processes=num_processes)
         return self.pool
 
