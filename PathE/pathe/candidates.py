@@ -303,11 +303,11 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Preload per-relation tail inverse
         t_chunk = a_t * log_p_tail_2d[r0:r1, :]  # (C, E)
 
-        for r in tqdm(range(C), desc="Processing relations in chunk", leave=False):
+        for r in tqdm(range(C), desc="Processing relations in chunk", position=2, leave=False):
             r_global = r0 + r
             t_inv = t_chunk[r, :]  # (E,)
 
-            for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", leave=False):
+            for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", position=3, leave=False):
                 h1 = min(E, h0 + B)
                 head_term = a_h * log_p_head_2d[h0:h1, r_global]  # (B,)
                 V = head_term.unsqueeze(1) + t_inv.unsqueeze(0)  # (B, E)
@@ -682,11 +682,11 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Preload per-relation tail inverse
         t_inv_chunk = (a_t_inv * log_p_tail_2d[r0:r1, :])  # (C, E)
 
-        for r in tqdm(range(C), desc="Processing relations in chunk", leave=False):
+        for r in tqdm(range(C), desc="Processing relations in chunk", position=2, leave=False):
             r_global = r0 + r
             t_inv = t_inv_chunk[r, :]  # (E,)
 
-            for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", leave=False):
+            for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", position=3, leave=False):
                 h1 = min(E, h0 + B)
                 V = (a_t_pred * log_p_t_given_h_2d[h0:h1, :]) + t_inv.unsqueeze(0)  # (B, E)
                 v_top = V + (a_h * log_p_head_2d[h0:h1, r_global]).unsqueeze(1)     # (B, E)
@@ -935,6 +935,8 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     # alpha_values = [0.0, 0.25, 0.5, 0.75, 1.0]
     # beta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
     # temperature_values = [0.5, 1.0, 2.0]
+    # alpha_values = [0.5]
+    # beta_values = [0.5]
     
     param_combinations = list(itertools.product(temperature_values, beta_values, alpha_values))
     print(f"Grid search over {len(param_combinations)} parameter combinations.")
@@ -973,7 +975,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
             test_triples, 
             test_triples_group_ids, 
             test_set_t.relation_maps, 
-            name="Test",
+            name=f"alpha={alpha}_beta={beta}_temp={temp}",
             print_results=False
         )
         
@@ -1052,7 +1054,7 @@ def grid_search_candidate_sizes(candidate_generator, args, tr_tuples_all, tr_log
         candidates_group_ids = triple_lib.generate_group_id_function(candidates, args.group_strategy)(candidates)
         
         # Analyze total coverage
-        total_cov, _ = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, print_results=False)
+        total_cov, _ = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
         
         # Analyze coverage per group
         per_group_cov, _ = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, print_results=False)
