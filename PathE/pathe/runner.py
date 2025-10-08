@@ -90,7 +90,7 @@ def main():
                         help='Weight for relation vs tail log-prob in candidate scoring (used in global_with_tail generator).')
     parser.add_argument('--candidates_cap', type=int, default=100,
                         help='Maximum number of top-k candidates to keep per group (e.g., per head entity).')
-    parser.add_argument('--candidates_normalize_mode', choices=['per_head', 'global_joint', 'none'], default='per_head',
+    parser.add_argument('--candidates_normalize_mode', choices=['per_head', 'global_joint'], default='global_joint',
                         help='Normalization mode for candidate scoring: per_head (conditional probs), global_joint (joint probs), none (raw logits).')
     parser.add_argument('--candidate_generator', choices=['global', 'global_with_tail', 'per_head'], default='per_head',
                         help='Type of candidate generator to use: global (threshold/quantile-based), global_with_tail (includes tail logits), per_head (top-k per head).')

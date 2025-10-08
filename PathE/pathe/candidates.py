@@ -472,8 +472,8 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             z_tr = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1)  # (R, E)
             log_p_tail_2d = torch.log_softmax(z_tr.reshape(-1), dim=0).reshape(R, E)          # joint over all (r,t)
         else:  # "none" -> use temperature-scaled logits as log-scores
-            log_p_head_2d = torch.log(head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
-            log_p_tail_2d = torch.log(tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
+            log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
 
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
@@ -862,9 +862,9 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             z_ht = (logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
             log_p_t_given_h_2d = torch.log_softmax(z_ht.reshape(-1), dim=0).reshape(E, E)     # joint over (h,t)
         else:  # "none"
-            log_p_head_2d = torch.log(head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
-            log_p_tail_2d = torch.log(tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
-            log_p_t_given_h_2d = torch.log(logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
+            log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
+            log_p_t_given_h_2d = (logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
 
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
