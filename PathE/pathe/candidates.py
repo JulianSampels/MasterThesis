@@ -935,8 +935,8 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     # alpha_values = [0.0, 0.25, 0.5, 0.75, 1.0]
     # beta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
     # temperature_values = [0.5, 1.0, 2.0]
-    # alpha_values = [0.5]
-    # beta_values = [0.5]
+    alpha_values = [0.5]
+    beta_values = [0.5]
     
     param_combinations = list(itertools.product(temperature_values, beta_values, alpha_values))
     print(f"Grid search over {len(param_combinations)} parameter combinations.")
@@ -965,7 +965,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
         candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
         
         # Compute total coverage on test
-        total_cov, _ = candidate_generator.analyze_total_coverage(candidates_test, test_triples, test_set_t.relation_maps, print_results=False)
+        total_cov, _ = candidate_generator.analyze_total_coverage(candidates_test, test_triples, test_set_t.relation_maps, name=f"alpha={alpha}_beta={beta}_temp={temp}", print_results=False)
         
         # Compute per-group coverage on test (average recall per group)
         # Assuming analyze_coverage_per_group is modified to return the average recall
@@ -974,7 +974,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
             triple_lib.generate_group_id_function(torch.cat([test_triples, candidates_test], dim=0), args.group_strategy)(candidates_test), 
             test_triples, 
             test_triples_group_ids, 
-            test_set_t.relation_maps, 
+            test_set_t.relation_maps,
             name=f"alpha={alpha}_beta={beta}_temp={temp}",
             print_results=False
         )
@@ -1019,7 +1019,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     
     return best_params_total, best_params_per_group
 
-def grid_search_candidate_sizes(candidate_generator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
+def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
     Perform grid search over per_group_cap (candidate sizes) for CandidateGeneratorGlobalWithTail
     to analyze total coverage and average recall per group on the test set.
@@ -1042,6 +1042,8 @@ def grid_search_candidate_sizes(candidate_generator, args, tr_tuples_all, tr_log
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False):
+        if size > 400:
+            candidate_generator.head_block_size = 512  # reduce memory for large sizes
         # Manually set per_group_cap
         candidate_generator.per_group_cap = size
         
@@ -1055,7 +1057,7 @@ def grid_search_candidate_sizes(candidate_generator, args, tr_tuples_all, tr_log
         total_cov, _ = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
         
         # Analyze coverage per group
-        per_group_cov, _ = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, print_results=False)
+        per_group_cov, _ = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
         
         results.append((candidates.size(0), total_cov, per_group_cov))
         # tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
