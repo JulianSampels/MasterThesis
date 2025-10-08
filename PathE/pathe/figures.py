@@ -171,7 +171,7 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
     
     print(f"Plot saved to {save_dir}/{filename}")
 
-def create_candidates_per_head_by_degree_chart(candidates, entity_degrees, save_dir="./figures", filename="candidates_per_head_by_degree.svg", degree_bins=10):
+def create_candidates_per_head_by_degree_chart(candidates, context_triple_store, save_dir="./figures", filename="candidates_per_head_by_degree.svg", degree_bins=10):
     """
     Create a bar chart showing average number of candidates per head, grouped by entity degree bins.
     Saves the plot as an SVG file.
@@ -185,6 +185,12 @@ def create_candidates_per_head_by_degree_chart(candidates, entity_degrees, save_
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
+
+    # Compute entity degrees from relational context
+    entity_degrees = {}
+    for context in context_triple_store:
+        node_id = context[0].item()
+        entity_degrees[node_id] = entity_degrees.get(node_id, 0) + 1
     
     # Count candidates per head
     head_counts = defaultdict(int)
@@ -199,6 +205,7 @@ def create_candidates_per_head_by_degree_chart(candidates, entity_degrees, save_
     # Bin degrees
     if degrees:
         max_deg = max(degrees)
+        degree_bins = min(degree_bins, max_deg) if max_deg > 0 else degree_bins
         bins = np.linspace(0, max_deg, degree_bins + 1)
         bin_indices = np.digitize(degrees, bins) - 1
         bin_indices = np.clip(bin_indices, 0, degree_bins - 1)

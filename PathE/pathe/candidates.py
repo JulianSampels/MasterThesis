@@ -1010,14 +1010,12 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     
     # Generate candidates with best params for additional figures
     candidates, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
-    
-    # Compute entity degrees from relational context
-    entity_degrees = {i: len(train_set_t.context_triple_store[i]) for i in range(len(train_set_t.context_triple_store))}
+
     
     # Create additional figures
     create_relation_coverage_bar_chart(candidates, test_triples, test_set_t.relation_maps, save_dir=filedir)
     create_entity_coverage_bar_chart(candidates, test_triples, save_dir=filedir)
-    create_candidates_per_head_by_degree_chart(candidates, entity_degrees, save_dir=filedir)
+    create_candidates_per_head_by_degree_chart(candidates, train_set_t.context_triple_store, save_dir=filedir)
     
     return best_params_total, best_params_per_group
 
