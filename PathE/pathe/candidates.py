@@ -529,10 +529,12 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         return candidates, scores
 
 class CandidateGeneratorPerHead(BaseCandidateGenerator):
-    def __init__(self, per_group_cap: int):
+    def __init__(self, per_group_cap: int, alpha: float = 1.0):
         super().__init__()
         self.per_group_cap = per_group_cap    # number of (r,t) pairs to keep per head entity
+        self.alpha = alpha  # weight for head logits
         assert self.per_group_cap and self.per_group_cap > 0, "per_group_cap must be > 0"
+        assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
 
     def _aggregate_logits_per_entity(tuples_2col: torch.Tensor,
                                      logits_rp: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -606,7 +608,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
         
         for h_idx in tqdm(range(E), desc="Generating Top-K per head", leave=False):
             p_r_h = prob_r_given_h[h_idx]
-            scores = p_r_h.unsqueeze(1) * prob_rinv_T  # (R, E)
+            scores = (p_r_h ** self.alpha).unsqueeze(1) * (prob_rinv_T ** (1 - self.alpha))  # (R, E)
             flat = scores.view(-1)
             
             topk_vals, topk_idx = torch.topk(flat, k=k_eff, largest=True, sorted=True)
@@ -916,7 +918,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
 from . import triple_lib
 import itertools
-from .figures import create_heatmaps, create_coverage_vs_size_plot
+from .figures import create_heatmaps, create_coverage_vs_size_plot, create_relation_coverage_bar_chart, create_candidates_per_head_by_degree_chart, create_entity_coverage_bar_chart
 
 def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
@@ -947,7 +949,8 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
     
     # Initialize multiprocessing pool and other resources once
-    candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
+    if hasattr(candidate_generator, 'rel_block_size'):
+        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
@@ -983,15 +986,15 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
         if avg_recall_per_group > best_per_group:
             best_per_group = avg_recall_per_group
             best_params_per_group = (alpha, beta, temp)
-        tqdm.write(f"Params: alpha={alpha}\tbeta={beta}\ttemp={temp}\t=> total_cov={total_cov:<4.4f}\tavg_recall_per_group={avg_recall_per_group:<4.4f}")
+        # tqdm.write(f"Params: alpha={alpha}\tbeta={beta}\ttemp={temp}\t=> total_cov={total_cov:<4.4f}\tavg_recall_per_group={avg_recall_per_group:<4.4f}")
 
     print(f"Best params for total coverage: alpha={best_params_total[0]}, beta={best_params_total[1]}, temperature={best_params_total[2]}, total_cov={best_total_cov:<.4f}")
     print(f"Best params for per-group coverage: alpha={best_params_per_group[0]}, beta={best_params_per_group[1]}, temperature={best_params_per_group[2]}, avg_recall_per_group={best_per_group:<.4f}")
     print()
-    results_sorted = sorted(results, key=lambda x: x[3], reverse=True)
-    print("All results sorted by total_cov (alpha, beta, temp, total_cov, avg_recall_per_group):")
-    for row in results_sorted:
-        print(row)
+    # results_sorted = sorted(results, key=lambda x: x[3], reverse=True)
+    # print("All results sorted by total_cov (alpha, beta, temp, total_cov, avg_recall_per_group):")
+    # for row in results_sorted:
+    #     print(row)
     
     # Create heatmaps
     filedir = args.figure_dir + f"/candidate_grid_search/{args.expname}/{args.candidate_generator}/{args.candidates_normalize_mode}"
@@ -1001,6 +1004,18 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     candidate_generator.alpha = best_params_total[0]
     candidate_generator.beta = best_params_total[1]
     candidate_generator.temperature = best_params_total[2]
+    print(f"Set candidate generator to best params for total coverage: alpha={candidate_generator.alpha}, beta={candidate_generator.beta}, temperature={candidate_generator.temperature}")
+    
+    # Generate candidates with best params for additional figures
+    candidates, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
+    
+    # Compute entity degrees from relational context
+    entity_degrees = {i: len(train_set_t.context_triple_store[i]) for i in range(len(train_set_t.context_triple_store))}
+    
+    # Create additional figures
+    create_relation_coverage_bar_chart(candidates, test_triples, test_set_t.relation_maps, save_dir=filedir)
+    create_entity_coverage_bar_chart(candidates, test_triples, save_dir=filedir)
+    create_candidates_per_head_by_degree_chart(candidates, entity_degrees, save_dir=filedir)
     
     return best_params_total, best_params_per_group
 
@@ -1022,7 +1037,8 @@ def grid_search_candidate_sizes(candidate_generator, args, tr_tuples_all, tr_log
     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
     
     # Initialize multiprocessing pool and other resources once
-    candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
+    if hasattr(candidate_generator, 'rel_block_size'):
+        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False):
@@ -1042,8 +1058,9 @@ def grid_search_candidate_sizes(candidate_generator, args, tr_tuples_all, tr_log
         per_group_cov, _ = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, print_results=False)
         
         results.append((candidates.size(0), total_cov, per_group_cov))
-        tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
+        # tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
     
+    candidate_generator.per_group_cap = args.candidates_cap # reset to original
     # Create coverage vs size plot
     filedir = args.figure_dir + f"/candidate_grid_search/{args.expname}/{args.candidate_generator}/{args.candidates_normalize_mode}"
     create_coverage_vs_size_plot(results, save_dir=filedir, filename="coverage_vs_size.svg")

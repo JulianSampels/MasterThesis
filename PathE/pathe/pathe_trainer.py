@@ -813,7 +813,7 @@ def create_and_run_training_exp_two_phases(args):
     elif args.candidate_generator == 'global_with_tail':
         candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers)
     elif args.candidate_generator == 'per_head':
-        candidate_generator = CandidateGeneratorPerHead(per_group_cap=args.candidates_cap)
+        candidate_generator = CandidateGeneratorPerHead(per_group_cap=args.candidates_cap, alpha=args.candidates_alpha)
     else:
         raise ValueError(f"Unknown candidate_generator: {args.candidate_generator}")
 

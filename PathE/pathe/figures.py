@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+import torch
+from collections import defaultdict
 
 def create_heatmaps(results, save_dir="./figures"):
     """
@@ -102,6 +104,181 @@ def create_coverage_vs_size_plot(results, save_dir="./figures", filename="covera
     plt.title('Coverage vs. Candidate Size')
     plt.legend()
     plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Plot saved to {save_dir}/{filename}")
+
+def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, save_dir="./figures", filename="relation_coverage_bar.svg"):
+    """
+    Create a bar chart showing coverage (fraction of gold triples covered) for different relation types.
+    Saves the plot as an SVG file.
+
+    Args:
+        candidates: (M, 3) tensor of candidate triples
+        gold_triples: (N, 3) tensor of gold triples
+        relation_maps: RelationMaps object
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Get unique relations from gold triples
+    unique_rels = torch.unique(gold_triples[:, 1]).tolist()
+    rel_names = [f"Rel_{r}" for r in unique_rels]  # Placeholder names; replace with actual if available
+    
+    coverage_per_rel = {}
+    for rel in unique_rels:
+        gold_mask = gold_triples[:, 1] == rel
+        gold_subset = gold_triples[gold_mask]
+        cand_mask = candidates[:, 1] == rel
+        cand_subset = candidates[cand_mask]
+        
+        if gold_subset.size(0) == 0:
+            cov = 0.0
+        else:
+            covered = len(set(tuple(row.tolist()) for row in gold_subset) & set(tuple(row.tolist()) for row in cand_subset))
+            cov = covered / gold_subset.size(0)
+        coverage_per_rel[rel] = cov
+    
+    # Prepare data for plotting
+    rels = list(coverage_per_rel.keys())
+    covs = list(coverage_per_rel.values())
+    
+    # Sort by coverage descending
+    sorted_idx = np.argsort(covs)[::-1]
+    rels = [rel_names[i] for i in sorted_idx]
+    covs = [covs[i] for i in sorted_idx]
+    
+    # Create bar chart
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(range(len(rels)), covs, color='skyblue')
+    plt.xlabel('Relation Type')
+    plt.ylabel('Coverage')
+    plt.title('Coverage per Relation Type')
+    plt.xticks(range(len(rels)), rels, rotation=45, ha='right')
+    plt.ylim(0, 1)
+    plt.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Plot saved to {save_dir}/{filename}")
+
+def create_candidates_per_head_by_degree_chart(candidates, entity_degrees, save_dir="./figures", filename="candidates_per_head_by_degree.svg", degree_bins=10):
+    """
+    Create a bar chart showing average number of candidates per head, grouped by entity degree bins.
+    Saves the plot as an SVG file.
+
+    Args:
+        candidates: (M, 3) tensor of candidate triples
+        entity_degrees: Dict[int, int] mapping entity id to its degree (e.g., number of relations)
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+        degree_bins: Number of bins for degree grouping
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Count candidates per head
+    head_counts = defaultdict(int)
+    for cand in candidates:
+        head = cand[0].item()
+        head_counts[head] += 1
+    
+    # Group by degree
+    degrees = [entity_degrees.get(h, 0) for h in head_counts.keys()]
+    counts = list(head_counts.values())
+    
+    # Bin degrees
+    if degrees:
+        max_deg = max(degrees)
+        bins = np.linspace(0, max_deg, degree_bins + 1)
+        bin_indices = np.digitize(degrees, bins) - 1
+        bin_indices = np.clip(bin_indices, 0, degree_bins - 1)
+        
+        avg_counts_per_bin = []
+        bin_labels = []
+        for i in range(degree_bins):
+            mask = bin_indices == i
+            if mask.any():
+                avg_count = np.mean([counts[j] for j in range(len(counts)) if mask[j]])
+            else:
+                avg_count = 0
+            avg_counts_per_bin.append(avg_count)
+            bin_labels.append(f"{int(bins[i])}-{int(bins[i+1])}")
+    else:
+        avg_counts_per_bin = [0] * degree_bins
+        bin_labels = [f"0-{int(max_deg/degree_bins)*(i+1)}" for i in range(degree_bins)]
+    
+    # Create bar chart
+    plt.figure(figsize=(10, 6))
+    plt.bar(range(len(bin_labels)), avg_counts_per_bin, color='lightgreen')
+    plt.xlabel('Entity Degree Bin')
+    plt.ylabel('Average Candidates per Head')
+    plt.title('Average Candidates per Head by Degree')
+    plt.xticks(range(len(bin_labels)), bin_labels, rotation=45, ha='right')
+    plt.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Plot saved to {save_dir}/{filename}")
+
+def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figures", filename="entity_coverage_bar.svg", top_n=-1):
+    """
+    Create a bar chart showing coverage (fraction of gold triples covered) for the top N head entities.
+    Saves the plot as an SVG file.
+
+    Args:
+        candidates: (M, 3) tensor of candidate triples
+        gold_triples: (N, 3) tensor of gold triples
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+        top_n: Number of top entities to show
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Get unique heads from gold triples
+    unique_heads = torch.unique(gold_triples[:, 0]).tolist()
+    
+    coverage_per_head = {}
+    for head in unique_heads:
+        gold_mask = gold_triples[:, 0] == head
+        gold_subset = gold_triples[gold_mask]
+        cand_mask = candidates[:, 0] == head
+        cand_subset = candidates[cand_mask]
+        
+        if gold_subset.size(0) == 0:
+            cov = 0.0
+        else:
+            covered = len(set(tuple(row.tolist()) for row in gold_subset) & set(tuple(row.tolist()) for row in cand_subset))
+            cov = covered / gold_subset.size(0)
+        coverage_per_head[head] = cov
+    
+    # Prepare data for plotting: top N by coverage
+    sorted_heads = sorted(coverage_per_head.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    heads = [f"Head_{h}" for h, _ in sorted_heads]
+    covs = [cov for _, cov in sorted_heads]
+    
+    # Create bar chart
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(range(len(heads)), covs, color='lightcoral')
+    plt.xlabel('Head Entity')
+    plt.ylabel('Coverage')
+    plt.title(f'Coverage per Head Entity (Top {top_n})')
+    plt.xticks(range(len(heads)), heads, rotation=45, ha='right')
+    plt.ylim(0, 1)
+    plt.grid(axis='y', alpha=0.3)
     plt.tight_layout()
     
     # Save the plot
