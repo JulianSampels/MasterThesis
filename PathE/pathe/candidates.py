@@ -819,6 +819,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             relation_maps: RelationMaps object mapping original to inverse relations.
             logits_rp: (num_samples, num_relations) tensor of per-sample relation logits.
             logits_tp: (num_samples, num_entities) tensor of per-sample tail logits (required for tail prediction).
+            num_groups: int, number of groups for candidate cap.
             p: Optional[float], global probability threshold for candidate filtering.
             q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
             temperature: float, softmax temperature for calibration.
@@ -915,7 +916,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
 from . import triple_lib
 import itertools
-from .figures import create_heatmaps
+from .figures import create_heatmaps, create_coverage_vs_size_plot
 
 def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
@@ -1007,3 +1008,65 @@ def grid_search_candidates(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all,
     create_heatmaps(results, save_dir=filedir)
     
     return best_params_total, best_params_per_group
+
+def grid_search_candidate_sizes(args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
+    """
+    Perform grid search over per_group_cap (candidate sizes) for CandidateGeneratorGlobalWithTail
+    to analyze total coverage and average recall per group on the test set.
+    Initializes the candidate generator once and manually changes per_group_cap.
+    Assumes CandidateGeneratorGlobalWithTail is used.
+    """
+    # Define candidate sizes (adjust as needed)
+    candidate_sizes = list(range(10, 210, 10)) + [1]
+    
+    print(f"Grid search over {len(candidate_sizes)} candidate sizes.")
+    
+    results = []
+    
+    # Compute num_groups for test (only needed for test)
+    num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
+    
+    # Initialize candidate generator once with dummy values (will change per_group_cap)
+    if args.candidate_generator == 'global':
+        candidate_generator = CandidateGeneratorGlobal(
+            p=None, q=None, temperature=1.0, alpha=0.5, per_group_cap=100,  # dummy
+            normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers
+        )
+    elif args.candidate_generator == 'global_with_tail':
+        candidate_generator = CandidateGeneratorGlobalWithTail(
+            p=None, q=None, temperature=1.0, alpha=0.5, beta=0.5, per_group_cap=100,  # dummy
+            normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers
+        )
+    elif args.candidate_generator == 'per_head':
+        candidate_generator = CandidateGeneratorPerHead(per_group_cap=100)  # dummy
+    else:
+        raise ValueError(f"Unsupported candidate_generator: {args.candidate_generator}")
+    
+    # Initialize multiprocessing pool and other resources once
+    candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
+    test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
+    
+    for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False):
+        # Manually set per_group_cap
+        candidate_generator.per_group_cap = size
+        
+        # Generate candidates for test set
+        candidates, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, te_logits_tp_all)
+        
+        # Compute group IDs for candidates (assuming group by head for simplicity; adapt if needed)
+        candidates_group_ids = triple_lib.generate_group_id_function(candidates, args.group_strategy)(candidates)
+        
+        # Analyze total coverage
+        total_cov, _ = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, print_results=False)
+        
+        # Analyze coverage per group
+        per_group_cov, _ = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, print_results=False)
+        
+        results.append((candidates.size(0), total_cov, per_group_cov))
+        tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
+    
+    # Create coverage vs size plot
+    filedir = args.figure_dir + f"/candidate_grid_search/{args.expname}/{args.candidate_generator}/{args.candidates_normalize_mode}"
+    create_coverage_vs_size_plot(results, save_dir=filedir, filename="coverage_vs_size.svg")
+    
+    return

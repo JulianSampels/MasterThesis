@@ -74,3 +74,38 @@ def create_heatmaps(results, save_dir="./figures"):
     plt.close()
 
     print(f"Heatmaps and results saved to {save_dir}/")
+
+def create_coverage_vs_size_plot(results, save_dir="./figures", filename="coverage_vs_size.svg"):
+    """
+    Create a line plot showing total coverage and average recall per group vs. candidate size.
+    Saves the plot as an SVG file.
+
+    Args:
+        results: List of tuples (candidate_size, total_cov, avg_recall_per_group)
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    results.sort(key=lambda x: x[0])  # Sort by candidate size
+    # Extract data
+    candidate_sizes = [r[0] for r in results]
+    total_covs = [r[1] for r in results]
+    avg_recalls = [r[2] for r in results]
+    
+    # Create the plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(candidate_sizes, total_covs, label='Total Coverage (Micro)', marker='o', linestyle='-', color='blue')
+    plt.plot(candidate_sizes, avg_recalls, label='Avg. Coverage per Group (Macro)', marker='s', linestyle='--', color='red')
+    plt.xlabel('Total Candidate Size')
+    plt.ylabel('Coverage')
+    plt.title('Coverage vs. Candidate Size')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Plot saved to {save_dir}/{filename}")
