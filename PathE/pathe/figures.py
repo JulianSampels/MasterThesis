@@ -150,6 +150,12 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     
+    # Count candidates per relation
+    rel_counts = defaultdict(int)
+    for cand in candidates:
+        rel = cand[1].item()
+        rel_counts[rel] += 1
+    
     # Get unique relations from gold triples
     unique_rels = torch.unique(gold_triples[:, 1]).tolist()
     
@@ -167,30 +173,59 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
             cov = covered / gold_subset.size(0)
         coverage_per_rel[rel] = cov
     
-    # Get coverages
-    covs = list(coverage_per_rel.values())
+    # Get coverages and corresponding counts
+    covs = []
+    counts = []
+    for rel in unique_rels:
+        covs.append(coverage_per_rel[rel])
+        counts.append(rel_counts.get(rel, 0))
     
-    # Sort coverages
-    covs_sorted = np.sort(covs)
+    # Sort by coverage
+    sorted_indices = np.argsort(covs)
+    covs_sorted = [covs[i] for i in sorted_indices]
+    counts_sorted = [counts[i] for i in sorted_indices]
     
     # Divide into quantile bins of equal size
-    bins = np.array_split(covs_sorted, num_bins)
+    cov_bins = np.array_split(covs_sorted, num_bins)
+    count_bins = np.array_split(counts_sorted, num_bins)
     avg_covs = []
+    avg_counts = []
     bin_labels = []
-    for i, bin_covs in enumerate(bins):
+    for i, (bin_covs, bin_counts) in enumerate(zip(cov_bins, count_bins)):
         avg_cov = np.mean(bin_covs) if len(bin_covs) > 0 else 0.0
+        avg_count = np.mean(bin_counts) if len(bin_counts) > 0 else 0.0
         avg_covs.append(avg_cov)
+        avg_counts.append(avg_count)
         bin_labels.append(f"Q{i+1} ({len(bin_covs)} relations)")
     
-    # Create bar chart
-    plt.figure(figsize=(12, 6))
-    bars = plt.bar(range(len(avg_covs)), avg_covs, color='seagreen')
-    plt.xlabel('Coverage Quantile Bin')
-    plt.ylabel('Average Coverage')
-    plt.title('Average Coverage per Relation Coverage Quantile')
-    plt.xticks(range(len(bin_labels)), bin_labels, rotation=45, ha='right')
-    plt.ylim(0, 1)
-    plt.grid(axis='y', alpha=0.3)
+    # Create bar chart with dual y-axes
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    
+    x = np.arange(len(bin_labels))
+    width = 0.35  # Width of bars
+    
+    # Primary axis for coverage
+    bars1 = ax1.bar(x - width/2, avg_covs, width, label='Avg. Coverage per Relation', color='seagreen')
+    ax1.set_xlabel('Coverage Quantile Bin')
+    ax1.set_ylabel('Avg. Coverage per Relation', color='seagreen')
+    ax1.tick_params(axis='y', labelcolor='seagreen')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(bin_labels, rotation=45, ha='right')
+    ax1.grid(axis='y', alpha=0.3)
+    ax1.set_ylim(0, 1)  # Coverage is between 0 and 1
+    
+    # Secondary axis for candidate counts
+    ax2 = ax1.twinx()
+    bars2 = ax2.bar(x + width/2, avg_counts, width, label='Avg. Candidates per Relation', color='blue')
+    ax2.set_ylabel('Avg. Candidates per Relation', color='blue')
+    ax2.tick_params(axis='y', labelcolor='blue')
+    
+    # Combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    
+    plt.title('Average Coverage and Candidates per Relation Coverage Quantile')
     plt.tight_layout()
     
     # Save the plot
@@ -338,6 +373,12 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     
+    # Count candidates per head
+    head_counts = defaultdict(int)
+    for cand in candidates:
+        head = cand[0].item()
+        head_counts[head] += 1
+    
     # Get unique heads from gold triples
     unique_heads = torch.unique(gold_triples[:, 0]).tolist()
     
@@ -355,30 +396,59 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
             cov = covered / gold_subset.size(0)
         coverage_per_head[head] = cov
     
-    # Get coverages
-    covs = list(coverage_per_head.values())
+    # Get coverages and corresponding counts
+    covs = []
+    counts = []
+    for head in unique_heads:
+        covs.append(coverage_per_head[head])
+        counts.append(head_counts.get(head, 0))
     
-    # Sort coverages
-    covs_sorted = np.sort(covs)
+    # Sort by coverage
+    sorted_indices = np.argsort(covs)
+    covs_sorted = [covs[i] for i in sorted_indices]
+    counts_sorted = [counts[i] for i in sorted_indices]
     
     # Divide into quantile bins of equal size
-    bins = np.array_split(covs_sorted, num_bins)
+    cov_bins = np.array_split(covs_sorted, num_bins)
+    count_bins = np.array_split(counts_sorted, num_bins)
     avg_covs = []
+    avg_counts = []
     bin_labels = []
-    for i, bin_covs in enumerate(bins):
+    for i, (bin_covs, bin_counts) in enumerate(zip(cov_bins, count_bins)):
         avg_cov = np.mean(bin_covs) if len(bin_covs) > 0 else 0.0
+        avg_count = np.mean(bin_counts) if len(bin_counts) > 0 else 0.0
         avg_covs.append(avg_cov)
+        avg_counts.append(avg_count)
         bin_labels.append(f"Q{i+1} ({len(bin_covs)} heads)")
     
-    # Create bar chart
-    plt.figure(figsize=(12, 6))
-    bars = plt.bar(range(len(avg_covs)), avg_covs, color='seagreen')
-    plt.xlabel('Coverage Quantile Bin')
-    plt.ylabel('Average Coverage')
-    plt.title('Average Coverage per Head Entity Coverage Quantile')
-    plt.xticks(range(len(bin_labels)), bin_labels, rotation=45, ha='right')
-    plt.ylim(0, 1)
-    plt.grid(axis='y', alpha=0.3)
+    # Create bar chart with dual y-axes
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    
+    x = np.arange(len(bin_labels))
+    width = 0.35  # Width of bars
+    
+    # Primary axis for coverage
+    bars1 = ax1.bar(x - width/2, avg_covs, width, label='Avg. Coverage per Head', color='seagreen')
+    ax1.set_xlabel('Coverage Quantile Bin')
+    ax1.set_ylabel('Avg. Coverage per Head', color='seagreen')
+    ax1.tick_params(axis='y', labelcolor='seagreen')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(bin_labels, rotation=45, ha='right')
+    ax1.grid(axis='y', alpha=0.3)
+    ax1.set_ylim(0, 1)  # Coverage is between 0 and 1
+    
+    # Secondary axis for candidate counts
+    ax2 = ax1.twinx()
+    bars2 = ax2.bar(x + width/2, avg_counts, width, label='Avg. Candidates per Head', color='blue')
+    ax2.set_ylabel('Avg. Candidates per Head', color='blue')
+    ax2.tick_params(axis='y', labelcolor='blue')
+    
+    # Combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    
+    plt.title('Average Coverage and Candidates per Head Entity Coverage Quantile')
     plt.tight_layout()
     
     # Save the plot
