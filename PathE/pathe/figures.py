@@ -134,9 +134,9 @@ def create_coverage_vs_size_plot(results, save_dir="./figures", filename="covera
     
     print(f"Plot and results saved to {save_dir}/")
 
-def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, save_dir="./figures", filename="relation_coverage_bar.svg"):
+def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, save_dir="./figures", filename="relation_coverage_bar.svg", num_bins=10):
     """
-    Create a bar chart showing coverage (fraction of gold triples covered) for different relation types.
+    Create a bar chart showing average coverage per quantile bin for relation types.
     Saves the plot as an SVG file.
 
     Args:
@@ -145,13 +145,13 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
         relation_maps: RelationMaps object
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
+        num_bins: Number of quantile bins
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     
     # Get unique relations from gold triples
     unique_rels = torch.unique(gold_triples[:, 1]).tolist()
-    rel_names = [f"Rel_{r}" for r in unique_rels]  # Placeholder names; replace with actual if available
     
     coverage_per_rel = {}
     for rel in unique_rels:
@@ -167,22 +167,28 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
             cov = covered / gold_subset.size(0)
         coverage_per_rel[rel] = cov
     
-    # Prepare data for plotting
-    rels = list(coverage_per_rel.keys())
+    # Get coverages
     covs = list(coverage_per_rel.values())
     
-    # Sort by coverage descending
-    sorted_idx = np.argsort(covs)[::-1]
-    rels = [rel_names[i] for i in sorted_idx]
-    covs = [covs[i] for i in sorted_idx]
+    # Sort coverages
+    covs_sorted = np.sort(covs)
+    
+    # Divide into quantile bins of equal size
+    bins = np.array_split(covs_sorted, num_bins)
+    avg_covs = []
+    bin_labels = []
+    for i, bin_covs in enumerate(bins):
+        avg_cov = np.mean(bin_covs) if len(bin_covs) > 0 else 0.0
+        avg_covs.append(avg_cov)
+        bin_labels.append(f"Q{i+1} ({len(bin_covs)} relations)")
     
     # Create bar chart
     plt.figure(figsize=(12, 6))
-    bars = plt.bar(range(len(rels)), covs, color='seagreen')
-    plt.xlabel('Relation Type')
-    plt.ylabel('Coverage')
-    plt.title('Coverage per Relation Type')
-    plt.xticks(range(len(rels)), rels, rotation=45, ha='right')
+    bars = plt.bar(range(len(avg_covs)), avg_covs, color='seagreen')
+    plt.xlabel('Coverage Quantile Bin')
+    plt.ylabel('Average Coverage')
+    plt.title('Average Coverage per Relation Coverage Quantile')
+    plt.xticks(range(len(bin_labels)), bin_labels, rotation=45, ha='right')
     plt.ylim(0, 1)
     plt.grid(axis='y', alpha=0.3)
     plt.tight_layout()
@@ -193,7 +199,7 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
     
     print(f"Plot saved to {save_dir}/{filename}")
 
-def create_candidates_per_head_by_degree_chart(candidates, context_triple_store, gold_triples, save_dir="./figures", filename="candidates_per_head_by_degree.svg", degree_bins=20):
+def create_candidates_per_head_by_degree_chart(candidates, context_triple_store, gold_triples, save_dir="./figures", filename="candidates_per_head_by_degree.svg", degree_bins=25):
     """
     Create a bar chart showing average number of candidates per head and average coverage per head, grouped by entity degree bins.
     Uses quantile-based binning for better handling of skewed distributions.
@@ -317,9 +323,9 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
     
     print(f"Plot saved to {save_dir}/{filename}")
 
-def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figures", filename="entity_coverage_bar.svg", top_n=-1):
+def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figures", filename="entity_coverage_bar.svg", num_bins=25):
     """
-    Create a bar chart showing coverage (fraction of gold triples covered) for the top N head entities.
+    Create a bar chart showing average coverage per quantile bin for head entities.
     Saves the plot as an SVG file.
 
     Args:
@@ -327,7 +333,7 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
         gold_triples: (N, 3) tensor of gold triples
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
-        top_n: Number of top entities to show
+        num_bins: Number of quantile bins
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
@@ -349,18 +355,28 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
             cov = covered / gold_subset.size(0)
         coverage_per_head[head] = cov
     
-    # Prepare data for plotting: top N by coverage
-    sorted_heads = sorted(coverage_per_head.items(), key=lambda x: x[1], reverse=True)[:top_n]
-    heads = [f"Head_{h}" for h, _ in sorted_heads]
-    covs = [cov for _, cov in sorted_heads]
+    # Get coverages
+    covs = list(coverage_per_head.values())
+    
+    # Sort coverages
+    covs_sorted = np.sort(covs)
+    
+    # Divide into quantile bins of equal size
+    bins = np.array_split(covs_sorted, num_bins)
+    avg_covs = []
+    bin_labels = []
+    for i, bin_covs in enumerate(bins):
+        avg_cov = np.mean(bin_covs) if len(bin_covs) > 0 else 0.0
+        avg_covs.append(avg_cov)
+        bin_labels.append(f"Q{i+1} ({len(bin_covs)} heads)")
     
     # Create bar chart
     plt.figure(figsize=(12, 6))
-    bars = plt.bar(range(len(heads)), covs, color='seagreen')
-    plt.xlabel('Head Entity')
-    plt.ylabel('Coverage')
-    plt.title(f'Coverage per Head Entity (Top {top_n})')
-    plt.xticks(range(len(heads)), heads, rotation=45, ha='right')
+    bars = plt.bar(range(len(avg_covs)), avg_covs, color='seagreen')
+    plt.xlabel('Coverage Quantile Bin')
+    plt.ylabel('Average Coverage')
+    plt.title('Average Coverage per Head Entity Coverage Quantile')
+    plt.xticks(range(len(bin_labels)), bin_labels, rotation=45, ha='right')
     plt.ylim(0, 1)
     plt.grid(axis='y', alpha=0.3)
     plt.tight_layout()
