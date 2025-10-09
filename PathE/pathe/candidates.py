@@ -5,6 +5,7 @@ import statistics
 import multiprocessing as mp
 import os
 
+import numpy as np
 import torch
 import torch_scatter
 from tqdm import tqdm
@@ -121,7 +122,7 @@ class BaseCandidateGenerator(ABC):
         relation_maps: RelationMaps,
         name: str = "Set",
         print_results: bool = True,
-    ) -> None:
+    ) -> tuple[float, float]:
         """
         Compute total (micro) coverage and density of positives in candidate set.
 
@@ -928,15 +929,17 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     Assumes CandidateGeneratorGlobalWithTail is used.
     """
     # Define grid ranges (adjust as needed)
-    L = list(range(0, 11, 1))
-    alpha_values = [a / 10.0 for a in L]
-    beta_values = [b / 10.0 for b in L]
+    steps = 1
+    if steps == 1:
+        alpha_values = [0.5]
+        beta_values = [0.5]
+    else:
+        # Generate values from 0 to 1 inclusive with 'steps' number of points
+        alpha_values = np.linspace(0, 1, steps)
+        beta_values = np.linspace(0, 1, steps)
     temperature_values = [1.0]
-    # alpha_values = [0.0, 0.25, 0.5, 0.75, 1.0]
-    # beta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
     # temperature_values = [0.5, 1.0, 2.0]
-    alpha_values = [0.5]
-    beta_values = [0.5]
+
     
     param_combinations = list(itertools.product(temperature_values, beta_values, alpha_values))
     print(f"Grid search over {len(param_combinations)} parameter combinations.")
@@ -1008,15 +1011,6 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     candidate_generator.temperature = best_params_total[2]
     print(f"Set candidate generator to best params for total coverage: alpha={candidate_generator.alpha}, beta={candidate_generator.beta}, temperature={candidate_generator.temperature}")
     
-    # Generate candidates with best params for additional figures
-    candidates, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
-
-    
-    # Create additional figures
-    create_relation_coverage_bar_chart(candidates, test_triples, test_set_t.relation_maps, save_dir=filedir)
-    create_entity_coverage_bar_chart(candidates, test_triples, save_dir=filedir)
-    create_candidates_per_head_by_degree_chart(candidates, train_set_t.context_triple_store, save_dir=filedir)
-    
     return best_params_total, best_params_per_group
 
 def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
@@ -1026,8 +1020,13 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     Initializes the candidate generator once and manually changes per_group_cap.
     Assumes CandidateGeneratorGlobalWithTail is used.
     """
-    # Define candidate sizes (adjust as needed)
-    candidate_sizes = list(range(10, 310, 10)) + list(range(310, 610, 20)) + [1]
+    # Define candidate sizes (log-distributed)
+    min_val = 1
+    max_val = 1000
+    total_count = 15  # Adjust as needed; matches approx. length of original list
+    candidate_sizes = np.unique(np.logspace(np.log10(min_val), np.log10(max_val), num=total_count, dtype=int)).tolist()
+    p = 5  # Power for stretching (higher p = more emphasis on small sizes)
+    candidate_sizes = np.unique(np.round(np.linspace(min_val**(1/p), max_val**(1/p), num=total_count)**p).astype(int)).tolist()
     
     print(f"Grid search over {len(candidate_sizes)} candidate sizes.")
     
@@ -1056,13 +1055,17 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
         candidates_group_ids = triple_lib.generate_group_id_function(candidates, args.group_strategy)(candidates)
         
         # Analyze total coverage
-        total_cov, _ = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
+        total_cov, pos_density = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
         
         # Analyze coverage per group
         per_group_cov, _ = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
         
-        results.append((candidates.size(0), total_cov, per_group_cov))
+        results.append((candidates.size(0), total_cov, per_group_cov, pos_density))
         # tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
+
+        if total_cov >= 0.95:
+            tqdm.write(f"Reached total coverage {total_cov} with candidate size {size}. Stopping early.")
+            break
     
     candidate_generator.per_group_cap = args.candidates_cap # reset to original
     # Create coverage vs size plot
