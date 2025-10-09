@@ -85,8 +85,8 @@ def main():
     parser.add_argument('--candidates_temperature', type=float, default=1.0,
                         help='Temperature for candidate probability calibration.')
     parser.add_argument('--candidates_alpha', type=float, default=0.5,
-                        help='Weight for head vs tail in candidate scoring (0=head only, 1=tail only).')
-    parser.add_argument('--candidates_beta', type=float, default=1/3,
+                        help='Weight for head vs tail in candidate scoring (1=head only, 0=tail only).')
+    parser.add_argument('--candidates_beta', type=float, default=0.5,
                         help='Weight for tail prediction probability in candidate scoring. Only used if candidate_generator includes tail predictions.')
     parser.add_argument('--candidates_cap', type=int, default=100,
                         help='Maximum number of top-k candidates to keep per group (e.g., per head entity).')
@@ -172,6 +172,8 @@ def main():
                         help='Whether to run a small-scale experiment.')
     parser.add_argument('--skip_phase1', action='store_true', default=False,
                         help='Whether to skip training the first phase (triples). Has no effect if model is not pathe2Phases.')
+    parser.add_argument('--skip_phase2', action='store_true', default=False,
+                        help='Whether to skip training the second phase (candidates). Has no effect if model is not pathe2Phases.')
 
 
     # Parameters for the evaluation data and strategies

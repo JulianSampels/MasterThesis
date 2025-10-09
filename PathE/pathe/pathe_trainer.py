@@ -1017,24 +1017,25 @@ def create_and_run_training_exp_two_phases(args):
     print("\nUntrained triple model results on candidates: {}".format(untrained_test_dict))
 
 
-    if args_phase3.cmd in ["train", "resume"]:
+    if args_phase3.cmd in ["train", "resume"] and not args_phase3.skip_phase2:
         stageprint("Training-validating the model, be patient!")
         trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         triple_ckpt = checkpoint_callbk_tri.best_model_path
         print(f"[Triples] Best model: {triple_ckpt}")
     else:
-        triple_ckpt = getattr(args_phase3, "triple_checkpoint", args_phase3.triple_checkpoint, None)
+        triple_ckpt = args_phase3.triple_checkpoint
         print(f"[Triples] Using checkpoint for test: {triple_ckpt}")
         if args_phase3.cmd == "test" and not triple_ckpt:
             raise ValueError("triple_checkpoint is required for cmd='test'.")
 
-    stageprint("Evaluating the model on the test set")
-    test_dict = trainer_tri.test(
-        model=pl_model_tri if args_phase3.cmd == "test" else None,
-        dataloaders=te_loader_tri,
-        ckpt_path=triple_ckpt
-    )[0]
-    print("\nFinal testing results (triple model): {}".format(test_dict))
+    if triple_ckpt:
+        stageprint("Evaluating the model on the test set")
+        test_dict = trainer_tri.test(
+            model=pl_model_tri if args_phase3.cmd == "test" else None,
+            dataloaders=te_loader_tri,
+            ckpt_path=triple_ckpt
+        )[0]
+        print("\nFinal testing results (triple model): {}".format(test_dict))
 
     # Cleanup before exit
     print("Cleaning up resources...")

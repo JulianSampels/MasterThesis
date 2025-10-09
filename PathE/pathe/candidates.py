@@ -936,7 +936,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     Assumes CandidateGeneratorGlobalWithTail is used.
     """
     # Define grid ranges (adjust as needed)
-    steps = 1
+    steps = 11
     if steps == 1:
         alpha_values = [0.5]
         beta_values = [0.5]
