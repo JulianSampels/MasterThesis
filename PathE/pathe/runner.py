@@ -90,8 +90,8 @@ def main():
                         help='Weight for tail prediction probability in candidate scoring. Only used if candidate_generator includes tail predictions.')
     parser.add_argument('--candidates_cap', type=int, default=100,
                         help='Maximum number of top-k candidates to keep per group (e.g., per head entity).')
-    parser.add_argument('--candidates_normalize_mode', choices=['per_head', 'global_joint'], default='global_joint',
-                        help='Normalization mode for candidate scoring: per_head (conditional probs), global_joint (joint probs), none (raw logits).')
+    parser.add_argument('--candidates_normalize_mode', choices=['per_head', 'global_joint', 'per_relation'], default='global_joint',
+                        help='Normalization mode for candidate scoring: per_head (conditional probs), global_joint (joint probs), per_relation (normalize per relation), none (raw logits).')
     parser.add_argument('--candidate_generator', choices=['global', 'global_with_tail', 'per_head'], default='per_head',
                         help='Type of candidate generator to use: global (threshold/quantile-based), global_with_tail (includes tail logits), per_head (top-k per head).')
     parser.add_argument('--group_strategy', type=int, nargs='+', default=[0],

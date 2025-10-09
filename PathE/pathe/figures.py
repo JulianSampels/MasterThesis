@@ -123,7 +123,7 @@ def create_coverage_vs_size_plot(results, save_dir="./figures", filename="covera
     # Combined legend
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='center right')
     
     plt.title('Coverage and Density vs. Candidate Size')
     plt.tight_layout()

@@ -279,7 +279,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # sanity checks
         assert self.temperature > 0, "temperature must be > 0"
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
-        assert self.normalize_mode in ("per_head", "global_joint", "none"), "normalize_mode invalid"
+        assert self.normalize_mode in ("per_head", "global_joint", "per_relation", "none"), "normalize_mode invalid"
         if self.p is not None:
             assert 0.0 <= self.p <= 1.0, "p must be in [0,1]"
         if self.q is not None:
@@ -476,6 +476,9 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             log_p_head_2d = torch.log_softmax(z_hr.reshape(-1), dim=0).reshape(E, R)          # joint over all (h,r)
             z_tr = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1)  # (R, E)
             log_p_tail_2d = torch.log_softmax(z_tr.reshape(-1), dim=0).reshape(R, E)          # joint over all (r,t)
+        elif self.normalize_mode == "per_relation":
+            log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=0).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=0).to(torch.float32).cpu().transpose(0,1) # (R, E)
         else:  # "none" -> use temperature-scaled logits as log-scores
             log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
             log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
@@ -657,7 +660,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
         assert 0.0 <= self.beta <= 1.0, "beta must be in [0,1]"
         assert self.alpha + self.beta <= 1.0, "alpha + beta must be <= 1.0 (gamma = 1 - alpha - beta)"
-        assert self.normalize_mode in ("per_head", "global_joint", "none"), "normalize_mode invalid"
+        assert self.normalize_mode in ("per_head", "global_joint", "per_relation", "none"), "normalize_mode invalid"
         if self.p is not None:
             assert 0.0 <= self.p <= 1.0, "p must be in [0,1]"
         if self.q is not None:
@@ -868,6 +871,10 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             log_p_tail_2d = torch.log_softmax(z_tr.reshape(-1), dim=0).reshape(R, E)          # joint over (r,t)
             z_ht = (logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
             log_p_t_given_h_2d = torch.log_softmax(z_ht.reshape(-1), dim=0).reshape(E, E)     # joint over (h,t)
+        elif self.normalize_mode == "per_relation":
+            log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=0).to(torch.float32).cpu()                 # (E, R)
+            log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=0).to(torch.float32).cpu().transpose(0,1) # (R, E)
+            log_p_t_given_h_2d = torch.log_softmax(logits_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()          # (E, E)
         else:  # "none"
             log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
             log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
