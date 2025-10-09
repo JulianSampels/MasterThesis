@@ -457,6 +457,78 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
     
     print(f"Plot saved to {save_dir}/{filename}")
 
+def create_test_set_statistics_figure(context_triple_store, train_triples, save_dir="./figures", filename="test_set_statistics.svg"):
+    """
+    Create a figure showing statistics of the test set graph, including degree distributions, relation frequencies, and summary stats.
+    Saves the plot as an SVG file.
+
+    Args:
+        context_triple_store: List of triples for degree computation
+        train_triples: (N, 3) tensor of training triples
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Compute entity degrees from context_triple_store
+    entity_degrees_in = defaultdict(int)
+    entity_degrees_out = defaultdict(int)
+    for triple in context_triple_store:
+        head = triple[0].item()
+        tail = triple[2].item()
+        entity_degrees_out[head] += 1
+        entity_degrees_in[tail] += 1
+    
+    # Use train_triples
+    triples = train_triples
+    num_triples = triples.size(0)
+    unique_entities = torch.unique(triples[:, [0, 2]]).tolist()
+    num_entities = len(unique_entities)
+    unique_relations = torch.unique(triples[:, 1]).tolist()
+    num_relations = len(unique_relations)
+    
+    # Relation frequencies
+    relation_counts = defaultdict(int)
+    for triple in triples:
+        relation_counts[triple[1].item()] += 1
+    
+    # Create subplots
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    
+    # In-degree distribution
+    in_degrees = list(entity_degrees_in.values())
+    axes[0, 0].hist(in_degrees, bins=50, alpha=0.7, color='blue')
+    axes[0, 0].set_title('In-degree Distribution')
+    axes[0, 0].set_xlabel('Degree')
+    axes[0, 0].set_ylabel('Frequency')
+    
+    # Out-degree distribution
+    out_degrees = list(entity_degrees_out.values())
+    axes[0, 1].hist(out_degrees, bins=50, alpha=0.7, color='green')
+    axes[0, 1].set_title('Out-degree Distribution')
+    axes[0, 1].set_xlabel('Degree')
+    axes[0, 1].set_ylabel('Frequency')
+    
+    # Relation frequency distribution
+    rel_freqs = list(relation_counts.values())
+    axes[1, 0].hist(rel_freqs, bins=50, alpha=0.7, color='red')
+    axes[1, 0].set_title('Relation Frequency Distribution')
+    axes[1, 0].set_xlabel('Frequency')
+    axes[1, 0].set_ylabel('Number of Relations')
+    
+    # Summary statistics
+    summary = f"Entities: {num_entities}\nRelations: {num_relations}\nTriples: {num_triples}"
+    axes[1, 1].text(0.1, 0.5, summary, fontsize=12, verticalalignment='center', transform=axes[1, 1].transAxes)
+    axes[1, 1].set_title('Summary Statistics')
+    axes[1, 1].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Figure saved to {save_dir}/{filename}")
+
 def create_candidate_figures(candidates, test_triples, relation_maps, context_triple_store, save_dir):
     """
     Top-level function for creating candidate-related figures.
@@ -472,3 +544,4 @@ def create_candidate_figures(candidates, test_triples, relation_maps, context_tr
     create_relation_coverage_bar_chart(candidates, test_triples, relation_maps, save_dir)
     create_entity_coverage_bar_chart(candidates, test_triples, save_dir)
     create_candidates_per_head_by_degree_chart(candidates, context_triple_store, test_triples, save_dir)
+    create_test_set_statistics_figure(context_triple_store, test_triples, save_dir)
