@@ -160,6 +160,7 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
     unique_rels = torch.unique(gold_triples[:, 1]).tolist()
     
     coverage_per_rel = {}
+    freq_per_rel = {}
     for rel in unique_rels:
         gold_mask = gold_triples[:, 1] == rel
         gold_subset = gold_triples[gold_mask]
@@ -172,40 +173,48 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
             covered = len(set(tuple(row.tolist()) for row in gold_subset) & set(tuple(row.tolist()) for row in cand_subset))
             cov = covered / gold_subset.size(0)
         coverage_per_rel[rel] = cov
+        freq_per_rel[rel] = gold_subset.size(0)
     
-    # Get coverages and corresponding counts
+    # Get coverages, counts, and freqs
     covs = []
     counts = []
+    freqs = []
     for rel in unique_rels:
         covs.append(coverage_per_rel[rel])
         counts.append(rel_counts.get(rel, 0))
+        freqs.append(freq_per_rel[rel])
     
     # Sort by coverage
     sorted_indices = np.argsort(covs)
     covs_sorted = [covs[i] for i in sorted_indices]
     counts_sorted = [counts[i] for i in sorted_indices]
+    freqs_sorted = [freqs[i] for i in sorted_indices]
     
     # Divide into quantile bins of equal size
     cov_bins = np.array_split(covs_sorted, num_bins)
     count_bins = np.array_split(counts_sorted, num_bins)
+    freq_bins = np.array_split(freqs_sorted, num_bins)
     avg_covs = []
     avg_counts = []
+    avg_freqs = []
     bin_labels = []
-    for i, (bin_covs, bin_counts) in enumerate(zip(cov_bins, count_bins)):
+    for i, (bin_covs, bin_counts, bin_freqs) in enumerate(zip(cov_bins, count_bins, freq_bins)):
         avg_cov = np.mean(bin_covs) if len(bin_covs) > 0 else 0.0
         avg_count = np.mean(bin_counts) if len(bin_counts) > 0 else 0.0
+        avg_freq = np.mean(bin_freqs) if len(bin_freqs) > 0 else 0.0
         avg_covs.append(avg_cov)
         avg_counts.append(avg_count)
+        avg_freqs.append(avg_freq)
         bin_labels.append(f"Q{i+1} ({len(bin_covs)} relations)")
     
-    # Create bar chart with dual y-axes
-    fig, ax1 = plt.subplots(figsize=(12, 6))
+    # Create bar chart with triple y-axes
+    fig, ax1 = plt.subplots(figsize=(14, 6))
     
     x = np.arange(len(bin_labels))
-    width = 0.35  # Width of bars
+    width = 0.25  # Width of bars
     
     # Primary axis for coverage
-    bars1 = ax1.bar(x - width/2, avg_covs, width, label='Avg. Coverage per Relation', color='seagreen')
+    bars1 = ax1.bar(x - width, avg_covs, width, label='Avg. Coverage per Relation', color='seagreen')
     ax1.set_xlabel('Coverage Quantile Bin')
     ax1.set_ylabel('Avg. Coverage per Relation', color='seagreen')
     ax1.tick_params(axis='y', labelcolor='seagreen')
@@ -216,16 +225,24 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
     
     # Secondary axis for candidate counts
     ax2 = ax1.twinx()
-    bars2 = ax2.bar(x + width/2, avg_counts, width, label='Avg. Candidates per Relation', color='blue')
+    bars2 = ax2.bar(x, avg_counts, width, label='Avg. Candidates per Relation', color='blue')
     ax2.set_ylabel('Avg. Candidates per Relation', color='blue')
     ax2.tick_params(axis='y', labelcolor='blue')
+    
+    # Tertiary axis for frequencies (offset to the right)
+    ax3 = ax1.twinx()
+    ax3.spines["right"].set_position(("axes", 1.1))  # Offset the spine
+    bars3 = ax3.bar(x + width, avg_freqs, width, label='Avg. Relation Frequency', color='orange')
+    ax3.set_ylabel('Avg. Relation Frequency', color='orange')
+    ax3.tick_params(axis='y', labelcolor='orange')
     
     # Combined legend
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    lines3, labels3 = ax3.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper left')
     
-    plt.title('Average Coverage and Candidates per Relation Coverage Quantile')
+    plt.title('Average Coverage, Candidates, and Frequency per Relation Coverage Quantile')
     plt.tight_layout()
     
     # Save the plot
@@ -265,6 +282,7 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
     
     # Compute coverage per head
     head_coverage = {}
+    head_freq = {}
     for head in torch.unique(gold_triples[:, 0]):
         head = head.item()
         gold_mask = gold_triples[:, 0] == head
@@ -278,11 +296,13 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
             covered = len(set(tuple(row.tolist()) for row in gold_subset) & set(tuple(row.tolist()) for row in cand_subset))
             cov = covered / gold_subset.size(0)
         head_coverage[head] = cov
+        head_freq[head] = gold_subset.size(0)
     
     # Group by degree
     degrees = [entity_degrees.get(h, 0) for h in head_counts.keys()]
     counts = list(head_counts.values())
     coverages = [head_coverage.get(h, 0.0) for h in head_counts.keys()]
+    freqs = [head_freq.get(h, 0) for h in head_counts.keys()]
     
     # Bin degrees using quantiles
     if degrees:
@@ -300,6 +320,7 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
         
         avg_counts_per_bin = []
         avg_coverages_per_bin = []
+        avg_freqs_per_bin = []
         bin_labels = []
         for i in range(len(quantiles) - 1):
             mask = bin_indices == i
@@ -309,27 +330,30 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
                 max_deg = max(bin_degrees)
                 avg_count = np.mean([counts[j] for j in range(len(counts)) if mask[j]])
                 avg_cov = np.mean([coverages[j] for j in range(len(coverages)) if mask[j]])
+                avg_freq = np.mean([freqs[j] for j in range(len(freqs)) if mask[j]])
             else:
                 min_deg = 0
                 max_deg = 0
                 avg_count = 0
                 avg_cov = 0.0
+                avg_freq = 0.0
             avg_counts_per_bin.append(avg_count)
             avg_coverages_per_bin.append(avg_cov)
+            avg_freqs_per_bin.append(avg_freq)
             bin_labels.append(f"Q{i+1} ({min_deg}-{max_deg})")
     else:
         avg_counts_per_bin = [0] * degree_bins
         avg_coverages_per_bin = [0.0] * degree_bins
         bin_labels = [f"Q{i+1} (0-0)" for i in range(degree_bins)]
     
-    # Create bar chart with dual y-axes
-    fig, ax1 = plt.subplots(figsize=(12, 6))
+    # Create bar chart with triple y-axes
+    fig, ax1 = plt.subplots(figsize=(14, 6))
     
     x = np.arange(len(bin_labels))
-    width = 0.35  # Width of bars
+    width = 0.25  # Width of bars
     
     # Primary axis for coverage
-    bars1 = ax1.bar(x - width/2, avg_coverages_per_bin, width, label='Avg. Coverage per Head', color='seagreen')
+    bars1 = ax1.bar(x - width, avg_coverages_per_bin, width, label='Avg. Coverage per Head', color='seagreen')
     ax1.set_xlabel('Entity Degree Quantile Bin')
     ax1.set_ylabel('Avg. Coverage per Head', color='seagreen')
     ax1.tick_params(axis='y', labelcolor='seagreen')
@@ -340,16 +364,24 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
     
     # Secondary axis for candidate counts
     ax2 = ax1.twinx()
-    bars2 = ax2.bar(x + width/2, avg_counts_per_bin, width, label='Avg. Candidates per Head', color='blue')
+    bars2 = ax2.bar(x, avg_counts_per_bin, width, label='Avg. Candidates per Head', color='blue')
     ax2.set_ylabel('Avg. Candidates per Head', color='blue')
     ax2.tick_params(axis='y', labelcolor='blue')
+    
+    # Tertiary axis for frequencies (offset to the right)
+    ax3 = ax1.twinx()
+    ax3.spines["right"].set_position(("axes", 1.1))  # Offset the spine
+    bars3 = ax3.bar(x + width, avg_freqs_per_bin, width, label='Avg. Head Frequency', color='orange')
+    ax3.set_ylabel('Avg. Head Frequency', color='orange')
+    ax3.tick_params(axis='y', labelcolor='orange')
     
     # Combined legend
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    lines3, labels3 = ax3.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper left')
     
-    plt.title('Average Candidates and Coverage per Head by Degree (Quantile Bins)')
+    plt.title('Average Candidates, Coverage, and Frequency per Head by Degree (Quantile Bins)')
     plt.tight_layout()
     
     # Save the plot
@@ -358,7 +390,7 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
     
     print(f"Plot saved to {save_dir}/{filename}")
 
-def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figures", filename="entity_coverage_bar.svg", num_bins=25):
+def create_entity_coverage_bar_chart(candidates, gold_triples, context_triple_store, save_dir="./figures", filename="entity_coverage_bar.svg", num_bins=25):
     """
     Create a bar chart showing average coverage per quantile bin for head entities.
     Saves the plot as an SVG file.
@@ -366,12 +398,19 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
     Args:
         candidates: (M, 3) tensor of candidate triples
         gold_triples: (N, 3) tensor of gold triples
+        context_triple_store: List of triples for degree computation
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
         num_bins: Number of quantile bins
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
+    
+    # Compute entity degrees from context_triple_store
+    entity_degrees = {}
+    for context in context_triple_store:
+        node_id = context[0].item()
+        entity_degrees[node_id] = entity_degrees.get(node_id, 0) + 1
     
     # Count candidates per head
     head_counts = defaultdict(int)
@@ -383,6 +422,7 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
     unique_heads = torch.unique(gold_triples[:, 0]).tolist()
     
     coverage_per_head = {}
+    freq_per_head = {}
     for head in unique_heads:
         gold_mask = gold_triples[:, 0] == head
         gold_subset = gold_triples[gold_mask]
@@ -395,40 +435,48 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
             covered = len(set(tuple(row.tolist()) for row in gold_subset) & set(tuple(row.tolist()) for row in cand_subset))
             cov = covered / gold_subset.size(0)
         coverage_per_head[head] = cov
+        freq_per_head[head] = gold_subset.size(0)
     
-    # Get coverages and corresponding counts
+    # Get coverages, counts, and freqs
     covs = []
     counts = []
+    freqs = []
     for head in unique_heads:
         covs.append(coverage_per_head[head])
         counts.append(head_counts.get(head, 0))
+        freqs.append(freq_per_head[head])
     
     # Sort by coverage
     sorted_indices = np.argsort(covs)
     covs_sorted = [covs[i] for i in sorted_indices]
     counts_sorted = [counts[i] for i in sorted_indices]
+    freqs_sorted = [freqs[i] for i in sorted_indices]
     
     # Divide into quantile bins of equal size
     cov_bins = np.array_split(covs_sorted, num_bins)
     count_bins = np.array_split(counts_sorted, num_bins)
+    freq_bins = np.array_split(freqs_sorted, num_bins)
     avg_covs = []
     avg_counts = []
+    avg_freqs = []
     bin_labels = []
-    for i, (bin_covs, bin_counts) in enumerate(zip(cov_bins, count_bins)):
+    for i, (bin_covs, bin_counts, bin_freqs) in enumerate(zip(cov_bins, count_bins, freq_bins)):
         avg_cov = np.mean(bin_covs) if len(bin_covs) > 0 else 0.0
         avg_count = np.mean(bin_counts) if len(bin_counts) > 0 else 0.0
+        avg_freq = np.mean(bin_freqs) if len(bin_freqs) > 0 else 0.0
         avg_covs.append(avg_cov)
         avg_counts.append(avg_count)
+        avg_freqs.append(avg_freq)
         bin_labels.append(f"Q{i+1} ({len(bin_covs)} heads)")
     
-    # Create bar chart with dual y-axes
-    fig, ax1 = plt.subplots(figsize=(12, 6))
+    # Create bar chart with triple y-axes
+    fig, ax1 = plt.subplots(figsize=(14, 6))
     
     x = np.arange(len(bin_labels))
-    width = 0.35  # Width of bars
+    width = 0.25  # Width of bars
     
     # Primary axis for coverage
-    bars1 = ax1.bar(x - width/2, avg_covs, width, label='Avg. Coverage per Head', color='seagreen')
+    bars1 = ax1.bar(x - width, avg_covs, width, label='Avg. Coverage per Head', color='seagreen')
     ax1.set_xlabel('Coverage Quantile Bin')
     ax1.set_ylabel('Avg. Coverage per Head', color='seagreen')
     ax1.tick_params(axis='y', labelcolor='seagreen')
@@ -439,16 +487,24 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, save_dir="./figur
     
     # Secondary axis for candidate counts
     ax2 = ax1.twinx()
-    bars2 = ax2.bar(x + width/2, avg_counts, width, label='Avg. Candidates per Head', color='blue')
+    bars2 = ax2.bar(x, avg_counts, width, label='Avg. Candidates per Head', color='blue')
     ax2.set_ylabel('Avg. Candidates per Head', color='blue')
     ax2.tick_params(axis='y', labelcolor='blue')
+    
+    # Tertiary axis for frequencies (offset to the right)
+    ax3 = ax1.twinx()
+    ax3.spines["right"].set_position(("axes", 1.1))  # Offset the spine
+    bars3 = ax3.bar(x + width, avg_freqs, width, label='Avg. Head Frequency', color='orange')
+    ax3.set_ylabel('Avg. Head Frequency', color='orange')
+    ax3.tick_params(axis='y', labelcolor='orange')
     
     # Combined legend
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    lines3, labels3 = ax3.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper left')
     
-    plt.title('Average Coverage and Candidates per Head Entity Coverage Quantile')
+    plt.title('Average Coverage, Candidates, and Frequency per Head Entity Coverage Quantile')
     plt.tight_layout()
     
     # Save the plot
@@ -542,6 +598,6 @@ def create_candidate_figures(candidates, test_triples, relation_maps, context_tr
         save_dir: Directory to save the figures
     """
     create_relation_coverage_bar_chart(candidates, test_triples, relation_maps, save_dir)
-    create_entity_coverage_bar_chart(candidates, test_triples, save_dir)
+    create_entity_coverage_bar_chart(candidates, test_triples, context_triple_store, save_dir)
     create_candidates_per_head_by_degree_chart(candidates, context_triple_store, test_triples, save_dir)
     create_test_set_statistics_figure(context_triple_store, test_triples, save_dir)
