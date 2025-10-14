@@ -622,10 +622,8 @@ class PathDataset:
             triples = self.dataset.train_triples
             dirname = os.path.join(self.dataset_dir, part)
             torch.save(triples, os.path.join(dirname, 'triples.pt'))
-            id2entity = self.dataset.triple_factory.factory_dict[
-                'training'].entity_id_to_label
-            id2relation = self.dataset.triple_factory.factory_dict[
-                'training'].relation_id_to_label
+            id2entity = self.dataset.triple_factory.training.entity_id_to_label
+            id2relation = self.dataset.triple_factory.training.relation_id_to_label
             with open(os.path.join(dirname, 'id2entity.json'), 'w') as f:
                 json.dump(id2entity, f)
             with open(os.path.join(dirname, 'id2relation.json'), 'w') as f:
@@ -635,10 +633,8 @@ class PathDataset:
             triples = self.dataset.test_triples
             dirname = os.path.join(self.dataset_dir, part)
             torch.save(triples, os.path.join(dirname, 'triples.pt'))
-            id2entity = self.dataset.triple_factory.factory_dict[
-                'testing'].entity_id_to_label
-            id2relation = self.dataset.triple_factory.factory_dict[
-                'testing'].relation_id_to_label
+            id2entity = self.dataset.triple_factory.testing.entity_id_to_label
+            id2relation = self.dataset.triple_factory.testing.relation_id_to_label
             with open(os.path.join(dirname, 'id2entity.json'), 'w') as f:
                 json.dump(id2entity, f)
             with open(os.path.join(dirname, 'id2relation.json'), 'w') as f:
@@ -647,10 +643,8 @@ class PathDataset:
             triples = self.dataset.val_triples
             dirname = os.path.join(self.dataset_dir, part)
             torch.save(triples, os.path.join(dirname, 'triples.pt'))
-            id2entity = self.dataset.triple_factory.factory_dict[
-                'validation'].entity_id_to_label
-            id2relation = self.dataset.triple_factory.factory_dict[
-                'validation'].relation_id_to_label
+            id2entity = self.dataset.triple_factory.validation.entity_id_to_label
+            id2relation = self.dataset.triple_factory.validation.relation_id_to_label
             with open(os.path.join(dirname, 'id2entity.json'), 'w') as f:
                 json.dump(id2entity, f)
             with open(os.path.join(dirname, 'id2relation.json'), 'w') as f:
@@ -875,10 +869,8 @@ class Verbalizer:
         @type dataset: DataLoader
         """
         self.dataset = dataset
-        self.id2entity = dataset.triple_factory.factory_dict[
-            'training'].entity_id_to_label
-        self.id2relation = dataset.triple_factory.factory_dict[
-            'training'].relation_id_to_label
+        self.id2entity = dataset.triple_factory.training.entity_id_to_label
+        self.id2relation = dataset.triple_factory.training.relation_id_to_label
 
     def verbalize_entity(self, entity_id):
         """
