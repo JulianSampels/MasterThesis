@@ -92,7 +92,7 @@ def main():
                         help='Maximum number of top-k candidates to keep per group (e.g., per head entity).')
     parser.add_argument('--candidates_normalize_mode', choices=['per_head', 'global_joint', 'per_relation'], default='global_joint',
                         help='Normalization mode for candidate scoring: per_head (conditional probs), global_joint (joint probs), per_relation (normalize per relation), none (raw logits).')
-    parser.add_argument('--candidate_generator', choices=['global', 'global_with_tail', 'per_head'], default='per_head',
+    parser.add_argument('--candidate_generator', choices=['global', 'global_with_tail', 'per_head'], default='global_with_tail',
                         help='Type of candidate generator to use: global (threshold/quantile-based), global_with_tail (includes tail logits), per_head (top-k per head).')
     parser.add_argument('--group_strategy', type=int, nargs='+', default=[0],
                         help='Columns to group by for candidate generation (e.g., [0] for head entities).')
