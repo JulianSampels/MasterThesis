@@ -2,6 +2,7 @@ from PathE.pathe.kgloader import KgLoader
 from PathE.pathe.pathdataset import PathDataset
 
 dataset_name = 'fb15k237'
+# dataset_name = 'fb15k'
 # dataset_name = 'codex-small'
 # dataset_name = 'codex-medium'
 # dataset_name = 'codex-large'

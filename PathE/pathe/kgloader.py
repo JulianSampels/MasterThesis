@@ -1,7 +1,7 @@
 import os
 
 import torch
-from pykeen.datasets import (FB15k237, WN18RR, CoDExSmall, CoDExMedium,
+from pykeen.datasets import (FB15k237, FB15k, WN18RR, CoDExSmall, CoDExMedium,
                              YAGO310, OGBWikiKG2, CoDExLarge, Wikidata5M, EagerDataset)
 from pykeen.triples import TriplesFactory
 # from ogb.linkproppred import LinkPropPredDataset
@@ -31,7 +31,7 @@ class KgLoader:
 
     def __init__(self, dataset: str = None, automatically_add_inverse: bool = False, manually_add_inverse: bool = False):
         """
-        :param dataset: the name of the dataset. Currently supported: fb15k237, wn18rr, ogbl-wikikg2
+        :param dataset: the name of the dataset. Currently supported: fb15k237, fb15k, wn18rr, ogbl-wikikg2
         :param automatically_add_inverse: If inverse edges should be added automatically
         :param manually_add_inverse: If inverse edges (h, r, t) -> (t, r^-1, h) should be added manually
         """
@@ -77,6 +77,9 @@ class KgLoader:
         """
         if self.dataset == 'fb15k237':
             self.triple_factory = FB15k237(
+                create_inverse_triples=self.automatically_add_inverse)
+        elif self.dataset == 'fb15k':
+            self.triple_factory = FB15k(
                 create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'codex-small':
             self.triple_factory = CoDExSmall(
@@ -133,10 +136,7 @@ class KgLoader:
         the second is the relation and the third is the tail entity
         :return: True if tensors were populated successfully, false otherwise
         """
-        if self.dataset == 'fb15k237' or self.dataset == 'wn18rr' or \
-                self.dataset == 'codex-small' or self.dataset == 'codex-medium' \
-                or self.dataset == 'yago' or self.dataset == 'ogb-wikikg2' \
-                or self.dataset == 'codex-large' or self.dataset == 'wiki5m':
+        if self.dataset in {'fb15k237', 'fb15k', 'wn18rr', 'codex-small', 'codex-medium', 'yago', 'ogb-wikikg2', 'codex-large', 'wiki5m'}:
             self.num_nodes_total = self.triple_factory.num_entities
             # to get the inverse triples as well
             if self.automatically_add_inverse:
@@ -267,7 +267,7 @@ class KgLoader:
 
         self.inverse_relation_id_offset = self.total_num_original_relations
 
-        if self.dataset in {'fb15k237', 'wn18rr', 'codex-small', 'codex-medium', 'yago', 'ogb-wikikg2', 'codex-large', 'wiki5m'}:
+        if self.dataset in {'fb15k237', 'fb15k', 'wn18rr', 'codex-small', 'codex-medium', 'yago', 'ogb-wikikg2', 'codex-large', 'wiki5m'}:
             self.num_nodes_total = self.triple_factory.num_entities
 
             # Get number of original relations
