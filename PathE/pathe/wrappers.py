@@ -1102,13 +1102,12 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         if not hasattr(self, "_test_acc"):
             assert batch_idx == 0, "Accumulation not cleared from previous test epoch."
-            self._test_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": [], "tail_labels": []}
+            self._test_acc = {"tuples_rp": [], "tuples_tp": [], "logits_rp": [], "logits_tp": []}
 
         self._test_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
         self._test_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
         self._test_acc["tuples_tp"].append(tuples.detach().cpu())
         self._test_acc["logits_tp"].append(logits_tail.detach().cpu())
-        self._test_acc["tail_labels"].append(batch["tail_labels"].detach().cpu())
 
         return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
@@ -1130,8 +1129,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         unique_heads, inverse = heads_all.unique(return_inverse=True, sorted=False)
         scores_agg = torch_scatter.scatter_mean(logits_tail_all, inverse, dim=0)
         # Aggregate eval labels per unique head
-        tail_labels_all = torch.cat(self._test_acc["tail_labels"], dim=0)
-        eval_labels_agg = tail_labels_all[inverse.unique()]
+        eval_labels_agg = self.test_head_tail_adjacency[unique_heads].to(torch.float32)
 
         self.test_tailMRR.update(unique_heads, scores_agg, eval_labels_agg)
         self.test_tailHitsAt1.update(unique_heads, scores_agg, eval_labels_agg)
