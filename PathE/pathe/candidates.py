@@ -942,8 +942,8 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
         beta_values = [0.5]
     else:
         # Generate values from 0 to 1 inclusive with 'steps' number of points
-        alpha_values = np.linspace(0, 1, steps)
-        beta_values = np.linspace(0, 1, steps)
+        alpha_values = np.round(np.linspace(0, 1, steps), 10)
+        beta_values = np.round(np.linspace(0, 1, steps), 10)
     temperature_values = [1.0]
     # temperature_values = [0.5, 1.0, 2.0]
 
