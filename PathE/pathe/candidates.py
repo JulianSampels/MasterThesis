@@ -1009,8 +1009,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
     #     print(row)
     
     # Create heatmaps
-    filedir = args.figure_dir + f"/candidate_grid_search/{args.expname}/{args.candidate_generator}/{args.candidates_normalize_mode}"
-    create_heatmaps(results, save_dir=filedir)
+    create_heatmaps(results, save_dir=args.figure_dir)
     
     # Set best params to the generator
     candidate_generator.alpha = best_params_total[0]
@@ -1076,7 +1075,6 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     
     candidate_generator.per_group_cap = args.candidates_cap # reset to original
     # Create coverage vs size plot
-    filedir = args.figure_dir + f"/candidate_grid_search/{args.expname}/{args.candidate_generator}/{args.candidates_normalize_mode}"
-    create_coverage_vs_size_plot(results, save_dir=filedir, filename="coverage_vs_size.svg")
+    create_coverage_vs_size_plot(results, save_dir=args.figure_dir, filename="coverage_vs_size.svg")
     
     return

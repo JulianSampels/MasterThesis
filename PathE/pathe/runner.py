@@ -214,6 +214,8 @@ def main():
                         help='Whether to use a simple positional encodings.')
 
     args = parser.parse_args()
+    args.log_dir = os.path.join(args.log_dir, args.model)
+    args.figure_dir = os.path.join(args.figure_dir, args.model, args.expname, args.candidate_generator, args.candidates_normalize_mode)
     # Filling missing/optional values if not provided ...
     # args.dtype = torch.double if args.dtype == 'd' else torch.float FIXME
     if not (0 <= args.loss_weight <= 1):
@@ -229,6 +231,7 @@ def main():
 
     # create_dir(args.log_dir)  # root folder for the experiment
     os.makedirs(args.log_dir, exist_ok=True)
+    os.makedirs(args.figure_dir, exist_ok=True)
 
     print(f"Model: {args.model} to train on {args.path_type} paths")
     print(f"Using {args.device} (tensor type: {args.dtype}) with random"
