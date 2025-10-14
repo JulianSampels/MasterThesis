@@ -204,6 +204,8 @@ class PathEModelWrapperTriples(LightningModule):
         else:
             raise ValueError(f"Unknown lp_loss_fn: {lp_loss_fn}")
 
+        self.save_hyperparameters()
+
     def calculate_lp_bce(self, logits, num_negatives = None, labels: torch.Tensor = None, sample_weights: torch.Tensor = None):
         """
         Calculates the weighted BCE loss for link prediction.
@@ -879,6 +881,8 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             self.test_linkHitsAt3 = EntityHitsAtKTriples(k=3)
             self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
             self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
+
+        self.save_hyperparameters()
 
     def configure_optimizers(self):
         if self.use_manual_optimization:

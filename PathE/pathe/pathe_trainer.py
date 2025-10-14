@@ -734,10 +734,10 @@ def create_and_run_training_exp_two_phases(args):
 
     stageprint("Creating loggers, callbacks and setting up trainer")
     # Loggers and trainer
-    tb_logger_t = TensorBoardLogger(save_dir=args.log_dir, name=args.expname + "_tuples", version=args.version)
+    tb_logger_t = TensorBoardLogger(save_dir=args.log_dir, name=f"{args.expname}_tuples", version=args.version)
     exp_dir_t = tb_logger_t.log_dir
     if args.wandb_project is not None:
-        wb_logger_t = WandbLogger(id=args.wandb_id, save_dir=exp_dir_t, name=args.expname + "_tuples",
+        wb_logger_t = WandbLogger(id=args.wandb_id, save_dir=exp_dir_t, name=f"{args.expname}_tuples",
                                   project=args.wandb_project, log_model="all", sync_tensorboard=True)
         wb_logger_t.watch(pl_model_t, log="all"); wb_logger_t.log_hyperparams(args)
     else:
@@ -873,8 +873,7 @@ def create_and_run_training_exp_two_phases(args):
     candidate_generator.print_candidate_statistics(candidates_test, get_group_ids(candidates_test), test_triples, get_group_ids(test_triples), test_set_t.relation_maps, name="Test")
 
     # Create candidate figures
-    filedir = args.figure_dir + f"/candidate_grid_search/{args.expname}/{args.candidate_generator}/{args.candidates_normalize_mode}"
-    create_candidate_figures(candidates_test, test_triples, test_set_t.relation_maps, train_triples, filedir)
+    create_candidate_figures(candidates_test, test_triples, test_set_t.relation_maps, train_triples, args.figure_dir)
 
     # Cleanup Phase 1 resources to stop workers and free memory
     del tr_loader_t, va_loader_t, te_loader_t
@@ -981,10 +980,10 @@ def create_and_run_training_exp_two_phases(args):
         pl_model_tri.cand_metrics_test[f"recall@{k}_total"].set_num_positives(len(test_triples))
 
     # Loggers and trainer
-    tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=args_phase3.expname + "_triples", version=args_phase3.version)
+    tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=f"{args_phase3.expname}_triples", version=args_phase3.version)
     if args_phase3.wandb_project is not None:
         wb_logger_tri = WandbLogger(id=args_phase3.wandb_id, save_dir=tb_logger_tri.log_dir,
-                                    name=args_phase3.expname + "_triples", project=args_phase3.wandb_project,
+                                    name=f"{args_phase3.expname}_triples", project=args_phase3.wandb_project,
                                     log_model="all", sync_tensorboard=True)
         wb_logger_tri.watch(pl_model_tri, log="all"); wb_logger_tri.log_hyperparams(args_phase3)
     else:
