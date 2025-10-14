@@ -1088,7 +1088,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Compute losses
         rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, batch.get('tail_labels'), batch.get('tail_weights'))
+        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.test_head_tail_adjacency)
 
         # Logging losses
         self.log("test_rp_loss", rp_loss, prog_bar=True)

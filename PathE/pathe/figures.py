@@ -185,7 +185,7 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
         freqs.append(freq_per_rel[rel])
     
     # Sort by coverage
-    sorted_indices = np.argsort(covs)
+    sorted_indices = np.argsort(freqs)
     covs_sorted = [covs[i] for i in sorted_indices]
     counts_sorted = [counts[i] for i in sorted_indices]
     freqs_sorted = [freqs[i] for i in sorted_indices]
@@ -215,7 +215,7 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
     
     # Primary axis for coverage
     bars1 = ax1.bar(x - width, avg_covs, width, label='Avg. Coverage per Relation', color='seagreen')
-    ax1.set_xlabel('Coverage Quantile Bin')
+    ax1.set_xlabel('Frequency Quantile Bin')
     ax1.set_ylabel('Avg. Coverage per Relation', color='seagreen')
     ax1.tick_params(axis='y', labelcolor='seagreen')
     ax1.set_xticks(x)
@@ -242,7 +242,7 @@ def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, 
     lines3, labels3 = ax3.get_legend_handles_labels()
     ax1.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper left')
     
-    plt.title('Average Coverage, Candidates, and Frequency per Relation Coverage Quantile')
+    plt.title('Average Coverage, Candidates, and Frequency per Relation Frequency Quantile')
     plt.tight_layout()
     
     # Save the plot
@@ -447,7 +447,7 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, context_triple_st
         freqs.append(freq_per_head[head])
     
     # Sort by coverage
-    sorted_indices = np.argsort(covs)
+    sorted_indices = np.argsort(freqs)
     covs_sorted = [covs[i] for i in sorted_indices]
     counts_sorted = [counts[i] for i in sorted_indices]
     freqs_sorted = [freqs[i] for i in sorted_indices]
@@ -477,7 +477,7 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, context_triple_st
     
     # Primary axis for coverage
     bars1 = ax1.bar(x - width, avg_covs, width, label='Avg. Coverage per Head', color='seagreen')
-    ax1.set_xlabel('Coverage Quantile Bin')
+    ax1.set_xlabel('Frequency Quantile Bin')
     ax1.set_ylabel('Avg. Coverage per Head', color='seagreen')
     ax1.tick_params(axis='y', labelcolor='seagreen')
     ax1.set_xticks(x)
@@ -504,7 +504,7 @@ def create_entity_coverage_bar_chart(candidates, gold_triples, context_triple_st
     lines3, labels3 = ax3.get_legend_handles_labels()
     ax1.legend(lines1 + lines2 + lines3, labels1 + labels2 + labels3, loc='upper left')
     
-    plt.title('Average Coverage, Candidates, and Frequency per Head Entity Coverage Quantile')
+    plt.title('Average Coverage, Candidates, and Frequency per Head Entity Frequency Quantile')
     plt.tight_layout()
     
     # Save the plot
