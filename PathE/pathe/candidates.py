@@ -949,7 +949,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
 
     
     param_combinations = list(itertools.product(temperature_values, beta_values, alpha_values))
-    print(f"Grid search over {len(param_combinations)} parameter combinations.")
+    print(f"Grid search over {len(param_combinations)} parameter combinations: {param_combinations[:5]}...{param_combinations[-5:]}.")
     
     best_total_cov = -float('inf')
     best_params_total = None
@@ -1034,9 +1034,9 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     candidate_sizes = np.unique(np.logspace(np.log10(min_val), np.log10(max_val), num=total_count, dtype=int)).tolist()
     p = 5  # Power for stretching (higher p = more emphasis on small sizes)
     candidate_sizes = np.unique(np.round(np.linspace(min_val**(1/p), max_val**(1/p), num=total_count)**p).astype(int)).tolist()
-    
-    print(f"Grid search over {len(candidate_sizes)} candidate sizes.")
-    
+
+    print(f"Grid search over {len(candidate_sizes)} candidate sizes {candidate_sizes[:5]}...{candidate_sizes[-5:]}.")
+
     results = []
     
     # Compute num_groups for test (only needed for test)
