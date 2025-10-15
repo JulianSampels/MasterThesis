@@ -587,7 +587,7 @@ def create_and_run_training_exp_triples(args):
         trainer.fit(pl_model, tr_dataloader, va_dataloader,
                     ckpt_path=args.triple_checkpoint)  # load or None
         args.triple_checkpoint = checkpoint_callbk.best_model_path
-        print(f"Done. Best model saved in {args.checkpoint}")
+        print(f"Done. Best model saved in {args.triple_checkpoint}")
         ttime = (datetime.datetime.now() - start_time).total_seconds() / 3600
         print(f"Training time: {round(ttime, 2)} hours")
 
@@ -798,7 +798,7 @@ def create_and_run_training_exp_two_phases(args):
         stageprint("Training-validating the model, be patient!")
         trainer_t.fit(pl_model_t, tr_loader_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
         tuple_ckpt = checkpoint_callbk_t.best_model_path
-        print(f"[Tuples] Best model: {tuple_ckpt}")
+        print(f"[Tuples] Done. Best model saved in {tuple_ckpt}")
         ttime = (datetime.datetime.now() - start_time).total_seconds() / 3600
         print(f"[Tuples] Training time: {round(ttime, 2)} hours")
     else:
@@ -1040,7 +1040,7 @@ def create_and_run_training_exp_two_phases(args):
         stageprint("Training-validating the model, be patient!")
         trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         triple_ckpt = checkpoint_callbk_tri.best_model_path
-        print(f"[Triples] Best model: {triple_ckpt}")
+        print(f"[Triples] Done. Best model saved in {triple_ckpt}")
     else:
         triple_ckpt = args_phase3.triple_checkpoint
         print(f"[Triples] Using checkpoint for test: {triple_ckpt}")
