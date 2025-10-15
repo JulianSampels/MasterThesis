@@ -1,5 +1,6 @@
 import os
 
+import pandas as pd
 import torch
 from pykeen.datasets import (FB15k237, FB15k, WN18RR, CoDExSmall, CoDExMedium,
                              YAGO310, OGBWikiKG2, CoDExLarge, Wikidata5M, EagerDataset)
@@ -104,11 +105,18 @@ class KgLoader:
                 create_inverse_triples=self.automatically_add_inverse)
         elif self.dataset == 'test-dataset':
             # Load raw TSVs as DataFrames
-            import pandas as pd
             base_path = os.path.join(os.path.join(os.path.abspath(os.path.join(os.getcwd(), os.pardir)), "data"), "test-dataset")
-            train_df = pd.read_csv(os.path.join(base_path, "train.tsv"), sep='\t', header=None, names=['head', 'relation', 'tail'])
-            val_df = pd.read_csv(os.path.join(base_path, "val.tsv"), sep='\t', header=None, names=['head', 'relation', 'tail'])
-            test_df = pd.read_csv(os.path.join(base_path, "test.tsv"), sep='\t', header=None, names=['head', 'relation', 'tail'])
+            # Update column names to match your TSV's order: head, tail, relation vs. head, relation, tail
+            names = ['head', 'tail', 'relation']
+            print(f"Loading dataset from {base_path} with column names {names}. Assuming tab-separated values. Please ensure this matches your data format!")
+            train_df = pd.read_csv(os.path.join(base_path, "train.tsv"), sep='\t', header=None, names=names)
+            val_df = pd.read_csv(os.path.join(base_path, "val.tsv"), sep='\t', header=None, names=names)
+            test_df = pd.read_csv(os.path.join(base_path, "test.tsv"), sep='\t', header=None, names=names)
+
+            # Reorder columns to match TriplesFactory expectations: head, relation, tail
+            train_df = train_df[['head', 'relation', 'tail']]
+            val_df = val_df[['head', 'relation', 'tail']]
+            test_df = test_df[['head', 'relation', 'tail']]
             
             # Combine for full mappings (no duplicates)
             combined_df = pd.concat([train_df, val_df, test_df]).drop_duplicates()
