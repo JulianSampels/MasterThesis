@@ -43,7 +43,6 @@ MAX_WORKERS_TEST = 16
 
 
 def predict_all(trainer, model, loader, ckpt_path=None):
-    """Old version: Create a new dataloader without persistent workers for more speed, with performance measuring."""
     # Create a new dataloader without persistent workers for more speed
     pred_loader = torch.utils.data.DataLoader(
         loader.dataset, batch_size=loader.batch_size, 
@@ -279,7 +278,9 @@ def create_and_run_training_exp_tuples(args):
         # Logging gradients, topology, histogram
         wb_logger.watch(pl_model, log="all")
         wb_logger.log_hyperparams(args)
-    else: wb_logger = None
+    else: 
+        wb_logger = None
+        tb_logger.log_hyperparams(args)
 
     # Creating callbacks for checkpointing and early stopping
     mode = "min" if args.tuple_monitor.endswith("loss") else "max"
@@ -546,7 +547,9 @@ def create_and_run_training_exp_triples(args):
         # Logging gradients, topology, histogram
         wb_logger.watch(pl_model, log="all")
         wb_logger.log_hyperparams(args)
-    else: wb_logger = None
+    else: 
+        wb_logger = None
+        tb_logger.log_hyperparams(args)
 
     # Creating callbacks for checkpointing and early stopping
     mode = "min" if args.triple_monitor.endswith("loss") else "max"
@@ -751,6 +754,7 @@ def create_and_run_training_exp_two_phases(args):
         wb_logger_t.watch(pl_model_t, log="all"); wb_logger_t.log_hyperparams(args)
     else:
         wb_logger_t = None
+        tb_logger_t.log_hyperparams(args)
 
     # Creating callbacks for checkpointing and early stopping
     mode = "min" if args.tuple_monitor.endswith("loss") else "max"
@@ -997,6 +1001,7 @@ def create_and_run_training_exp_two_phases(args):
         wb_logger_tri.watch(pl_model_tri, log="all"); wb_logger_tri.log_hyperparams(args_phase3)
     else:
         wb_logger_tri = None
+        tb_logger_tri.log_hyperparams(args_phase3)
     checkpoint_callbk_tri = ModelCheckpoint(
         monitor=args_phase3.triple_monitor, dirpath=args_phase3.checkpoint_dir, mode="min" if args_phase3.triple_monitor.endswith("loss") else "max",
         filename=model_name + f"-phase3-triple-{{epoch}}-{{{args_phase3.triple_monitor}:.2f}}",

@@ -157,7 +157,6 @@ class PathEModelWrapperTriples(LightningModule):
         self.test_relationHitsAt3 = RelationHitsAtKTriples(filtration_dict, k=3)
         self.test_relationHitsAt5 = RelationHitsAtKTriples(filtration_dict, k=5)
         self.test_relationHitsAt10 = RelationHitsAtKTriples(filtration_dict, k=10)
-        # self.save_hyperparameters(ignore=['pathe_model'])
 
         if self.val_num_negatives > 0:  # watch link prediction metrics
             self.val_linkMRR = EntityMRRTriples()
@@ -204,7 +203,7 @@ class PathEModelWrapperTriples(LightningModule):
         else:
             raise ValueError(f"Unknown lp_loss_fn: {lp_loss_fn}")
 
-        self.save_hyperparameters(ignore=['pathe_model', 'global_head_tail_adjacency', 'train_head_tail_adjacency', 'val_head_tail_adjacency', 'test_head_tail_adjacency', 'filtration_dict'])
+        # self.save_hyperparameters(ignore=['pathe_model', 'global_head_tail_adjacency', 'train_head_tail_adjacency', 'val_head_tail_adjacency', 'test_head_tail_adjacency', 'filtration_dict'])
 
     def calculate_lp_bce(self, logits, num_negatives = None, labels: torch.Tensor = None, sample_weights: torch.Tensor = None):
         """
@@ -882,7 +881,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             self.test_linkHitsAt5 = EntityHitsAtKTriples(k=5)
             self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
-        self.save_hyperparameters(ignore=['pathe_model', 'global_head_tail_adjacency', 'train_head_tail_adjacency', 'val_head_tail_adjacency', 'test_head_tail_adjacency', 'filtration_dict'])
+        # self.save_hyperparameters(ignore=['pathe_model', 'global_head_tail_adjacency', 'train_head_tail_adjacency', 'val_head_tail_adjacency', 'test_head_tail_adjacency', 'filtration_dict'])
 
     def configure_optimizers(self):
         if self.use_manual_optimization:
