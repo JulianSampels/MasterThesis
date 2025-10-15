@@ -108,12 +108,10 @@ def main():
                         help='The name of the wandb project for logging.')
     parser.add_argument('--checkpointing', action='store_true', default=False,
                         help='Whether the model state dict will be dumped.')
-    parser.add_argument('--checkpoint', type=lambda x: is_file(parser, x),
-                        help='Path to a model checkpoint to load. Use only if single phase model is used.')
     parser.add_argument('--triple_checkpoint', type=lambda x: is_file(parser, x),
-                        help='Path to a triple model checkpoint to load. Use only if two-phase model is used.')
+                        help='Path to a triple model checkpoint to load.')
     parser.add_argument('--tuple_checkpoint', type=lambda x: is_file(parser, x),
-                        help='Path to a tuple model checkpoint to load. Use only if two-phase model is used.')
+                        help='Path to a tuple model checkpoint to load.')
 
     # The following arguments are used to control the training process
     parser.add_argument('--lp_loss_fn', action='store',
@@ -256,7 +254,6 @@ def main():
 
     # print(args)
     if args.model == "pathe":
-        assert args.triple_checkpoint is None, "triple_checkpoint can only be used with pathe2Phases"
         if args.val_num_negatives == 0:
             assert "link" not in args.triple_monitor, f"Link prediction metric {args.triple_monitor} cannot be used when val_num_negatives=0"
         assert "recall" not in args.triple_monitor, f"Recall metrics cannot be used with single phase triple model."
@@ -264,12 +261,10 @@ def main():
     elif args.model == "patheTuples":
         if args.val_num_negatives == 0:
             assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
-        assert args.tuple_checkpoint is None, "tuple_checkpoint can only be used with pathe2Phases"
         pathe_trainer.create_and_run_training_exp_tuples(args)
     elif args.model == "pathe2Phases":
         if args.val_num_negatives == 0:
             assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
-        assert args.checkpoint is None, "checkpoint cannot be used with pathe2Phases. Use triple_checkpoint and/or tuple_checkpoint instead."
         assert args.use_manual_optimization, "Two-phase training requires --use_manual_optimization to be set for proper relation prediction in tuples training."
         assert args.loss_weight == 1, "Loss weight must be 1 for two-phase training (only link loss is used in phase 2)."
         # assert args.link_head_detached, "Two-phase training requires --link_head_detached to be set for proper relation prediction in tuples training."

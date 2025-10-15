@@ -286,7 +286,7 @@ def create_and_run_training_exp_tuples(args):
     mode = "min" if args.tuple_monitor.endswith("loss") else "max"
     checkpoint_callbk = ModelCheckpoint(
         monitor=args.tuple_monitor, dirpath=args.checkpoint_dir, mode=mode,
-        filename=model_name + f"-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
+        filename=model_name + f"-tuple-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
         every_n_train_steps=args.chekpoint_ksteps)
     estopping_callbk = EarlyStopping(
         monitor=args.tuple_monitor, patience=args.patience, mode=mode)
@@ -324,9 +324,9 @@ def create_and_run_training_exp_tuples(args):
         # Train and resume are the same assuming their setup is consistent
         stageprint("Training-validating the model, be patient!")
         trainer.fit(pl_model, tr_dataloader, va_dataloader,
-                    ckpt_path=args.checkpoint)  # load or None
-        args.checkpoint = checkpoint_callbk.best_model_path
-        print(f"Done. Best model saved in {args.checkpoint}")
+                    ckpt_path=args.tuple_checkpoint)  # load or None
+        args.tuple_checkpoint = checkpoint_callbk.best_model_path
+        print(f"Done. Best model saved in {args.tuple_checkpoint}")
         ttime = (datetime.datetime.now() - start_time).total_seconds() / 3600
         print(f"Training time: {round(ttime, 2)} hours")
 
@@ -340,7 +340,7 @@ def create_and_run_training_exp_tuples(args):
     stageprint("Evaluating the model on the test set")
     test_dict = trainer.test(model=pl_model if args.cmd == "test" else None,
                              dataloaders=te_dataloader,
-                             ckpt_path=args.checkpoint)[0]
+                             ckpt_path=args.tuple_checkpoint)[0]
     print("\nTesting results: {}".format(test_dict))
 
     # results_dict = {**valid_dict, **test_dict}
@@ -486,7 +486,7 @@ def create_and_run_training_exp_triples(args):
     use_persist = args.num_workers > 0
     tr_dataloader = torch.utils.data.DataLoader(
         train_set, batch_size=args.batch_size,
-        collate_fn=collate_fn, shuffle=False,
+        collate_fn=collate_fn, shuffle=True,
         pin_memory=use_cuda, num_workers=args.num_workers,
         persistent_workers=use_persist,
         sampler=NegativeTripleSampler(tr_positives, args.num_negatives))
@@ -555,7 +555,7 @@ def create_and_run_training_exp_triples(args):
     mode = "min" if args.triple_monitor.endswith("loss") else "max"
     checkpoint_callbk = ModelCheckpoint(
         monitor=args.triple_monitor, dirpath=args.checkpoint_dir, mode=mode,
-        filename=model_name + f"-{{epoch}}-{{{args.triple_monitor}:.2f}}",
+        filename=model_name + f"-triple-{{epoch}}-{{{args.triple_monitor}:.2f}}",
         every_n_train_steps=args.chekpoint_ksteps)
     estopping_callbk = EarlyStopping(
         monitor=args.triple_monitor, patience=args.patience, mode=mode)
@@ -582,8 +582,8 @@ def create_and_run_training_exp_triples(args):
         # Train and resume are the same assuming their setup is consistent
         stageprint("Training-validating the model, be patient!")
         trainer.fit(pl_model, tr_dataloader, va_dataloader,
-                    ckpt_path=args.checkpoint)  # load or None
-        args.checkpoint = checkpoint_callbk.best_model_path
+                    ckpt_path=args.triple_checkpoint)  # load or None
+        args.triple_checkpoint = checkpoint_callbk.best_model_path
         print(f"Done. Best model saved in {args.checkpoint}")
         ttime = (datetime.datetime.now() - start_time).total_seconds() / 3600
         print(f"Training time: {round(ttime, 2)} hours")
@@ -598,7 +598,7 @@ def create_and_run_training_exp_triples(args):
     stageprint("Evaluating the model on the test set")
     test_dict = trainer.test(model=pl_model if args.cmd == "test" else None,
                              dataloaders=te_dataloader,
-                             ckpt_path=args.checkpoint)[0]
+                             ckpt_path=args.triple_checkpoint)[0]
     print("\nTesting results: {}".format(test_dict))
 
     # results_dict = {**valid_dict, **test_dict}
@@ -746,7 +746,7 @@ def create_and_run_training_exp_two_phases(args):
 
     stageprint("Creating loggers, callbacks and setting up trainer")
     # Loggers and trainer
-    tb_logger_t = TensorBoardLogger(save_dir=args.log_dir, name=f"{args.expname}_tuples", version=args.version)
+    tb_logger_t = TensorBoardLogger(save_dir=args.log_dir, name=args.expname, version=args.version, sub_dir="tuples")
     exp_dir_t = tb_logger_t.log_dir
     if args.wandb_project is not None:
         wb_logger_t = WandbLogger(id=args.wandb_id, save_dir=exp_dir_t, name=f"{args.expname}_tuples",
@@ -760,7 +760,7 @@ def create_and_run_training_exp_two_phases(args):
     mode = "min" if args.tuple_monitor.endswith("loss") else "max"
     checkpoint_callbk_t = ModelCheckpoint(
         monitor=args.tuple_monitor, dirpath=args.checkpoint_dir, mode=mode,
-        filename=model_name + f"-phase1-tuple-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
+        filename=model_name + f"-tuple-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
         every_n_train_steps=args.chekpoint_ksteps)
     estopping_callbk_t = EarlyStopping(monitor=args.tuple_monitor, patience=args.patience, mode=mode)
     dataset_callbk_t = DatasetUpdater([train_set_t, valid_set_t] if args.train_paths else [train_set_t.dataset])
@@ -948,12 +948,12 @@ def create_and_run_training_exp_two_phases(args):
         persistent_workers=use_persist)
     va_loader_tri = torch.utils.data.DataLoader(
         valid_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
-        shuffle=True, pin_memory=use_cuda,
+        shuffle=False, pin_memory=use_cuda,
         num_workers=args_phase3.num_workers,
         persistent_workers=use_persist)
     te_loader_tri = torch.utils.data.DataLoader(
         test_set_tri, batch_size=args_phase3.val_batch_size, collate_fn=collate_fn,
-        shuffle=True, pin_memory=use_cuda,
+        shuffle=False, pin_memory=use_cuda,
         num_workers=min(args_phase3.num_workers, MAX_WORKERS_TEST),
         persistent_workers=False)
 
@@ -993,7 +993,7 @@ def create_and_run_training_exp_two_phases(args):
         pl_model_tri.cand_metrics_test[f"recall@{k}_total"].set_num_positives(len(test_triples))
 
     # Loggers and trainer
-    tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=f"{args_phase3.expname}_triples", version=args_phase3.version)
+    tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=args_phase3.expname, version=args_phase3.version, sub_dir="triples")
     if args_phase3.wandb_project is not None:
         wb_logger_tri = WandbLogger(id=args_phase3.wandb_id, save_dir=tb_logger_tri.log_dir,
                                     name=f"{args_phase3.expname}_triples", project=args_phase3.wandb_project,
@@ -1004,7 +1004,7 @@ def create_and_run_training_exp_two_phases(args):
         tb_logger_tri.log_hyperparams(args_phase3)
     checkpoint_callbk_tri = ModelCheckpoint(
         monitor=args_phase3.triple_monitor, dirpath=args_phase3.checkpoint_dir, mode="min" if args_phase3.triple_monitor.endswith("loss") else "max",
-        filename=model_name + f"-phase3-triple-{{epoch}}-{{{args_phase3.triple_monitor}:.2f}}",
+        filename=model_name + f"-triple-{{epoch}}-{{{args_phase3.triple_monitor}:.2f}}",
         every_n_train_steps=args_phase3.chekpoint_ksteps)
     estopping_callbk_tri = EarlyStopping(monitor=args_phase3.triple_monitor, patience=args_phase3.patience,
                                          mode="min" if args_phase3.triple_monitor.endswith("loss") else "max")

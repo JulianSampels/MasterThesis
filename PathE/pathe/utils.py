@@ -185,14 +185,19 @@ def resume_logging_setup(log_dir, exp_name, version=None, wandb_project=None):
 
     # Step 2: check if there is a valid checkpoint in the exp folder
     ckp_dir = os.path.join(exp_dir, "checkpoints")
-    checkpoint = glob.glob(os.path.join(ckp_dir, "*.ckpt"))
-    if len(checkpoint) == 0:
-        raise ValueError(f"No checkpoint in {ckp_dir}")
-    elif len(checkpoint) > 1:
-        raise ValueError(f"Too many checkpoints in {ckp_dir}")
-    checkpoint = checkpoint[0]  # safe to assume 1 here
+    tuple_checkpoints = glob.glob(os.path.join(ckp_dir, "*-tuple-*.ckpt"))
+    triple_checkpoints = glob.glob(os.path.join(ckp_dir, "*-triple-*.ckpt"))
     
-    # Step 3: check if there is a wandb project to resume
+    if len(tuple_checkpoints) > 1:
+        raise ValueError(f"Multiple tuple checkpoints found in {ckp_dir}: {tuple_checkpoints}")
+    if len(triple_checkpoints) > 1:
+        raise ValueError(f"Multiple triple checkpoints found in {ckp_dir}: {triple_checkpoints}")
+    
+    tuple_checkpoint = tuple_checkpoints[0] if tuple_checkpoints else None
+    triple_checkpoint = triple_checkpoints[0] if triple_checkpoints else None
+    
+    # Read wandb_id if wandb_project is provided
+    wandb_id = None
     if wandb_project is not None:
         wandb_dir = os.path.join(exp_dir, "wandb")
         if not os.path.isdir(wandb_dir):  # no wandb folder
@@ -206,11 +211,12 @@ def resume_logging_setup(log_dir, exp_name, version=None, wandb_project=None):
             raise ValueError("Inconsistent setup configuration")
         
         wandb_id = wandb_runs[-1]
-
+    
     return {
         "exp_dir": exp_dir,
         "version": version,
-        "checkpoint": checkpoint,
+        "tuple_checkpoint": tuple_checkpoint,
+        "triple_checkpoint": triple_checkpoint,
         "checkpoint_dir": ckp_dir,
         "wandb_id": wandb_id if wandb_project is not None else None,
     }
