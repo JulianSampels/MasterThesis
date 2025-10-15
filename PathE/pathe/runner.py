@@ -202,6 +202,8 @@ def main():
                         help='If provided, data will be loaded from the dump.')
     parser.add_argument('--val_check_interval', type=float, default=1.0,
                         help='How often per epoch to check the validation set.')
+    parser.add_argument('--check_val_every_n_epoch', type=int, default=1,
+                        help='Number of epochs between validation checks.')
     parser.add_argument('--chekpoint_ksteps', type=int, default=None,
                         help='If given, dumps the model every k train steps.')
 

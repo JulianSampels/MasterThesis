@@ -306,6 +306,7 @@ def create_and_run_training_exp_tuples(args):
             limit_train_batches=tr_limit, limit_val_batches=va_limit,
             logger=logger_tmp, log_every_n_steps=5,
             val_check_interval=args.val_check_interval,
+            check_val_every_n_epoch=args.check_val_every_n_epoch,
             callbacks=[estopping_callbk, checkpoint_callbk, dataset_callbk],
         )
     else:
@@ -315,6 +316,7 @@ def create_and_run_training_exp_tuples(args):
             limit_train_batches=tr_limit, limit_val_batches=va_limit,
             logger=logger_tmp, log_every_n_steps=5,
             val_check_interval=args.val_check_interval,
+            check_val_every_n_epoch=args.check_val_every_n_epoch,
             gradient_clip_algorithm='norm',  # CHANGED THIS
             accumulate_grad_batches=args.accumulate_gradient,
             callbacks=[estopping_callbk, checkpoint_callbk, dataset_callbk],
@@ -573,6 +575,7 @@ def create_and_run_training_exp_triples(args):
         limit_train_batches=tr_limit, limit_val_batches=va_limit,
         logger=logger_tmp, log_every_n_steps=5,
         val_check_interval=args.val_check_interval,
+        check_val_every_n_epoch=args.check_val_every_n_epoch,
         gradient_clip_algorithm='norm',  # CHANGED THIS
         accumulate_grad_batches=args.accumulate_gradient,
         callbacks=[estopping_callbk, checkpoint_callbk, dataset_callbk],
@@ -775,6 +778,7 @@ def create_and_run_training_exp_two_phases(args):
             limit_train_batches=tr_limit, limit_val_batches=va_limit,
             logger=[tb_logger_t] + ([wb_logger_t] if wb_logger_t else []), log_every_n_steps=5,
             val_check_interval=args.val_check_interval,
+            check_val_every_n_epoch=args.check_val_every_n_epoch,
             callbacks=[estopping_callbk_t, checkpoint_callbk_t, dataset_callbk_t],
         )
     else:
@@ -784,6 +788,7 @@ def create_and_run_training_exp_two_phases(args):
             limit_train_batches=tr_limit, limit_val_batches=va_limit,
             logger=[tb_logger_t] + ([wb_logger_t] if wb_logger_t else []), log_every_n_steps=5,
             val_check_interval=args.val_check_interval,
+            check_val_every_n_epoch=args.check_val_every_n_epoch,
             gradient_clip_algorithm='norm',  # CHANGED THIS
             accumulate_grad_batches=args.accumulate_gradient,
             callbacks=[estopping_callbk_t, checkpoint_callbk_t, dataset_callbk_t],
@@ -1016,6 +1021,7 @@ def create_and_run_training_exp_two_phases(args):
         limit_train_batches=tr_limit, limit_val_batches=va_limit,
         logger=[tb_logger_tri] + ([wb_logger_tri] if wb_logger_tri else []),
         log_every_n_steps=5, val_check_interval=args_phase3.val_check_interval,
+        check_val_every_n_epoch=args_phase3.check_val_every_n_epoch,
         gradient_clip_algorithm='norm', accumulate_grad_batches=args_phase3.accumulate_gradient,
         callbacks=[estopping_callbk_tri, checkpoint_callbk_tri, dataset_callbk_tri],
     )
