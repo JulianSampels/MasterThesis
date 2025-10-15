@@ -21,7 +21,7 @@ from .candidates import *
 
 from . import triple_lib
 from .pather_models import PathEModelTriples, PathEModelTuples
-from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset
+from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset, create_vocabulary_from_relations
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir, \
     memmap_corrupted_triples_from_dir
@@ -89,6 +89,7 @@ def create_and_run_training_exp_tuples(args):
     unique_entities = triple_lib.get_unique_entities(train_triples, val_triples, test_triples)
     num_entities = unique_entities.size()[0]
     unique_relations = triple_lib.get_unique_relations(train_triples, val_triples, test_triples)
+    tokens_to_idxs = create_vocabulary_from_relations(unique_relations.tolist(), ["MSK"])
     class_weights = triple_lib.get_class_weights_without_special_tokens(train_triples) if args.class_weigths else None
 
     # Load relation to inverse relation mappings
@@ -143,7 +144,8 @@ def create_and_run_training_exp_tuples(args):
         parallel=parallel,
         num_workers=args.num_workers,
         neg_tuple_store=negatives[0],
-        head_tail_adjacency=train_head_tail_adjacency
+        head_tail_adjacency=train_head_tail_adjacency,
+        tokens_to_idxs=tokens_to_idxs
     )
     # Using shared data structures for valid and test
     tokens_to_idxs = train_set.tokens_to_idxs
@@ -371,6 +373,8 @@ def create_and_run_training_exp_triples(args):
     unique_entities = triple_lib.get_unique_entities(
         train_triples, val_triples, test_triples)
     num_entities = unique_entities.size()[0]
+    unique_relations = triple_lib.get_unique_relations(train_triples, val_triples, test_triples)
+    tokens_to_idxs = create_vocabulary_from_relations(unique_relations.tolist(), ["MSK"])
     class_weights = triple_lib.get_class_weights_without_special_tokens(
         train_triples) if args.class_weigths else None
 
@@ -418,6 +422,7 @@ def create_and_run_training_exp_triples(args):
         parallel=parallel,
         num_workers=args.num_workers,
         neg_triple_store=negatives[0],
+        tokens_to_idxs=tokens_to_idxs
     )
     # Using shared data structures for valid and test
     tokens_to_idxs = train_set.tokens_to_idxs
@@ -624,7 +629,10 @@ def create_and_run_training_exp_two_phases(args):
     paths, relcon, _ = du.load_unrolled_setup(args.train_paths, args.path_setup)
     filtration_dict = triple_lib.make_relation_filter_dict_no_sp_tokens(train_triples, val_triples, test_triples)
     unique_entities = triple_lib.get_unique_entities(train_triples, val_triples, test_triples)
+    assert unique_entities.size(0) == unique_entities.max() + 1, "Entity IDs must be contiguous and start from 0"
     num_entities = unique_entities.size(0)
+    unique_relations = triple_lib.get_unique_relations(train_triples, val_triples, test_triples)
+    tokens_to_idxs = create_vocabulary_from_relations(unique_relations.tolist(), ["MSK"])
     class_weights = triple_lib.get_class_weights_without_special_tokens(train_triples) if args.class_weigths else None
 
     # Load relation to inverse relation mappings
@@ -660,7 +668,8 @@ def create_and_run_training_exp_two_phases(args):
         maximum_tuple_paths=args.max_ppt,
         num_negatives=args.num_negatives, tuple_corruptor=None,
         parallel=parallel, num_workers=args.num_workers, neg_tuple_store=None,
-        head_tail_adjacency=train_head_tail_adjacency
+        head_tail_adjacency=train_head_tail_adjacency,
+        tokens_to_idxs=tokens_to_idxs
     )
     # Using shared data structures for valid and test
     tokens_to_idxs = train_set_t.tokens_to_idxs
@@ -910,7 +919,7 @@ def create_and_run_training_exp_two_phases(args):
         path_store=paths, relcontext_store=relcon,
         triple_store=candidates_train, labels=train_labels, group_ids=get_group_ids(candidates_train), 
         context_triple_store=train_triples, maximum_triple_paths=args_phase3.max_ppt,
-        parallel=parallel, num_workers=args_phase3.num_workers)
+        parallel=parallel, num_workers=args_phase3.num_workers, tokens_to_idxs=tokens_to_idxs)
     tokens_to_idxs = train_set_tri.tokens_to_idxs  # shared
     path_store = (train_set_tri.relation_paths, train_set_tri.entity_paths, train_set_tri.path_index)
     valid_set_tri = CandidateTripleEntityMultiPathDataset(

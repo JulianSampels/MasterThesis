@@ -192,20 +192,50 @@ def create_vocabulary(paths: List[List[int]], xtokens: List[str]):
     # self.start_nodes_vocab = sorted(np.unique(sample_df['start_node']))
     # self.end_nodes_vocab = sorted(np.unique(sample_df['end_node']))
     relation_vocab = sorted(relation_cnt)
-    min_relation_idx, max_relation_idx = \
-        min(relation_vocab), max(relation_vocab)
+    min_relation_idx, max_relation_idx = min(relation_vocab), max(relation_vocab)
     expected_relation_vocab = list(
         range(min_relation_idx, max_relation_idx + 1))
     if relation_vocab != expected_relation_vocab:
         missing = set(expected_relation_vocab) - set(relation_vocab)
         logger.warn("Relation set may not be complete, sample more paths before"
-                    f" training! Removing unseen relations for now: {missing}")
+                    f" training! Removing {len(missing)} unseen relations for now: {missing}")
     print(f"Relation size: {len(relation_vocab)} min {min_relation_idx}")
     # Saving token encoder and decoder: from tokens to indices and v.v.
     tokens_to_idxs = {t: idx for idx, t in enumerate(
         ["PAD"] + xtokens + relation_vocab)}
 
     return relation_vocab, tokens_to_idxs
+
+
+def create_vocabulary_from_relations(relations: List[int], xtokens: List[str]) -> Dict[str, int]:
+    """
+    Create a vocabulary based on the relations provided.
+    This will provide an encoding for both the relations and the special tokens,
+    which will be prepended in the mapping (they offset the rel. mapping). Note
+    that the PADding token is always included to extend the ``xtokens``.
+
+    Parameters
+    ----------
+    relations : List[int]
+        A list containing unique relation ids.
+    xtokens : List[str]
+        The special tokens to add to the vocabulary, which will offset idxs.
+
+    Returns
+    -------
+    tokens_to_idxs : Dict[str, int]
+        Mapping from token to index.
+    """
+    relation_vocab = sorted(relations)
+    if relation_vocab:
+        min_relation_idx, max_relation_idx = min(relation_vocab), max(relation_vocab)
+        expected_relation_vocab = list(range(min_relation_idx, max_relation_idx + 1))
+        if relation_vocab != expected_relation_vocab:
+            missing = set(expected_relation_vocab) - set(relation_vocab)
+            logger.warning(f"Relation vocabulary is not contiguous. {len(missing)}-many missing relations: {sorted(missing)}. This may indicate incomplete data across splits.")
+    tokens_to_idxs = {t: idx for idx, t in enumerate(
+        ["PAD"] + xtokens + relation_vocab)}
+    return tokens_to_idxs
 
 
 def check_vocabulary(paths: List[List[int]], vocabulary: List):
