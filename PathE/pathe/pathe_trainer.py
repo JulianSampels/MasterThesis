@@ -289,7 +289,7 @@ def create_and_run_training_exp_tuples(args):
         filename=model_name + f"-tuple-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
         every_n_train_steps=args.chekpoint_ksteps)
     estopping_callbk = EarlyStopping(
-        monitor=args.tuple_monitor, patience=args.patience, mode=mode)
+        monitor=args.tuple_monitor, patience=args.patience, mode=mode, check_on_train_epoch_end=False)
     dataset_callbk = DatasetUpdater(  # datasets to seed per-epoch
         [train_set, valid_set] if args.train_paths else [train_set.dataset])
 
@@ -560,7 +560,7 @@ def create_and_run_training_exp_triples(args):
         filename=model_name + f"-triple-{{epoch}}-{{{args.triple_monitor}:.2f}}",
         every_n_train_steps=args.chekpoint_ksteps)
     estopping_callbk = EarlyStopping(
-        monitor=args.triple_monitor, patience=args.patience, mode=mode)
+        monitor=args.triple_monitor, patience=args.patience, mode=mode, check_on_train_epoch_end=False)
     dataset_callbk = DatasetUpdater(  # datasets to seed per-epoch
         [train_set, valid_set] if args.train_paths else [train_set.dataset])
 
@@ -765,7 +765,8 @@ def create_and_run_training_exp_two_phases(args):
         monitor=args.tuple_monitor, dirpath=args.checkpoint_dir, mode=mode,
         filename=model_name + f"-tuple-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
         every_n_train_steps=args.chekpoint_ksteps)
-    estopping_callbk_t = EarlyStopping(monitor=args.tuple_monitor, patience=args.patience, mode=mode)
+    estopping_callbk_t = EarlyStopping(
+        monitor=args.tuple_monitor, patience=args.patience, mode=mode, check_on_train_epoch_end=False)
     dataset_callbk_t = DatasetUpdater([train_set_t, valid_set_t] if args.train_paths else [train_set_t.dataset])
 
     tr_limit, va_limit = (.1, .2) if args.debug else (1., 1.)
@@ -1007,12 +1008,14 @@ def create_and_run_training_exp_two_phases(args):
     else:
         wb_logger_tri = None
         tb_logger_tri.log_hyperparams(args_phase3)
+
+    mode = "min" if args_phase3.triple_monitor.endswith("loss") else "max"
     checkpoint_callbk_tri = ModelCheckpoint(
-        monitor=args_phase3.triple_monitor, dirpath=args_phase3.checkpoint_dir, mode="min" if args_phase3.triple_monitor.endswith("loss") else "max",
+        monitor=args_phase3.triple_monitor, dirpath=args_phase3.checkpoint_dir, mode=mode,
         filename=model_name + f"-triple-{{epoch}}-{{{args_phase3.triple_monitor}:.2f}}",
         every_n_train_steps=args_phase3.chekpoint_ksteps)
-    estopping_callbk_tri = EarlyStopping(monitor=args_phase3.triple_monitor, patience=args_phase3.patience,
-                                         mode="min" if args_phase3.triple_monitor.endswith("loss") else "max")
+    estopping_callbk_tri = EarlyStopping(
+        monitor=args_phase3.triple_monitor, patience=args_phase3.patience, mode=mode, check_on_train_epoch_end=False)
     dataset_callbk_tri = DatasetUpdater([train_set_tri, valid_set_tri] if args_phase3.train_paths else [train_set_tri.dataset])
 
     trainer_tri = Trainer(
