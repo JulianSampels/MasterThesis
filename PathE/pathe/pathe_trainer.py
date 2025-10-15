@@ -325,6 +325,9 @@ def create_and_run_training_exp_tuples(args):
     if args.cmd in ["train", "resume"]:
         # Train and resume are the same assuming their setup is consistent
         stageprint("Training-validating the model, be patient!")
+        if args.cmd == "resume":
+            # Run validation first to log metrics (e.g., 'valid_mrr') before training starts
+            trainer.validate(pl_model, va_dataloader, ckpt_path=args.tuple_checkpoint)
         trainer.fit(pl_model, tr_dataloader, va_dataloader,
                     ckpt_path=args.tuple_checkpoint)  # load or None
         args.tuple_checkpoint = checkpoint_callbk.best_model_path
@@ -584,6 +587,9 @@ def create_and_run_training_exp_triples(args):
     if args.cmd in ["train", "resume"]:
         # Train and resume are the same assuming their setup is consistent
         stageprint("Training-validating the model, be patient!")
+        if args.cmd == "resume":
+            # Run validation first to log metrics (e.g., 'valid_mrr') before training starts
+            trainer.validate(pl_model, va_dataloader, ckpt_path=args.triple_checkpoint)
         trainer.fit(pl_model, tr_dataloader, va_dataloader,
                     ckpt_path=args.triple_checkpoint)  # load or None
         args.triple_checkpoint = checkpoint_callbk.best_model_path
@@ -797,6 +803,9 @@ def create_and_run_training_exp_two_phases(args):
     if args.cmd in ["train", "resume"] and not args.skip_phase1:
         # Train and resume are the same assuming their setup is consistent
         stageprint("Training-validating the model, be patient!")
+        if args.cmd == "resume":
+            # Run validation first to log metrics (e.g., 'valid_mrr') before training starts
+            trainer_t.validate(pl_model_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
         trainer_t.fit(pl_model_t, tr_loader_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
         tuple_ckpt = checkpoint_callbk_t.best_model_path
         print(f"[Tuples] Done. Best model saved in {tuple_ckpt}")
@@ -1041,6 +1050,9 @@ def create_and_run_training_exp_two_phases(args):
 
     if args_phase3.cmd in ["train", "resume"] and not args_phase3.skip_phase2:
         stageprint("Training-validating the model, be patient!")
+        if args_phase3.cmd == "resume":
+            # Run validation first to log metrics (e.g., 'valid_link_mrr') before training starts
+            trainer_tri.validate(pl_model_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         triple_ckpt = checkpoint_callbk_tri.best_model_path
         print(f"[Triples] Done. Best model saved in {triple_ckpt}")
