@@ -81,7 +81,7 @@ def create_heatmaps(results, save_dir="./figures"):
 
     print(f"Heatmaps and results saved to {save_dir}/")
 
-def create_coverage_vs_size_plot(results, save_dir="./figures", filename="coverage_vs_size.svg"):
+def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="coverage_vs_total_size.svg"):
     """
     Create a line plot showing total coverage, average recall per group, and candidate density vs. candidate size.
     Saves the plot as an SVG file.
@@ -129,6 +129,61 @@ def create_coverage_vs_size_plot(results, save_dir="./figures", filename="covera
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='center right')
     
     plt.title('Coverage and Density vs. Candidate Size')
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Plot and results saved to {save_dir}/")
+
+def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filename="coverage_vs_avg_group_size.svg"):
+    """
+    Create a line plot showing total coverage, average recall per group, and candidate density vs. avg candidate size per group.
+    Saves the plot as an SVG file.
+
+    Args:
+        results: List of dicts with keys 'candidate_size', 'total_cov', 'avg_cov_per_group', 'pos_density', 'avg_group_count'
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    results.sort(key=lambda x: x['avg_group_count'])  # Sort by avg candidate count per group
+    # Save results to CSV using pandas for simplicity
+    df = pd.DataFrame(results)
+    df.to_csv(f'{save_dir}/coverage_vs_avg_group_size_results.csv', index=False)
+    # Extract data
+    avg_group_counts = [r['avg_group_count'] for r in results]  # Avg candidate size per group
+    total_covs = [r['total_cov'] for r in results]
+    avg_cov_per_groups = [r['avg_cov_per_group'] for r in results]
+    pos_densities = [r['pos_density'] for r in results]
+    
+    # Create the plot with dual y-axes
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    
+    # Primary axis for coverage metrics
+    ax1.plot(avg_group_counts, total_covs, label='Total Coverage (Micro)', marker='o', linestyle='-', color='darkgreen')
+    ax1.plot(avg_group_counts, avg_cov_per_groups, label='Avg. Coverage per Group (Macro)', marker='s', linestyle='--', color='seagreen')
+    ax1.set_xlabel('Avg Candidate Size per Group')
+    ax1.set_ylabel('Coverage')
+    ax1.tick_params(axis='y')
+    ax1.set_ylim(0, 1)
+    ax1.grid(True, alpha=0.3)
+    
+    # Secondary axis for density
+    ax2 = ax1.twinx()
+    ax2.plot(avg_group_counts, pos_densities, label='Total Positives Density', marker='^', linestyle=':', color='blue')
+    ax2.set_ylabel('Density', color='blue')
+    ax2.tick_params(axis='y', labelcolor='blue')
+    # ax2.set_ylim(0, 1)
+    
+    # Combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='center right')
+    
+    plt.title('Coverage and Density vs. Avg Candidate Size per Group')
     plt.tight_layout()
     
     # Save the plot

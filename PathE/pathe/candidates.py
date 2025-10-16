@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from functools import partial
 import math
 import statistics
 import multiprocessing as mp
@@ -931,7 +930,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
 from . import triple_lib
 import itertools
-from .figures import create_heatmaps, create_coverage_vs_size_plot, create_relation_coverage_bar_chart, create_candidates_per_head_by_degree_chart, create_entity_coverage_bar_chart
+from .figures import create_heatmaps, create_coverage_vs_total_size_plot, create_coverage_vs_avg_group_size_plot
 
 def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
@@ -1080,6 +1079,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     
     candidate_generator.per_group_cap = args.candidates_cap # reset to original
     # Create coverage vs size plot
-    create_coverage_vs_size_plot(results, save_dir=args.figure_dir, filename="coverage_vs_size.svg")
+    create_coverage_vs_total_size_plot(results, save_dir=args.figure_dir)
+    create_coverage_vs_avg_group_size_plot(results, save_dir=args.figure_dir)
     
     return
