@@ -627,8 +627,8 @@ def create_and_run_training_exp_two_phases(args):
       Phase 3 : Train a triple model on candidate triples (num_negatives=0), evaluate on original test triples.
     """
     model_name = args.model
-    start_time = datetime.datetime.now()
-    stageprint(f"Starting {args.expname} (two phases) at: {start_time.strftime('%H:%M:%S')}")
+    start_phase1_time = datetime.datetime.now()
+    stageprint(f"Starting {args.expname} (two phases) at: {start_phase1_time.strftime('%H:%M:%S')}")
 
     # ---------------------------
     # Load data
@@ -809,7 +809,7 @@ def create_and_run_training_exp_two_phases(args):
         trainer_t.fit(pl_model_t, tr_loader_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
         tuple_ckpt = checkpoint_callbk_t.best_model_path
         print(f"[Tuples] Done. Best model saved in {tuple_ckpt}")
-        ttime = (datetime.datetime.now() - start_time).total_seconds() / 3600
+        ttime = (datetime.datetime.now() - start_phase1_time).total_seconds() / 3600
         print(f"[Tuples] Training time: {round(ttime, 2)} hours")
     else:
         # For inference-only runs
@@ -914,6 +914,7 @@ def create_and_run_training_exp_two_phases(args):
     # ---------------------------
     # Phase 3: Triple training on candidates (no negatives) and test on gold
     # ---------------------------
+    start_phase3_time = datetime.datetime.now()
     stageprint("Phase 3: Training triple model on candidate triples (no negatives)...")
     # Adjust args for triple training
     args_phase3 = copy.copy(args)
@@ -1056,6 +1057,8 @@ def create_and_run_training_exp_two_phases(args):
         trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         triple_ckpt = checkpoint_callbk_tri.best_model_path
         print(f"[Triples] Done. Best model saved in {triple_ckpt}")
+        ttime = (datetime.datetime.now() - start_phase3_time).total_seconds() / 3600
+        print(f"[Triples] Training time: {round(ttime, 2)} hours")
     else:
         triple_ckpt = args_phase3.triple_checkpoint
         print(f"[Triples] Using checkpoint for test: {triple_ckpt}")
