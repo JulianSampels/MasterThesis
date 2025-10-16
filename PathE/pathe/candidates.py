@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from functools import partial
 import math
 import statistics
 import multiprocessing as mp
@@ -264,7 +265,7 @@ class BaseCandidateGenerator(ABC):
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
-                 rel_block_size: int = 1,
+                 rel_block_size: int | None = None,
                  head_block_size: int = 1024,
                  max_num_workers: int | None = None,
                  ):
@@ -277,7 +278,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
 
         # new knobs for memory and parallelism
-        self.rel_block_size = max(1, int(rel_block_size))
+        self.rel_block_size = max(1, int(rel_block_size)) if rel_block_size is not None else None
         self.head_block_size = max(1, int(head_block_size))
 
         # sanity checks
@@ -290,10 +291,10 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             assert 0.0 <= self.q < 1.0, "q must be in [0,1)"
 
     @staticmethod
-    def _process_chunk(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, alpha: float, k: int, E: int, R: int, head_block_size: int):
+    def _process_chunk(chunk_indices: torch.Tensor, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, alpha: float, k: int, E: int, R: int, head_block_size: int):
         """Worker function for parallel chunk processing with head blocking to control memory."""
         torch.set_num_threads(1)  # 1 thread per worker as we parallelize over processes, otherwise it breaks
-        C = r1 - r0
+        C = len(chunk_indices)
         a_h = float(alpha)
         a_t = float(1.0 - alpha)
         B = max(1, int(head_block_size))
@@ -306,11 +307,11 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         chunk_filled = 0
 
         # Preload per-relation tail inverse
-        t_chunk = a_t * log_p_tail_2d[r0:r1, :]  # (C, E)
+        t_chunk = a_t * log_p_tail_2d[chunk_indices, :]  # (C, E)
 
-        for r in tqdm(range(C), desc="Processing relations in chunk", position=2, leave=False):
-            r_global = r0 + r
-            t_inv = t_chunk[r, :]  # (E,)
+        for idx in tqdm(range(C), desc="Processing relations in chunk", position=2, leave=False):
+            r_global = chunk_indices[idx]
+            t_inv = t_chunk[idx, :]  # (E,)
 
             for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", position=3, leave=False):
                 h1 = min(E, h0 + B)
@@ -380,14 +381,15 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk and returns partial results, which are merged globally
-        self.pool = self._get_or_create_pool(min(self.max_num_workers, math.ceil(R / self.rel_block_size)))
-        # Prepare chunk ranges
-        chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
+        num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size)) if self.rel_block_size is not None else self.max_num_workers
+        chunks = np.array_split(np.arange(R), num_workers)
+        chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
+        self.pool = self._get_or_create_pool(num_workers)
         # Submit jobs
-        results = [self.pool.apply_async(CandidateGeneratorGlobal._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, self.alpha, k_total, E, R, self.head_block_size)) for r0, r1 in chunk_ranges]
+        worker_function = partial(CandidateGeneratorGlobal._process_chunk, log_p_head_2d=log_p_head_2d, log_p_tail_2d=log_p_tail_2d, alpha=self.alpha, k=k_total, E=E, R=R, head_block_size=self.head_block_size)
+        results_iterator = self.pool.imap_unordered(worker_function, chunks)
         # Collect and merge
-        for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
-            vals_chunk, r_idx, h_idx, t_idx = res.get()
+        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Merging parallel chunks", unit="chunk", leave=False, total=len(chunks)):
             # Merge into global top-k
             if filled == 0:
                 take = min(k_total, vals_chunk.numel())
@@ -417,14 +419,12 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
-    def generate_candidates(
-        self,
+    def generate_candidates(self,
         tuples: torch.Tensor,
         logits_rp: torch.Tensor,
         relation_maps: RelationMaps,
         num_groups: int,
-        logits_tp: torch.Tensor = None,
-    ):
+        logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Efficiently generate candidate (head, relation, tail) triples and their joint probabilities
         for two-phase PathE training, using global top-k streaming to avoid OOM on large graphs.
@@ -563,7 +563,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
             logits_rp_all: torch.Tensor,
             relation_maps: RelationMaps,
             num_groups: int,
-            logits_tp: torch.Tensor = None) -> dict[int, torch.Tensor]:
+            logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         For each head entity h present in tuples_all:
            Score (h, r, t) = P(r|h) * P(r^{-1}|t)
@@ -641,7 +641,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
 class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, beta: float, per_group_cap: int, normalize_mode: str = "per_head",
-                 rel_block_size: int = 1,
+                 rel_block_size: int = None,
                  head_block_size: int = 1024,
                  max_num_workers: int | None = None,
                 #  num_threads: int | None = None
@@ -656,7 +656,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
 
         # new knobs for memory and parallelism
-        self.rel_block_size = max(1, int(rel_block_size))
+        self.rel_block_size = max(1, int(rel_block_size)) if rel_block_size is not None else None
         self.head_block_size = max(1, int(head_block_size))
 
         # sanity checks
@@ -671,10 +671,10 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             assert 0.0 <= self.q < 1.0, "q must be in [0,1)"
 
     @staticmethod
-    def _process_chunk(r0: int, r1: int, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, log_p_t_given_h_2d: torch.Tensor, alpha: float, beta: float, k: int, E: int, R: int, head_block_size: int):
+    def _process_chunk(chunk_indices: torch.Tensor, log_p_head_2d: torch.Tensor, log_p_tail_2d: torch.Tensor, log_p_t_given_h_2d: torch.Tensor, alpha: float, beta: float, k: int, E: int, R: int, head_block_size: int):
         """Worker function for parallel chunk processing with tail prediction."""
         torch.set_num_threads(1)  # 1 thread per worker as we parallelize over processes, otherwise it breaks
-        C = r1 - r0
+        C = len(chunk_indices)
         a_h = (1 - beta) * alpha
         a_t_pred = beta
         a_t_inv = (1 - beta) * (1 - alpha)
@@ -688,11 +688,11 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         chunk_filled = 0
 
         # Preload per-relation tail inverse
-        t_inv_chunk = (a_t_inv * log_p_tail_2d[r0:r1, :])  # (C, E)
+        t_inv_chunk = (a_t_inv * log_p_tail_2d[chunk_indices, :])  # (C, E)
 
-        for r in tqdm(range(C), desc="Processing relations in chunk", position=2, leave=False):
-            r_global = r0 + r
-            t_inv = t_inv_chunk[r, :]  # (E,)
+        for idx in tqdm(range(C), desc="Processing relations in chunk", position=2, leave=False):
+            r_global = chunk_indices[idx]
+            t_inv = t_inv_chunk[idx, :]  # (E,)
 
             for h0 in tqdm(range(0, E, B), desc="Processing heads in blocks", position=3, leave=False):
                 h1 = min(E, h0 + B)
@@ -765,11 +765,14 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
-        self.pool = self._get_or_create_pool(min(self.max_num_workers, math.ceil(R / self.rel_block_size)))
-        chunk_ranges = [(r0, min(R, r0 + self.rel_block_size)) for r0 in range(0, R, self.rel_block_size)]
-        results = [self.pool.apply_async(CandidateGeneratorGlobalWithTail._process_chunk, (r0, r1, log_p_head_2d, log_p_tail_2d, log_p_t_given_h_2d, self.alpha, self.beta, k_total, E, R, self.head_block_size)) for r0, r1 in chunk_ranges]
-        for res in tqdm(results, desc="Merging parallel chunks", unit="chunk", leave=False):
-            vals_chunk, r_idx, h_idx, t_idx = res.get()
+        num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size)) if self.rel_block_size is not None else self.max_num_workers
+        chunks = np.array_split(np.arange(R), num_workers)
+        chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
+        self.pool = self._get_or_create_pool(num_workers)
+
+        worker_function = partial(CandidateGeneratorGlobalWithTail._process_chunk, log_p_head_2d=log_p_head_2d, log_p_tail_2d=log_p_tail_2d, log_p_t_given_h_2d=log_p_t_given_h_2d, alpha=self.alpha, beta=self.beta, k=k_total, E=E, R=R, head_block_size=self.head_block_size)
+        results_iterator = self.pool.imap_unordered(worker_function, chunks)
+        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Merging parallel chunks", unit="chunk", leave=False, total=len(chunks)):
             # Merge into global top-k (same as before)
             if filled == 0:
                 take = min(k_total, vals_chunk.numel())
@@ -799,14 +802,12 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
-    def generate_candidates(
-        self,
+    def generate_candidates(self,
         tuples: torch.Tensor,
         logits_rp: torch.Tensor,
         relation_maps: RelationMaps,
         num_groups: int,
-        logits_tp: torch.Tensor = None,
-    ):
+        logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Efficiently generate candidate (head, relation, tail) triples and their joint probabilities
         for two-phase PathE training, using global top-k streaming to avoid OOM on large graphs.
@@ -966,7 +967,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
     
     # Initialize multiprocessing pool and other resources once
     if hasattr(candidate_generator, 'rel_block_size'):
-        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
+        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
@@ -1047,7 +1048,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     
     # Initialize multiprocessing pool and other resources once
     if hasattr(candidate_generator, 'rel_block_size'):
-        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / candidate_generator.rel_block_size)))
+        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False):
