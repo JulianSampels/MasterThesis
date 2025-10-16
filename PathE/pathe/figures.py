@@ -4,6 +4,7 @@ import seaborn as sns
 import os
 import torch
 from collections import defaultdict
+import pandas as pd  # Added for easy CSV saving from list of dicts
 
 def create_heatmaps(results, save_dir="./figures"):
     """
@@ -11,31 +12,34 @@ def create_heatmaps(results, save_dir="./figures"):
     Also saves the results to a CSV file.
 
     Args:
-        results: List of tuples (alpha, beta, temp, total_cov, avg_recall_per_group)
+        results: List of dicts with keys 'alpha', 'beta', 'temp', 'total_cov', 'avg_cov_per_group'
         save_dir: Directory to save the PNG images and results file
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     
-    # Save results to CSV
-    with open(f'{save_dir}/grid_search_results.csv', 'w') as f:
-        f.write("alpha,beta,temp,total_cov,avg_recall_per_group\n")
-        for row in results:
-            f.write(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]}\n")
+    # Save results to CSV using pandas for simplicity
+    df = pd.DataFrame(results)
+    df.to_csv(f'{save_dir}/grid_search_results.csv', index=False)
     
     # Extract unique alphas and betas
-    alpha_grid = sorted(set([r[0] for r in results]))  # Unique alphas
-    beta_grid = sorted(set([r[1] for r in results]))   # Unique betas
+    alpha_grid = sorted(set([r['alpha'] for r in results]))  # Unique alphas
+    beta_grid = sorted(set([r['beta'] for r in results]))   # Unique betas
 
     # Create 2D arrays for heatmaps
     total_cov_matrix = np.full((len(beta_grid), len(alpha_grid)), np.nan)
     recall_matrix = np.full((len(beta_grid), len(alpha_grid)), np.nan)
 
-    for alpha, beta, temp, total_cov, avg_recall in results:
+    for r in results:
+        alpha = r['alpha']
+        beta = r['beta']
+        temp = r['temp']
+        total_cov = r['total_cov']
+        avg_cov_per_group = r['avg_cov_per_group']
         i = beta_grid.index(beta)
         j = alpha_grid.index(alpha)
         total_cov_matrix[i, j] = total_cov
-        recall_matrix[i, j] = avg_recall
+        recall_matrix[i, j] = avg_cov_per_group
 
     # Function to create annot matrix with bold max
     def create_annot_matrix(matrix):
@@ -83,30 +87,29 @@ def create_coverage_vs_size_plot(results, save_dir="./figures", filename="covera
     Saves the plot as an SVG file.
 
     Args:
-        results: List of tuples (candidate_size, total_cov, avg_recall_per_group, pos_density)
+        results: List of dicts with keys 'candidate_size', 'total_cov', 'avg_cov_per_group', 'pos_density'
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
-    results.sort(key=lambda x: x[0])  # Sort by candidate size
-    # Save results to CSV
-    with open(f'{save_dir}/coverage_vs_size_results.csv', 'w') as f:
-        f.write("candidate_size,total_cov,avg_recall_per_group,pos_density\n")
-        for row in results:
-            f.write(f"{row[0]},{row[1]},{row[2]},{row[3]}\n")
+    results.sort(key=lambda x: x['avg_group_count'])  # Sort by avg candidate count per group
+    # Save results to CSV using pandas for simplicity
+    df = pd.DataFrame(results)
+    df.to_csv(f'{save_dir}/coverage_vs_size_results.csv', index=False)
     # Extract data
-    candidate_sizes = [r[0] for r in results]
-    total_covs = [r[1] for r in results]
-    avg_recalls = [r[2] for r in results]
-    pos_densities = [r[3] for r in results]
+    candidate_sizes = [r['candidate_size'] for r in results]  # Total candidate size
+    total_covs = [r['total_cov'] for r in results]
+    avg_cov_per_groups = [r['avg_cov_per_group'] for r in results]
+    pos_densities = [r['pos_density'] for r in results]
+    avg_group_counts = [r['avg_group_count'] for r in results]
     
     # Create the plot with dual y-axes
     fig, ax1 = plt.subplots(figsize=(10, 6))
     
     # Primary axis for coverage metrics
     ax1.plot(candidate_sizes, total_covs, label='Total Coverage (Micro)', marker='o', linestyle='-', color='darkgreen')
-    ax1.plot(candidate_sizes, avg_recalls, label='Avg. Coverage per Group (Macro)', marker='s', linestyle='--', color='seagreen')
+    ax1.plot(candidate_sizes, avg_cov_per_groups, label='Avg. Coverage per Group (Macro)', marker='s', linestyle='--', color='seagreen')
     ax1.set_xlabel('Total Candidate Size')
     ax1.set_ylabel('Coverage')
     ax1.tick_params(axis='y')

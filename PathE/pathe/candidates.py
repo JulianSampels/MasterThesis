@@ -172,7 +172,7 @@ class BaseCandidateGenerator(ABC):
         relation_maps: RelationMaps,
         name: str = "Set",
         print_results: bool = True,
-    ) -> None:
+    ) -> tuple[float, float, float] | None:
         """
         Print per-group (macro) coverage stats by calling analyze_total_coverage per group,
         plus overall micro coverage. Does not require candidate labels.
@@ -183,6 +183,11 @@ class BaseCandidateGenerator(ABC):
             gold_triples: (N,3) gold triples tensor
             gold_group_ids: (N,) long tensor, group id for each gold triple (aligned with gold_triples)
             name: label for print messages
+        Returns:
+            avg_group_cov: float in [0,1], average per-group coverage (macro)
+            avg_group_density: float in [0,1], average per-group candidate positive density (macro)
+            avg_group_count: float, average number of candidates per group
+            or None if no groups with gold triples exist
         """
         if gold_triples.numel() == 0 or gold_group_ids.numel() == 0:
             print(f"[Coverage::{name}] No gold triples or group ids available. Per-group coverage unavailable.")
@@ -256,7 +261,7 @@ class BaseCandidateGenerator(ABC):
                 f"Min: {min(per_group_count.values())} | "
                 f"Max: {max(per_group_count.values())} | "
                 f"Deciles: {[int(q) for q in statistics.quantiles(per_group_count.values(), n=10)]}")
-        return statistics.mean(per_group_cov.values()), statistics.mean(per_group_density.values())
+        return statistics.mean(per_group_cov.values()), statistics.mean(per_group_density.values()), statistics.mean(per_group_count.values())
 
 class CandidateGeneratorGlobal(BaseCandidateGenerator):
     def __init__(self, p: float, q: float, temperature: float, alpha: float, per_group_cap: int, normalize_mode: str = "per_head",
@@ -928,7 +933,7 @@ from . import triple_lib
 import itertools
 from .figures import create_heatmaps, create_coverage_vs_size_plot, create_relation_coverage_bar_chart, create_candidates_per_head_by_degree_chart, create_entity_coverage_bar_chart
 
-def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
+def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
     Perform grid search over alpha, beta, temperature for CandidateGeneratorGlobalWithTail
     to maximize total coverage and average recall per group on the test set.
@@ -979,7 +984,7 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
         
         # Compute per-group coverage on test (average recall per group)
         # Assuming analyze_coverage_per_group is modified to return the average recall
-        avg_recall_per_group, _ = candidate_generator.analyze_coverage_per_group(
+        avg_cov_per_group, avg_group_density, avg_group_count = candidate_generator.analyze_coverage_per_group(
             candidates_test, 
             triple_lib.generate_group_id_function(torch.cat([test_triples, candidates_test], dim=0), args.group_strategy)(candidates_test), 
             test_triples, 
@@ -989,21 +994,21 @@ def grid_search_candidates(candidate_generator, args, tr_tuples_all, tr_logits_a
             print_results=False
         )
         
-        results.append((alpha, beta, temp, total_cov, avg_recall_per_group))
+        results.append({'candidate_size': candidates_test.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'alpha': alpha, 'beta': beta, 'temp': temp, 'avg_group_density': avg_group_density})
         
         if total_cov > best_total_cov:
             best_total_cov = total_cov
             best_params_total = (alpha, beta, temp)
         
-        if avg_recall_per_group > best_per_group:
-            best_per_group = avg_recall_per_group
+        if avg_cov_per_group > best_per_group:
+            best_per_group = avg_cov_per_group
             best_params_per_group = (alpha, beta, temp)
         # tqdm.write(f"Params: alpha={alpha}\tbeta={beta}\ttemp={temp}\t=> total_cov={total_cov:<4.4f}\tavg_recall_per_group={avg_recall_per_group:<4.4f}")
 
     print(f"Best params for total coverage: alpha={best_params_total[0]}, beta={best_params_total[1]}, temperature={best_params_total[2]}, total_cov={best_total_cov:<.4f}")
     print(f"Best params for per-group coverage: alpha={best_params_per_group[0]}, beta={best_params_per_group[1]}, temperature={best_params_per_group[2]}, avg_recall_per_group={best_per_group:<.4f}")
     print()
-    # results_sorted = sorted(results, key=lambda x: x[3], reverse=True)
+    # results_sorted = sorted(results, key=lambda x: x['total_cov'], reverse=True)
     # print("All results sorted by total_cov (alpha, beta, temp, total_cov, avg_recall_per_group):")
     # for row in results_sorted:
     #     print(row)
@@ -1064,9 +1069,9 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
         total_cov, pos_density = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
         
         # Analyze coverage per group
-        per_group_cov, _ = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
-        
-        results.append((candidates.size(0), total_cov, per_group_cov, pos_density))
+        avg_cov_per_group, avg_group_density, avg_group_count = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
+
+        results.append({'candidate_size': candidates.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'avg_group_density': avg_group_density, 'pos_density': pos_density})
         # tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
 
         if total_cov >= 0.95:
