@@ -560,8 +560,8 @@ class PathEModelWrapperTriples(LightningModule):
 
             lp_loss = self.calculate_lp_bce(logits_lp, labels=lp_labels, sample_weights=lp_weights, num_negatives=None)
             self.log("valid_lp_loss", lp_loss, prog_bar=True)
-            self.log("valid_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss),
-                     prog_bar=self.loss_weight not in [0.0, 1.0])
+            # self.log("valid_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss),
+            #          prog_bar=self.loss_weight not in [0.0, 1.0])
 
             # Accumulate everything into unified _val_acc
             if not hasattr(self, "_val_acc"):
@@ -670,8 +670,8 @@ class PathEModelWrapperTriples(LightningModule):
 
             lp_loss = self.calculate_lp_bce(logits_lp, labels=lp_labels, sample_weights=lp_weights, num_negatives=None)
             self.log("test_lp_loss", lp_loss, prog_bar=True)
-            self.log("test_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss),
-                     prog_bar=self.loss_weight not in [0.0, 1.0])
+            # self.log("test_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss),
+            #          prog_bar=self.loss_weight not in [0.0, 1.0])
 
             # Accumulate for epoch-end heavy metrics
             if not hasattr(self, "_test_acc"):
