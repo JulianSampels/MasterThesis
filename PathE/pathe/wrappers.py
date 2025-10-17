@@ -108,7 +108,7 @@ class PathEModelWrapperTriples(LightningModule):
     """
 
     def __init__(self, pathe_model, filtration_dict, num_negatives=0,
-                 optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
+                 optimiser="adam", scheduler="none", lrate=1e-3, momentum=0,
                  weight_decay=0, class_weights=None, label_smoothing=0.0,
                  train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
                  val_num_negatives=0, full_test=False, max_ppt=None,
@@ -141,7 +141,7 @@ class PathEModelWrapperTriples(LightningModule):
         # Optimisation hyperparams
         self.optimiser = optimiser
         self.scheduler = scheduler
-        self.lr = lr  # initial LR
+        self.lr = lrate  # initial LR
         self.momentum = momentum
         self.weight_decay = weight_decay
         self.label_smoothing = label_smoothing
@@ -800,7 +800,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
                 val_head_tail_adjacency: torch.Tensor = None,
                 test_head_tail_adjacency: torch.Tensor = None,
                 num_negatives=0,
-                optimiser="adam", scheduler="none", lr=1e-3, momentum=0,
+                optimiser="adam", scheduler="none", lrate=1e-3, momentum=0,
                 weight_decay=0, class_weights=None, label_smoothing=0.0,
                 train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
                 val_num_negatives=0, full_test=False, max_ppt=None, accumulate_gradient=1.0, 
@@ -808,7 +808,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
                 loss_weight: float = 0.5,
                 **hparams):
         super().__init__(pathe_model, filtration_dict, num_negatives,
-                         optimiser, scheduler, lr, momentum, weight_decay,
+                         optimiser, scheduler, lrate, momentum, weight_decay,
                          class_weights, label_smoothing,
                          train_sub_batch=train_sub_batch,
                          val_sub_batch=val_sub_batch,
