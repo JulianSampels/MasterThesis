@@ -840,25 +840,27 @@ def create_and_run_training_exp_two_phases(args):
         raise ValueError(f"Unknown candidate_generator: {args.candidate_generator}")
 
     # Run grid search on test set to find best alpha, beta, temperature
-    best_params_total, best_params_per_group = grid_search_candidates(
-        candidate_generator,
-        args, 
-        tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
-        va_tuples_all, va_logits_all, va_logits_tp_all, 
-        te_tuples_all, te_logits_all, te_logits_tp_all, 
-        train_triples, val_triples, test_triples, 
-        train_set_t, valid_set_t, test_set_t
-    )
+    if True:
+        best_params_total, best_params_per_group = grid_search_candidates(
+            candidate_generator,
+            args, 
+            tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
+            va_tuples_all, va_logits_all, va_logits_tp_all, 
+            te_tuples_all, te_logits_all, te_logits_tp_all, 
+            train_triples, val_triples, test_triples, 
+            train_set_t, valid_set_t, test_set_t
+        )
     # Run grid search over candidate sizes
-    grid_search_candidate_sizes(
-        candidate_generator,
-        args, 
-        tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
-        va_tuples_all, va_logits_all, va_logits_tp_all, 
-        te_tuples_all, te_logits_all, te_logits_tp_all, 
-        train_triples, val_triples, test_triples, 
-        train_set_t, valid_set_t, test_set_t
-    )
+    if True:
+        grid_search_candidate_sizes(
+            candidate_generator,
+            args, 
+            tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
+            va_tuples_all, va_logits_all, va_logits_tp_all, 
+            te_tuples_all, te_logits_all, te_logits_tp_all, 
+            train_triples, val_triples, test_triples, 
+            train_set_t, valid_set_t, test_set_t
+        )
 
     # Compute number of groups for each split based on triples
     num_groups_train = len(torch.unique(train_triples[:, args.group_strategy], dim=0))

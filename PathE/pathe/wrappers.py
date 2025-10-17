@@ -551,9 +551,6 @@ class PathEModelWrapperTriples(LightningModule):
         targets: torch.Tensor = batch["target"] - 2
         triples: torch.Tensor = batch['ori_triple']
 
-        # RP loss (always)
-        rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
-        self.log("valid_rp_loss", rp_loss, prog_bar=True)
 
         # Candidate mode if labels present
         if "lp_labels" in batch:
@@ -582,6 +579,10 @@ class PathEModelWrapperTriples(LightningModule):
             self._val_acc["lp_labels"].append(lp_labels.detach().cpu())
             self._val_acc["lp_groups"].append(lp_groups.detach().cpu())
             return
+        else:
+            # RP loss (only make sense if not labels mode as this works without labels and instead with num_negatives)
+            rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
+            # self.log("valid_rp_loss", rp_loss, prog_bar=True)
 
         # Legacy LP loss/accumulation
         if self.val_num_negatives > 0:
@@ -628,8 +629,8 @@ class PathEModelWrapperTriples(LightningModule):
                 assert(logits_rp.size(0) == triples_rp.size(0)), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().'
                 assert(logits_lp.size(0) == lp_labels.size(0) == lp_groups.size(0)), 'Incompatible candidate scores, labels or groups sizes, perhaps something went wrong while generating them in validation_step().'
 
-                # Relation metrics
-                self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
+                # Relation metrics (don't work with labels mode)
+                # self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
 
                 # Candidate metrics
                 self.calculate_and_log_candidate_metrics(logits_lp, lp_labels, lp_groups, split="valid")
@@ -661,9 +662,6 @@ class PathEModelWrapperTriples(LightningModule):
         targets = batch["target"] - 2
         triples = batch['ori_triple']
 
-        rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
-        self.log("test_rp_loss", rp_loss, prog_bar=True)
-
         # Candidate mode per-batch metrics
         if "lp_labels" in batch:
             lp_labels = batch["lp_labels"]
@@ -689,9 +687,13 @@ class PathEModelWrapperTriples(LightningModule):
             self._test_acc["lp_labels"].append(lp_labels.detach().cpu())
             self._test_acc["lp_groups"].append(lp_groups.detach().cpu())
             return
+        else:
+            # RP loss (only make sense if not labels mode as this works without labels and instead with num_negatives)
+            rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
+            self.log("test_rp_loss", rp_loss, prog_bar=True)
         
         # Legacy test path
-        elif self.test_num_negatives > 0:
+        if self.test_num_negatives > 0:
             lp_loss = self.compute_lp_loss(logits_lp, self.test_num_negatives)
             self.log("test_lp_loss", lp_loss, prog_bar=True)
             self.log("test_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss), prog_bar=True)
