@@ -280,8 +280,8 @@ class BaseCandidateGenerator(ABC):
         buffer_memory_bytes = k_total * (bytes_per_float + 3 * bytes_per_long)
         
         # Remaining memory for score calculation blocks
-        score_calc_memory_budget = max(0, memory_budget_bytes - buffer_memory_bytes)
-        assert score_calc_memory_budget > 0, "Not enough memory budget for score calculation blocks."
+        score_calc_memory_budget = memory_budget_bytes - buffer_memory_bytes
+        # assert score_calc_memory_budget > 0, "Not enough memory budget for score calculation blocks."
         if score_calc_memory_budget <= 0:
             head_block_size = input(f"Warning: Not enough memory budget (missing {abs(score_calc_memory_budget)} bytes) for score calculation blocks. Please enter a fixed head_block_size (int) to use (e.g., 1, 10, 100): ")
             head_block_size = int(head_block_size)
