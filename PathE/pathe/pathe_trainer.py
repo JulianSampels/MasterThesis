@@ -928,6 +928,9 @@ def create_and_run_training_exp_two_phases(args):
     if args_phase3.lp_loss_fn != "bce":
         logger.warning(f"Overriding lp_loss_fn={args_phase3.lp_loss_fn} to 'bce' for candidate training in phase 3.")
         args_phase3.lp_loss_fn = "bce"  # BCE for positives + negatives in candidates
+    if args_phase3.check_val_every_n_epoch > 1:
+        logger.warning(f"Overriding check_val_every_n_epoch={args_phase3.check_val_every_n_epoch} to 1 for candidate training in phase 3.")
+        args_phase3.check_val_every_n_epoch = 1  # validate every epoch for phase 3
     
     # path_store = (train_set_t.relation_paths, train_set_t.entity_paths, train_set_t.path_index)
     train_set_tri = CandidateTripleEntityMultiPathDataset(
