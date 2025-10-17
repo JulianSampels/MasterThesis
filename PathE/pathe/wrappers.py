@@ -1205,13 +1205,24 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         """
         batch_size, num_relations = logits.shape
         targets = torch.zeros(batch_size, num_relations, device=logits.device, dtype=torch.float32)
+        # weights = torch.ones_like(targets)
         
         for i, true_rels in enumerate(true_relations_list):
             targets[i, true_rels] = 1.0
-        
+            # num_true = len(true_rels)
+            # weights[i, true_rels] = 0.5 / num_true if num_true > 0 else 0.0
+            # weights[i, ~true_rels] = 0.5 / (num_relations - num_true) if num_relations - num_true > 0 else 0.0
+        pos_counts = targets.sum(dim=1)
+        neg_counts = targets.shape[1] - pos_counts
+        w_pos = 0.5 / pos_counts.clamp_min(1.0)
+        w_neg = 0.5 / neg_counts.clamp_min(1.0)
+
+        relation_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
+        # relation_weights = torch.ones_like(targets)  # uncomment to disable weighting
+
         # Use BCE with logits, averaged over all elements (batch * relations)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction='mean')
-        # loss /= logits.size(1)  # normalize by number of relations
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, targets, weight=relation_weights, reduction='sum')
+        loss /= relation_weights.sum().clamp_min(1.0)
         return loss
 
     def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, adjacency_matrix: torch.Tensor):
@@ -1219,20 +1230,19 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             raise ValueError("An adjacency matrix must be provided for on-the-fly loss calculation.")
         
         # Generate labels and weights on the fly using the provided adjacency matrix
-        tail_labels = adjacency_matrix[heads.to(adjacency_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        targets = adjacency_matrix[heads.to(adjacency_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
         
-        pos_counts = tail_labels.sum(dim=1)
-        neg_counts = tail_labels.shape[1] - pos_counts
+        pos_counts = targets.sum(dim=1)
+        neg_counts = targets.shape[1] - pos_counts
         
         w_pos = 0.5 / pos_counts.clamp_min(1.0)
         w_neg = 0.5 / neg_counts.clamp_min(1.0)
         
-        tail_weights = torch.where(tail_labels > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
+        tail_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
+        # tail_weights = torch.ones_like(targets)  # uncomment to disable weighting
         
-        # loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, tail_labels, weight=tail_weights, reduction='sum')
-        # loss /= logits_tail.size(1)  # normalize by number of entities
-        # return loss / tail_weights.sum().clamp_min(1.0)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, tail_labels, reduction='mean')
+        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, targets, weight=tail_weights, reduction='sum')
+        loss /= tail_weights.sum().clamp_min(1.0)
         return loss
     
     def training_step(self, batch, batch_idx):
