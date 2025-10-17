@@ -308,7 +308,6 @@ def create_and_run_training_exp_tuples(args):
             val_check_interval=args.val_check_interval,
             check_val_every_n_epoch=args.check_val_every_n_epoch,
             callbacks=[estopping_callbk, checkpoint_callbk, dataset_callbk],
-            num_sanity_val_steps=-1,
         )
     else:
         trainer = Trainer(
@@ -321,7 +320,6 @@ def create_and_run_training_exp_tuples(args):
             gradient_clip_algorithm='norm',  # CHANGED THIS
             accumulate_grad_batches=args.accumulate_gradient,
             callbacks=[estopping_callbk, checkpoint_callbk, dataset_callbk],
-            num_sanity_val_steps=-1,
         )
 
     if args.cmd in ["train", "resume"]:
@@ -581,7 +579,6 @@ def create_and_run_training_exp_triples(args):
         gradient_clip_algorithm='norm',  # CHANGED THIS
         accumulate_grad_batches=args.accumulate_gradient,
         callbacks=[estopping_callbk, checkpoint_callbk, dataset_callbk],
-        num_sanity_val_steps=-1,
     )
 
     if args.cmd in ["train", "resume"]:
@@ -781,7 +778,6 @@ def create_and_run_training_exp_two_phases(args):
             val_check_interval=args.val_check_interval,
             check_val_every_n_epoch=args.check_val_every_n_epoch,
             callbacks=[estopping_callbk_t, checkpoint_callbk_t, dataset_callbk_t],
-            num_sanity_val_steps=-1,
         )
     else:
         trainer_t = Trainer(
@@ -794,7 +790,6 @@ def create_and_run_training_exp_two_phases(args):
             gradient_clip_algorithm='norm',  # CHANGED THIS
             accumulate_grad_batches=args.accumulate_gradient,
             callbacks=[estopping_callbk_t, checkpoint_callbk_t, dataset_callbk_t],
-            num_sanity_val_steps=-1,
         )
     if args.cmd in ["train", "resume"] and not args.skip_phase1:
         # Train and resume are the same assuming their setup is consistent
@@ -1035,7 +1030,6 @@ def create_and_run_training_exp_two_phases(args):
         check_val_every_n_epoch=args_phase3.check_val_every_n_epoch,
         gradient_clip_algorithm='norm', accumulate_grad_batches=args_phase3.accumulate_gradient,
         callbacks=[estopping_callbk_tri, checkpoint_callbk_tri, dataset_callbk_tri],
-        num_sanity_val_steps=-1,
     )
 
     # NEW: Evaluate triple metrics on candidate test set with untrained model (baseline/random performance)
