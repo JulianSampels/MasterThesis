@@ -296,7 +296,7 @@ class BaseCandidateGenerator(ABC):
         total_estimated_memory_per_worker = buffer_memory_bytes + estimated_block_memory
         logger.info(f"Using adaptive head_block_size: {head_block_size} | Estimated total memory per worker: {total_estimated_memory_per_worker / 1e6:.2f} MB (buffer: {buffer_memory_bytes / 1e6:.2f} MB, block: {estimated_block_memory / 1e6:.2f} MB)")
         print(f"Using adaptive head_block_size: {head_block_size} | Estimated total memory per worker: {total_estimated_memory_per_worker / 1e6:.2f} MB (buffer: {buffer_memory_bytes / 1e6:.2f} MB, block: {estimated_block_memory / 1e6:.2f} MB)")
-        input("Press Enter to continue...")
+        # input("Press Enter to continue...")
 
         return head_block_size
 
