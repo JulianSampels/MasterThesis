@@ -1262,8 +1262,16 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             return total_loss
 
         # Manual optimization mode
+        # Determine if we are at gradient accumulation boundary
+        total_batches = int(getattr(self.trainer, "num_training_batches", None))
+        if total_batches is not None:
+            remaining_including_this = total_batches - batch_idx
+            num_in_accum = min(self.accumulate_gradient, remaining_including_this)
+            scale = 1.0 / num_in_accum
+        else: scale = 1.0 / self.accumulate_gradient
+
+        # Scale losses for accumulation
         relation_opt, tail_opt = self.optimizers()
-        scale = 1.0 / self.accumulate_gradient
         rp_loss = rp_loss_unscaled * scale
         tail_loss = tp_loss_unscaled * scale
 
@@ -1279,8 +1287,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
 
         # Step and zero grads
         is_boundary = ((batch_idx + 1) % self.accumulate_gradient) == 0
-        total_batches = getattr(self.trainer, "num_training_batches", None)
-        is_last = (total_batches is not None) and ((batch_idx + 1) == int(total_batches))
+        is_last = (total_batches is not None) and ((batch_idx + 1) == total_batches)
         if is_boundary or is_last:
             self.clip_gradients(relation_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
             relation_opt.step(); relation_opt.zero_grad()
