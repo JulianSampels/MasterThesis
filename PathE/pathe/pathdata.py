@@ -1482,6 +1482,49 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
             "ori_triple": tuple, "path_origins": path_ori,
         }
 
+class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
+    def __init__(self, path_store, relcontext_store, tuple_store, context_triple_store=None,
+                 original_relation_to_inverse_relation=None, tokens_to_idxs=None,
+                 maximum_tuple_paths=50, seed=46, parallel=False, num_workers=0, head_tail_adjacency=None):
+        super().__init__(path_store, relcontext_store, tuple_store, context_triple_store,
+                         original_relation_to_inverse_relation, tokens_to_idxs, maximum_tuple_paths,
+                         num_negatives=0, tuple_corruptor=None, seed=seed, parallel=parallel, num_workers=num_workers,
+                         neg_tuple_store=None, head_tail_adjacency=head_tail_adjacency)
+        
+        # Group tuples by unique heads
+        head_to_tuples: dict[int, list[torch.Tensor]] = {}
+        for tuple in self.tuplestore:
+            head = tuple[0].item()
+            head_to_tuples.setdefault(head, []).append(tuple)
+
+        self.unique_heads = torch.tensor(list(head_to_tuples.keys()))
+        
+        # Precompute true relations per head (as a tensor)
+        self.head_to_true_relations = {}
+        for head, tuples in head_to_tuples.items():
+            true_rels = set(t[1].item() for t in tuples)
+            self.head_to_true_relations[head] = torch.tensor(list(true_rels))
+
+    def __len__(self):
+        return len(self.unique_heads)
+    
+    def __getitem__(self, index):
+        head = self.unique_heads[index]
+        # Retrieving combined incoming and outgoing paths per entity
+        with du.local_seed(self.seed, self.epoch, index):
+            ent_paths, rel_paths, head_indexes, pos = self._create_inout_contextpaths(head)
+        path_origins = [0] * len(ent_paths)
+        
+        return {
+            "id": index,
+            "head": head,
+            "pos": pos, 
+            "ent_paths": ent_paths,
+            "rel_paths": rel_paths,
+            "head_indexes": head_indexes,
+            "true_relations": self.head_to_true_relations[head.item()],
+            "path_origins": path_origins,
+        }
 
 @dataclass
 class RelationMaps:

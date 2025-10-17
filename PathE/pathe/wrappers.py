@@ -21,9 +21,9 @@ from tqdm import tqdm
 
 from PathE.pathe.pathdata import RelationMaps
 
-from .pathe_ranking_metrics import (RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
+from .pathe_ranking_metrics import (RelationHitsAtKUniqueHeads, RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples, CandidateMRRPerSampleFiltered, 
-                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, TailHitsAtKTuples, TailMRRTuples)
+                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, RelationMRRUniqueHeads, TailHitsAtKTuples, TailMRRTuples)
 
 from .pather_models import PathEModelTriples, PathEModelTuples
 
@@ -935,7 +935,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             raise ValueError("An adjacency matrix must be provided for on-the-fly loss calculation.")
         
         # Generate labels and weights on the fly using the provided adjacency matrix
-        tail_labels = adjacency_matrix[heads.cpu()].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        tail_labels = adjacency_matrix[heads.to(adjacency_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
         
         pos_counts = tail_labels.sum(dim=1)
         neg_counts = tail_labels.shape[1] - pos_counts
@@ -1062,7 +1062,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.val_tailHitsAt10.update(unique_heads, scores_agg, eval_labels_agg)
 
         # Log tail metrics
-        self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True)
+        self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
         self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
         self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
         self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
@@ -1160,7 +1160,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         head_idxs = batch["net_input"]["head_idxs"]
         entity_origin = batch["net_input"]["path_origins"]
         pos = batch["net_input"]["pos"]
-        targets = batch["target"] - 2  # no PAD and MSK in the model output
+        # targets = batch["target"] - 2  # no PAD and MSK in the model output
         # FIXME this is going to change with the actual head-tail idxs from dataset
         head_idxs = head_idxs * 2
         ppt = batch["ppt"]
@@ -1172,9 +1172,208 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             ppt=ppt,
             pos=pos,
             entity_origin=entity_origin,
-            targets=targets,
             detach_link_head=self.link_head_detached
         )
         # loss_rp = self.criterion(logits_rp, targets)
         return logits_rp, logits_tp
+
+class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        filter_dict = kwargs.get("filtration_dict", {})
+        # Override relation metrics for unique heads
+        self.val_relationMRR = RelationMRRUniqueHeads(filter_dict)
+        self.val_relationHitsAt1 = RelationHitsAtKUniqueHeads(k=1, filter_dict=filter_dict)
+        self.val_relationHitsAt3 = RelationHitsAtKUniqueHeads(k=3, filter_dict=filter_dict)
+        self.val_relationHitsAt5 = RelationHitsAtKUniqueHeads(k=5, filter_dict=filter_dict)
+        self.val_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_dict=filter_dict)
+        
+        self.test_relationMRR = RelationMRRUniqueHeads(filter_dict)
+        self.test_relationHitsAt1 = RelationHitsAtKUniqueHeads(k=1, filter_dict=filter_dict)
+        self.test_relationHitsAt3 = RelationHitsAtKUniqueHeads(k=3, filter_dict=filter_dict)
+        self.test_relationHitsAt5 = RelationHitsAtKUniqueHeads(k=5, filter_dict=filter_dict)
+        self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_dict=filter_dict)
     
+
+    def compute_rp_loss(self, logits, true_relations_list):
+        """
+        Compute multi-label BCE loss for relation prediction.
+        logits: (batch_size, num_relations)
+        true_relations_list: list of tensors, each with true relation indices for that head
+        """
+        batch_size, num_relations = logits.shape
+        targets = torch.zeros(batch_size, num_relations, device=logits.device, dtype=torch.float32)
+        
+        for i, true_rels in enumerate(true_relations_list):
+            targets[i, true_rels] = 1.0
+        
+        # Use BCE with logits, averaged over all elements (batch * relations)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction='mean')
+        # loss /= logits.size(1)  # normalize by number of relations
+        return loss
+
+    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, adjacency_matrix: torch.Tensor):
+        if adjacency_matrix is None:
+            raise ValueError("An adjacency matrix must be provided for on-the-fly loss calculation.")
+        
+        # Generate labels and weights on the fly using the provided adjacency matrix
+        tail_labels = adjacency_matrix[heads.to(adjacency_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        
+        pos_counts = tail_labels.sum(dim=1)
+        neg_counts = tail_labels.shape[1] - pos_counts
+        
+        w_pos = 0.5 / pos_counts.clamp_min(1.0)
+        w_neg = 0.5 / neg_counts.clamp_min(1.0)
+        
+        tail_weights = torch.where(tail_labels > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
+        
+        # loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, tail_labels, weight=tail_weights, reduction='sum')
+        # loss /= logits_tail.size(1)  # normalize by number of entities
+        # return loss / tail_weights.sum().clamp_min(1.0)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, tail_labels, reduction='mean')
+        return loss
+    
+    def training_step(self, batch, batch_idx):
+        logits_rp, logits_tail = self.model_forward(batch)
+        heads = batch["heads"]
+        true_relations = batch["true_relations"]
+        
+        # Losses
+        rp_loss_unscaled = self.compute_rp_loss(logits_rp, true_relations)
+        tp_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads, self.train_head_tail_adjacency)
+
+        if not self.use_manual_optimization:
+            total_loss = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tp_loss_unscaled
+            self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
+            self.log("train_tp_loss", tp_loss_unscaled, prog_bar=True)
+            self.log("train_total_loss", total_loss)
+            return total_loss
+
+        # Manual optimization mode
+        relation_opt, tail_opt = self.optimizers()
+        scale = 1.0 / self.accumulate_gradient
+        rp_loss = rp_loss_unscaled * scale
+        tail_loss = tp_loss_unscaled * scale
+
+        # Backward passes
+        self.toggle_optimizer(optimizer=relation_opt, optimizer_idx=0)
+        self.manual_backward(rp_loss, retain_graph=(not self.link_head_detached))
+        self.untoggle_optimizer(optimizer_idx=0)
+
+        if tail_loss.requires_grad:
+            self.toggle_optimizer(optimizer=tail_opt, optimizer_idx=1)
+            self.manual_backward(tail_loss, retain_graph=False)
+            self.untoggle_optimizer(optimizer_idx=1)
+
+        # Step and zero grads
+        is_boundary = ((batch_idx + 1) % self.accumulate_gradient) == 0
+        total_batches = getattr(self.trainer, "num_training_batches", None)
+        is_last = (total_batches is not None) and ((batch_idx + 1) == int(total_batches))
+        if is_boundary or is_last:
+            self.clip_gradients(relation_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
+            relation_opt.step(); relation_opt.zero_grad()
+            self.clip_gradients(tail_opt, gradient_clip_val=1.0, gradient_clip_algorithm="norm")
+            tail_opt.step(); tail_opt.zero_grad()
+
+        # Logging unscaled losses
+        total_loss = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tp_loss_unscaled
+        self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
+        self.log("train_tp_loss", tp_loss_unscaled, prog_bar=True)
+        self.log("train_total_loss", total_loss)
+        return {"rp_loss": rp_loss_unscaled, "tp_loss": tp_loss_unscaled}
+    
+    def validation_step(self, batch, batch_idx):
+        logits_rp, logits_tail = self.model_forward(batch)
+        heads = batch["heads"]
+        true_relations = batch["true_relations"]
+
+        # Losses
+        rp_loss = self.compute_rp_loss(logits_rp, true_relations)
+        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.val_head_tail_adjacency)
+        total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
+        
+        self.log("valid_rp_loss", rp_loss)
+        self.log("valid_tp_loss", tp_loss)
+        self.log("valid_total_loss", total_loss)
+
+        # Update metrics directly on each step
+        self.val_relationMRR.update(heads, logits_rp, true_relations)
+        self.val_relationHitsAt1.update(heads, logits_rp, true_relations)
+        self.val_relationHitsAt3.update(heads, logits_rp, true_relations)
+        self.val_relationHitsAt5.update(heads, logits_rp, true_relations)
+        self.val_relationHitsAt10.update(heads, logits_rp, true_relations)
+
+        true_tails = self.val_head_tail_adjacency[heads.to(self.val_head_tail_adjacency.device)].to(torch.float32)
+        self.val_tailMRR.update(heads, logits_tail, true_tails)
+        self.val_tailHitsAt1.update(heads, logits_tail, true_tails)
+        self.val_tailHitsAt3.update(heads, logits_tail, true_tails)
+        self.val_tailHitsAt5.update(heads, logits_tail, true_tails)
+        self.val_tailHitsAt10.update(heads, logits_tail, true_tails)
+    
+    def validation_epoch_end(self, outputs):
+        # Log relation metrics (torchmetrics computes and resets them automatically)
+        self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
+        self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
+        self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
+        self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True)
+        
+        # Log tail metrics
+        self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True)
+        print()
+
+    def test_step(self, batch, batch_idx):
+        logits_rp, logits_tail = self.model_forward(batch)
+        heads = batch["heads"]
+        true_relations = batch["true_relations"]
+
+        # Losses
+        rp_loss = self.compute_rp_loss(logits_rp, true_relations)
+        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.test_head_tail_adjacency)
+        total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
+        
+        self.log("test_rp_loss", rp_loss)
+        self.log("test_tp_loss", tp_loss)
+        self.log("test_total_loss", total_loss)
+
+        # Update metrics directly on each step
+        self.test_relationMRR.update(heads, logits_rp, true_relations)
+        self.test_relationHitsAt1.update(heads, logits_rp, true_relations)
+        self.test_relationHitsAt3.update(heads, logits_rp, true_relations)
+        self.test_relationHitsAt5.update(heads, logits_rp, true_relations)
+        self.test_relationHitsAt10.update(heads, logits_rp, true_relations)
+
+        true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
+        self.test_tailMRR.update(heads, logits_tail, true_tails)
+        self.test_tailHitsAt1.update(heads, logits_tail, true_tails)
+        self.test_tailHitsAt3.update(heads, logits_tail, true_tails)
+        self.test_tailHitsAt5.update(heads, logits_tail, true_tails)
+        self.test_tailHitsAt10.update(heads, logits_tail, true_tails)
+
+    def on_test_epoch_end(self):
+        # Log relation metrics
+        self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
+        self.log("test_hits1", self.test_relationHitsAt1, on_step=False, on_epoch=True)
+        self.log("test_hits3", self.test_relationHitsAt3, on_step=False, on_epoch=True)
+        self.log("test_hits5", self.test_relationHitsAt5, on_step=False, on_epoch=True)
+        self.log("test_hits10", self.test_relationHitsAt10, on_step=False, on_epoch=True)
+        
+        # Log tail metrics
+        self.log("test_tail_mrr", self.test_tailMRR, on_step=False, on_epoch=True)
+        self.log("test_tail_hits1", self.test_tailHitsAt1, on_step=False, on_epoch=True)
+        self.log("test_tail_hits3", self.test_tailHitsAt3, on_step=False, on_epoch=True)
+        self.log("test_tail_hits5", self.test_tailHitsAt5, on_step=False, on_epoch=True)
+        self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        logits_rp, logits_tp = self.model_forward(batch)
+        heads = batch["heads"]
+        return {
+            "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+            "logits_rp": logits_rp.detach().cpu(),
+            "logits_tp": logits_tp.detach().cpu(),
+        }

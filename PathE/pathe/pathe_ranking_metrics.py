@@ -172,6 +172,57 @@ class RelationMRRTuples(RelationMRRTriples):
         # Update the total number of samples processed
         self.total += realistic_rank.numel()
 
+class RelationMRRUniqueHeads(Metric):
+    """
+    Mean Reciprocal Rank for relation prediction with unique heads (multi-label).
+    For each head, averages reciprocal ranks of all true relations, using optimistic/realistic rank and filtering.
+    """
+    higher_is_better = True
+
+    def __init__(self, filter_dict: Dict):
+        super().__init__()
+        self.add_state("reciprocal_ranks", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+        self.all_relations = filter_dict  # {head: set of all true relations for head across splits}
+
+    @torch.no_grad()
+    def update(self, heads: torch.Tensor, scores: torch.Tensor, true_relations_list: list[torch.Tensor]):
+        """
+        heads: (num_heads,)
+        scores: (num_heads, num_relations)
+        true_relations_list: list of tensors, each with true relation indices for that head (current split)
+        """
+        for i in range(heads.size(0)):
+            logits = scores[i]  # (num_relations,)
+            true_rels = true_relations_list[i]  # tensor of true r indices (current split)
+            if true_rels.numel() == 0:
+                continue
+
+            head_id = heads[i].item()
+            all_true_for_head = set(self.all_relations.get(head_id, set()))  # all true r for head across splits
+
+            # Compute ranks for each true relation, filtering other true relations
+            ranks = []
+            for r in true_rels:
+                filtered_logits = logits.clone()
+                other_true = all_true_for_head - {r.item()}
+                filtered_logits[list(other_true)] = SMALLEST_FLOAT
+
+                true_score = filtered_logits[r]
+                optimistic_rank = (filtered_logits > true_score).sum() + 1
+                pessimistic_rank = (filtered_logits >= true_score).sum()
+                realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
+                ranks.append(realistic_rank)
+
+            ranks = torch.stack(ranks)
+            # Average reciprocal ranks for this head
+            avg_recip = (1.0 / ranks).mean()
+            self.reciprocal_ranks += avg_recip
+            self.total += 1
+
+    def compute(self):
+        return self.reciprocal_ranks / self.total.clamp_min(1)
+
 class RelationMR(Metric):
     """
     A torchmetric implementation of the Mean Rank for relation
@@ -370,6 +421,57 @@ class RelationHitsAtKTuples(RelationHitsAtKTriples):
         self.hits += torch.sum((realistic_rank <= self.k), dtype=torch.float)
         self.total += realistic_rank.numel()
 
+class RelationHitsAtKUniqueHeads(Metric):
+    """
+    Hits@K for relation prediction with unique heads (multi-label).
+    For each head, computes fraction of true relations in top-K, using optimistic/realistic rank and filtering.
+    """
+    higher_is_better = True
+
+    def __init__(self, k: int, filter_dict: Dict):
+        super().__init__()
+        self.k = k
+        self.add_state("hits", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+        self.all_relations = filter_dict  # {head: set of all true relations for head across splits}
+
+    @torch.no_grad()
+    def update(self, heads: torch.Tensor, scores: torch.Tensor, true_relations_list: list[torch.Tensor]):
+        """
+        heads: (num_heads,)
+        scores: (num_heads, num_relations)
+        true_relations_list: list of tensors, each with true relation indices for that head (current split)
+        """
+        for i in range(heads.size(0)):
+            logits = scores[i]
+            true_rels = true_relations_list[i]
+            if true_rels.numel() == 0:
+                continue
+
+            head_id = heads[i].item()
+            all_true_for_head = set(self.all_relations.get(head_id, set()))
+
+            # Compute ranks for each true relation, filtering other true relations
+            ranks = []
+            for r in true_rels:
+                filtered_logits = logits.clone()
+                other_true = all_true_for_head - {r.item()}
+                filtered_logits[list(other_true)] = SMALLEST_FLOAT
+
+                true_score = filtered_logits[r]
+                optimistic_rank = (filtered_logits > true_score).sum() + 1
+                pessimistic_rank = (filtered_logits >= true_score).sum()
+                realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
+                ranks.append(realistic_rank)
+
+            ranks = torch.stack(ranks)
+            # Fraction of true relations with rank <= k
+            hits_for_head = (ranks <= self.k).float().mean()
+            self.hits += hits_for_head
+            self.total += 1
+
+    def compute(self):
+        return self.hits / self.total.clamp_min(1)
 
 class EntityMRRTriples(Metric):
     """

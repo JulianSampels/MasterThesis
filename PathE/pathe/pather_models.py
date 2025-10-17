@@ -1009,7 +1009,6 @@ class PathEModelTuples(PathEModelTriples):
                 head_idxs: Tensor,
                 pos: Tensor,
                 entity_origin: Tensor,
-                targets: Tensor,
                 ppt: Optional[Tensor] = None,
                 source_mask: Optional[Tensor] = None,
                 detach_link_head: bool = True):

@@ -21,7 +21,7 @@ from .candidates import *
 
 from . import triple_lib
 from .pather_models import PathEModelTriples, PathEModelTuples
-from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset, create_vocabulary_from_relations
+from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset, UniqueHeadEntityMultiPathDataset, create_vocabulary_from_relations
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir, \
     memmap_corrupted_triples_from_dir
@@ -30,7 +30,7 @@ from .callbacks import DatasetUpdater
 from .corruption import CorruptHeadGenerator, CorruptHeadGeneratorTuples, CorruptRelationGeneratorTuples, CorruptTailGenerator, CorruptLinkGenerator#, \
     # CorruptBothGenerator
 from .utils import stageprint, bundle_arguments, namespace_to_dict
-from .wrappers import PathEModelWrapperTriples, PathEModelWrapperTuples
+from .wrappers import PathEModelWrapperTriples, PathEModelWrapperTuples, PathEModelWrapperUniqueHeads
 from .path_lib import encode_relcontext_freqs
 from . import data_utils as du
 from .figures import create_candidate_figures
@@ -670,13 +670,12 @@ def create_and_run_training_exp_two_phases(args):
     stageprint("Phase 1a: Creating datasets and dataloaders...")
     parallel = True
 
-    train_set_t = TupleEntityMultiPathDataset(
+    train_set_t = UniqueHeadEntityMultiPathDataset(
         path_store=paths, relcontext_store=relcon,
         tuple_store=train_tuples, context_triple_store=train_triples,
         original_relation_to_inverse_relation=train_rel2inv,
         maximum_tuple_paths=args.max_ppt,
-        num_negatives=args.num_negatives, tuple_corruptor=None,
-        parallel=parallel, num_workers=args.num_workers, neg_tuple_store=None,
+        parallel=parallel, num_workers=args.num_workers,
         head_tail_adjacency=train_head_tail_adjacency,
         tokens_to_idxs=tokens_to_idxs
     )
@@ -684,22 +683,20 @@ def create_and_run_training_exp_two_phases(args):
     tokens_to_idxs = train_set_t.tokens_to_idxs
     path_store = (train_set_t.relation_paths, train_set_t.entity_paths, train_set_t.path_index)
 
-    valid_set_t = TupleEntityMultiPathDataset(
+    valid_set_t = UniqueHeadEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
         tuple_store=val_tuples, context_triple_store=train_triples,
         original_relation_to_inverse_relation=val_rel2inv,
         maximum_tuple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
-        num_negatives=args.val_num_negatives, tuple_corruptor=None,
-        parallel=parallel, num_workers=args.num_workers, neg_tuple_store=None,
+        parallel=parallel, num_workers=args.num_workers,
         head_tail_adjacency=val_head_tail_adjacency
     )
-    test_set_t = TupleEntityMultiPathDataset(
+    test_set_t = UniqueHeadEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
         tuple_store=test_tuples, context_triple_store=train_triples,
         original_relation_to_inverse_relation=test_rel2inv,
         maximum_tuple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
-        num_negatives=args.val_num_negatives, tuple_corruptor=None,
-        parallel=parallel, num_workers=args.num_workers, neg_tuple_store=None,
+        parallel=parallel, num_workers=args.num_workers,
         head_tail_adjacency=test_head_tail_adjacency
     )
 
@@ -738,7 +735,7 @@ def create_and_run_training_exp_two_phases(args):
     # tuple-specific filters for metrics
     map_head_to_relsets = triple_lib.make_relation_filter_dict_no_sp_tokens_tuples(train_tuples, val_tuples, test_tuples)
 
-    pl_model_t = PathEModelWrapperTuples(
+    pl_model_t = PathEModelWrapperUniqueHeads(
         pathe_model=model_t,
         filtration_dict=map_head_to_relsets,
         global_head_tail_adjacency=global_head_tail_adjacency,
@@ -1048,9 +1045,6 @@ def create_and_run_training_exp_two_phases(args):
 
     if args_phase3.cmd in ["train", "resume"] and not args_phase3.skip_phase2:
         stageprint("Training-validating the model, be patient!")
-        if args_phase3.cmd == "resume":
-            # Run validation first to log metrics (e.g., 'valid_link_mrr') before training starts
-            trainer_tri.validate(pl_model_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         trainer_tri.fit(pl_model_tri, tr_loader_tri, va_loader_tri, ckpt_path=args_phase3.triple_checkpoint)
         triple_ckpt = checkpoint_callbk_tri.best_model_path
         print(f"[Triples] Done. Best model saved in {triple_ckpt}")
