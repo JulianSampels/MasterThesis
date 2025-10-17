@@ -1011,7 +1011,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
         candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
-    for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config"):
+    for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
         # Manually change the parameters
         candidate_generator.alpha = alpha
         candidate_generator.beta = beta
@@ -1176,7 +1176,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
         current_candidates = all_candidates.clone()
         current_scores = all_scores.clone()
 
-        for size in tqdm(candidate_sizes, desc="Grid Search Sizes (iterative slicing)", unit="size"):
+        for size in tqdm(candidate_sizes, desc="Grid Search Sizes (iterative slicing)", unit="size", leave=False):
             # Compute effective cap for this size
             effective_cap = num_groups_test * size
             assert effective_cap <= current_candidates.size(0), "Effective cap should be less than or equal to available candidates."
@@ -1201,7 +1201,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
             
             results.append({'candidate_size': candidates.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'avg_group_density': avg_group_density, 'pos_density': pos_density})
     else:  # Original iterative approach for other generators like CandidateGeneratorPerHead
-        for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size"):
+        for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False):
             # Manually set per_group_cap
             candidate_generator.per_group_cap = size
             
