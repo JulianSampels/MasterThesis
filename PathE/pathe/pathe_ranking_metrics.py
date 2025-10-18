@@ -186,15 +186,18 @@ class RelationMRRUniqueHeads(Metric):
         self.all_relations = filter_dict  # {head: set of all true relations for head across splits}
 
     @torch.no_grad()
-    def update(self, heads: torch.Tensor, scores: torch.Tensor, true_relations_list: list[torch.Tensor]):
+    def update(self, heads: torch.Tensor, scores: torch.Tensor, true_relations: torch.Tensor):
         """
         heads: (num_heads,)
         scores: (num_heads, num_relations)
-        true_relations_list: list of tensors, each with true relation indices for that head (current split)
+        true_relations: either
+          - a dense tensor of shape (num_heads, num_relations) with 1 for true relations, or
+          - a list of 1D tensors containing true relation indices per head.
         """
         for i in range(heads.size(0)):
             logits = scores[i]  # (num_relations,)
-            true_rels = true_relations_list[i]  # tensor of true r indices (current split)
+            # Extract indices of true relations from dense multi-hot row
+            true_rels = torch.where(true_relations[i] > 0.5)[0]
             if true_rels.numel() == 0:
                 continue
 
@@ -436,15 +439,15 @@ class RelationHitsAtKUniqueHeads(Metric):
         self.all_relations = filter_dict  # {head: set of all true relations for head across splits}
 
     @torch.no_grad()
-    def update(self, heads: torch.Tensor, scores: torch.Tensor, true_relations_list: list[torch.Tensor]):
+    def update(self, heads: torch.Tensor, scores: torch.Tensor, true_relations: torch.Tensor):
         """
         heads: (num_heads,)
         scores: (num_heads, num_relations)
-        true_relations_list: list of tensors, each with true relation indices for that head (current split)
+        true_relations: either dense (num_heads, num_relations) multi-hot tensor or list of index tensors.
         """
         for i in range(heads.size(0)):
             logits = scores[i]
-            true_rels = true_relations_list[i]
+            true_rels = torch.where(true_relations[i] > 0.5)[0]
             if true_rels.numel() == 0:
                 continue
 

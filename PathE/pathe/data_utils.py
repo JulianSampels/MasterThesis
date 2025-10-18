@@ -376,7 +376,7 @@ def collate_multipaths(
     
     # Add true_relations as a list of tensors (one list per head)
     if "true_relations" in samples[0]:
-        batch["true_relations"] = [s["true_relations"] for s in samples]
+        batch["true_relations"] = torch.stack([s["true_relations"] for s in samples])
 
     if "head" in samples[0]:
         batch["heads"] = torch.stack([s["head"] for s in samples])

@@ -1505,7 +1505,8 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
         self.head_to_true_relations = {}
         for head, tuples in head_to_tuples.items():
             true_rels = set(t[1].item() for t in tuples)
-            self.head_to_true_relations[head] = torch.tensor(list(true_rels))
+            self.head_to_true_relations[head] = torch.zeros(len(self.tokens_to_idxs)-2, dtype=torch.float32)
+            self.head_to_true_relations[head][list(true_rels)] = 1
 
     def __len__(self):
         return len(self.unique_heads) * self.augmentation_factor

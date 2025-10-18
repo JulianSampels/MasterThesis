@@ -1197,21 +1197,14 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_dict=filter_dict)
     
 
-    def compute_rp_loss(self, logits, true_relations_list):
+    def compute_rp_loss(self, logits, targets: torch.Tensor):
         """
         Compute multi-label BCE loss for relation prediction.
         logits: (batch_size, num_relations)
-        true_relations_list: list of tensors, each with true relation indices for that head
+        true_relations: (batch_size, num_relations)
         """
         batch_size, num_relations = logits.shape
-        targets = torch.zeros(batch_size, num_relations, device=logits.device, dtype=torch.float32)
         # weights = torch.ones_like(targets)
-        
-        for i, true_rels in enumerate(true_relations_list):
-            targets[i, true_rels] = 1.0
-            # num_true = len(true_rels)
-            # weights[i, true_rels] = 0.5 / num_true if num_true > 0 else 0.0
-            # weights[i, ~true_rels] = 0.5 / (num_relations - num_true) if num_relations - num_true > 0 else 0.0
         pos_counts = targets.sum(dim=1)
         neg_counts = targets.shape[1] - pos_counts
         w_pos = 0.5 / pos_counts.clamp_min(1.0)
