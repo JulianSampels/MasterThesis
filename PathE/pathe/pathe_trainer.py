@@ -35,6 +35,7 @@ from .path_lib import encode_relcontext_freqs
 from . import data_utils as du
 from .figures import create_candidate_figures
 from pytorch_lightning.profilers import SimpleProfiler
+from torch.profiler import profile, record_function, ProfilerActivity
 
 logger = logging.getLogger(__name__)
 
@@ -775,7 +776,6 @@ def create_and_run_training_exp_two_phases(args):
     # Automatic gradient clipping and Automatic gradient accumulation is not supported for manual optimization.
     if args.use_manual_optimization:
         trainer_t = Trainer(
-            profiler=SimpleProfiler(),
             max_epochs=args.max_epochs,
             accelerator=accelerator, devices=args.num_devices, num_nodes=1,
             limit_train_batches=tr_limit, limit_val_batches=va_limit,
@@ -799,7 +799,11 @@ def create_and_run_training_exp_two_phases(args):
     if args.cmd in ["train", "resume"] and not args.skip_phase1:
         # Train and resume are the same assuming their setup is consistent
         stageprint("Training-validating the model, be patient!")
-        trainer_t.fit(pl_model_t, tr_loader_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("model_training"):
+                trainer_t.fit(pl_model_t, tr_loader_t, va_loader_t, ckpt_path=args.tuple_checkpoint)
+        prof.export_chrome_trace("./trace.json")
+        print("Profiler trace exported to ./trace.json")
         tuple_ckpt = checkpoint_callbk_t.best_model_path
         print(f"[Tuples] Done. Best model saved in {tuple_ckpt}")
         ttime = (datetime.datetime.now() - start_phase1_time).total_seconds() / 3600
