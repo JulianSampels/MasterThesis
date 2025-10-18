@@ -162,7 +162,7 @@ def main():
                         help='Either CPU threads or GPU units to allocate.')
     parser.add_argument('--num_workers', action='store', type=int, default=0,
                         help='No. of threads for parallel data loading.')
-    parser.add_argument('--seed', action='store', type=int, default=46,
+    parser.add_argument('--seed', action='store', type=int, default=42,
                         help='Random seed for reproducibility of the exp.')
     parser.add_argument('--multigpu', action='store_true', default=False,
                         help='Whether to use all the GPU devices available.')
