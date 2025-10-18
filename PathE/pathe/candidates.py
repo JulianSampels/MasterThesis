@@ -110,16 +110,15 @@ class BaseCandidateGenerator(ABC):
             gold_group_ids: (N,) long tensor, group id for each gold triple (aligned with gold_triples)
             name: label for print messages
         """
-        self.analyze_total_coverage(candidates, gold_triples, relation_maps, name=name, print_results=True)
+        BaseCandidateGenerator.analyze_total_coverage(candidates, gold_triples, name=name, print_results=True)
         self.analyze_coverage_per_group(candidates, candidates_group_ids, gold_triples, gold_group_ids, relation_maps, name=name)
         return
 
+    @staticmethod
     @torch.no_grad()
     def analyze_total_coverage(
-        self,
         candidates: torch.Tensor,
         gold_triples: torch.Tensor,
-        relation_maps: RelationMaps,
         name: str = "Set",
         print_results: bool = True,
     ) -> tuple[float, float]:
@@ -160,6 +159,29 @@ class BaseCandidateGenerator(ABC):
             print(f"[Coverage::{name}] Total coverage (micro): {positives_in_candidates} / {total_gold} = {total_cov:.4f}")
             print(f"[Density::{name}] Candidate positives density: {positives_in_candidates} / {int(candidates.size(0))} = {pos_density:.4f}")
         return total_cov, pos_density
+
+
+    @staticmethod
+    def _process_group(gid, gold_triples, gold_group_ids, candidates, candidates_group_ids, name):
+        gid = int(gid)
+        gold_idx = (gold_group_ids == gid).nonzero(as_tuple=False).flatten()
+        if gold_idx.numel() == 0:
+            return None
+        gold_subset = gold_triples[gold_idx]
+
+        cand_idx = (candidates_group_ids == gid).nonzero(as_tuple=False).flatten()
+        cand_subset = candidates[cand_idx] if cand_idx.numel() > 0 else candidates.new_zeros((0, 3), dtype=candidates.dtype)
+
+        cov, dens = BaseCandidateGenerator.analyze_total_coverage(
+            candidates=cand_subset,
+            gold_triples=gold_subset,
+            name=f"{name}|gid={gid}",
+            print_results=False,
+        )
+        count = cand_subset.size(0)
+        group_size = int(gold_subset.size(0))
+        return gid, cov, dens, count, group_size
+
 
 
     @torch.no_grad()
@@ -214,30 +236,32 @@ class BaseCandidateGenerator(ABC):
         covered_total = 0.0
         total_total = 0
 
-        for gid in tqdm(unique_gids.tolist(), desc=f"Coverage per group [{name}]", leave=False):
-            gid = int(gid)
-            gold_idx = (gold_group_ids == gid).nonzero(as_tuple=False).flatten()
-            if gold_idx.numel() == 0:
-                continue
-            gold_subset = gold_triples[gold_idx]
+        # Share tensors for multiprocessing
+        gold_triples.share_memory_()
+        gold_group_ids.share_memory_()
+        candidates.share_memory_()
+        candidates_group_ids.share_memory_()
 
-            cand_idx = (candidates_group_ids == gid).nonzero(as_tuple=False).flatten()
-            cand_subset = candidates[cand_idx] if cand_idx.numel() > 0 else candidates.new_zeros((0, 3), dtype=candidates.dtype)
-
-            cov, dens = self.analyze_total_coverage(
-                candidates=cand_subset,
-                gold_triples=gold_subset,
-                relation_maps=relation_maps,
-                name=f"{name}|gid={gid}",
-                print_results=False,
-            )
-            per_group_cov[gid] = float(cov)
-            per_group_density[gid] = float(dens)
-            per_group_count[gid] = cand_subset.size(0)
-
-            group_size = int(gold_subset.size(0))
-            covered_total += cov * group_size
-            total_total += group_size
+        # Parallel processing
+        num_workers = min(self.max_num_workers, len(unique_gids))
+        self.pool = self._get_or_create_pool(num_workers)
+        worker_function = partial(BaseCandidateGenerator._process_group, 
+                                  gold_triples=gold_triples, 
+                                  gold_group_ids=gold_group_ids, 
+                                  candidates=candidates, 
+                                  candidates_group_ids=candidates_group_ids, 
+                                  name=name)
+        for result in tqdm(self.pool.imap_unordered(worker_function, unique_gids.tolist()), 
+                           desc=f"Coverage per group [{name}]", 
+                           leave=False, 
+                           total=len(unique_gids)):
+            if result is not None:
+                gid, cov, dens, count, group_size = result
+                per_group_cov[gid] = float(cov)
+                per_group_density[gid] = float(dens)
+                per_group_count[gid] = count
+                covered_total += cov * group_size
+                total_total += group_size
 
         if not per_group_cov:
             print(f"[Coverage::{name}] No groups with gold triples. Per-group coverage unavailable.")
@@ -1021,7 +1045,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
         candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
         
         # Compute total coverage on test
-        total_cov, _ = candidate_generator.analyze_total_coverage(candidates_test, test_triples, test_set_t.relation_maps, name=f"alpha={alpha}_beta={beta}_temp={temp}", print_results=False)
+        total_cov, _ = BaseCandidateGenerator.analyze_total_coverage(candidates_test, test_triples, name=f"alpha={alpha}_beta={beta}_temp={temp}", print_results=False)
         
         # Compute per-group coverage on test (average recall per group)
         # Assuming analyze_coverage_per_group is modified to return the average recall
@@ -1128,7 +1152,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
             candidates_group_ids = triple_lib.generate_group_id_function(candidates, args.group_strategy)(candidates)
             
             # Analyze total coverage
-            total_cov, pos_density = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
+            total_cov, pos_density = BaseCandidateGenerator.analyze_total_coverage(candidates, test_triples, name=f"size={size}", print_results=False)
             
             # Analyze coverage per group
             avg_cov_per_group, avg_group_density, avg_group_count = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
@@ -1151,7 +1175,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
             candidates_group_ids = triple_lib.generate_group_id_function(candidates, args.group_strategy)(candidates)
             
             # Analyze total coverage
-            total_cov, pos_density = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
+            total_cov, pos_density = BaseCandidateGenerator.analyze_total_coverage(candidates, test_triples, name=f"size={size}", print_results=False)
             
             # Analyze coverage per group
             avg_cov_per_group, avg_group_density, avg_group_count = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
