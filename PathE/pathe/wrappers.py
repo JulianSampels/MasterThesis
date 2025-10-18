@@ -1247,13 +1247,20 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         return loss
     
     def training_step(self, batch, batch_idx):
+        print("Starting training_step")
+        start_time = time.time()
         logits_rp, logits_tail = self.model_forward(batch)
+        forward_time = time.time() - start_time
+        print(f"Forward took {forward_time:.4f}s")
         heads = batch["heads"]
         true_relations = batch["true_relations"]
         
+        start_loss = time.time()
         # Losses
         rp_loss_unscaled = self.compute_rp_loss(logits_rp, true_relations)
         tp_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads, self.train_head_tail_adjacency)
+        loss_time = time.time() - start_loss
+        print(f"Loss computation took {loss_time:.4f}s")
 
         if not self.use_manual_optimization:
             total_loss = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tp_loss_unscaled
@@ -1276,6 +1283,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         rp_loss = rp_loss_unscaled * scale
         tail_loss = tp_loss_unscaled * scale
 
+        start_backward = time.time()
         # Backward passes
         self.toggle_optimizer(optimizer=relation_opt, optimizer_idx=0)
         self.manual_backward(rp_loss, retain_graph=(not self.link_head_detached))
@@ -1285,6 +1293,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             self.toggle_optimizer(optimizer=tail_opt, optimizer_idx=1)
             self.manual_backward(tail_loss, retain_graph=False)
             self.untoggle_optimizer(optimizer_idx=1)
+        backward_time = time.time() - start_backward
+        print(f"Backward took {backward_time:.4f}s")
 
         # Step and zero grads
         is_boundary = ((batch_idx + 1) % self.accumulate_gradient) == 0
@@ -1300,6 +1310,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("train_rp_loss", rp_loss_unscaled, prog_bar=True)
         self.log("train_tp_loss", tp_loss_unscaled, prog_bar=True)
         self.log("train_total_loss", total_loss)
+        total_step_time = time.time() - start_time
+        print(f"Total training_step took {total_step_time:.4f}s")
         return {"rp_loss": rp_loss_unscaled, "tp_loss": tp_loss_unscaled}
     
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
