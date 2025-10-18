@@ -85,7 +85,7 @@ def main():
     parser.add_argument('--candidates_temperature', type=float, default=1.0,
                         help='Temperature for candidate probability calibration.')
     parser.add_argument('--candidates_alpha', type=float, default=0.5,
-                        help='Weight for head vs tail in candidate scoring (1=head only, 0=tail only).')
+                        help='Weight for tail vs head in candidate scoring (0=head only, 1=tail only).')
     parser.add_argument('--candidates_beta', type=float, default=0.5,
                         help='Weight for tail prediction probability in candidate scoring. Only used if candidate_generator includes tail predictions.')
     parser.add_argument('--candidates_cap', type=int, default=100,

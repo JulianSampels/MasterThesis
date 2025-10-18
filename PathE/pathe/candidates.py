@@ -310,7 +310,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
-        self.alpha = alpha                      # weight for head vs tail log-probs
+        self.alpha = alpha                      # weight for tail vs head log-probs
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
 
@@ -332,8 +332,8 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         """Worker function for parallel chunk processing with head blocking to control memory."""
         torch.set_num_threads(1)  # 1 thread per worker as we parallelize over processes, otherwise it breaks
         C = len(chunk_indices)
-        a_h = float(alpha)
-        a_t = float(1.0 - alpha)
+        a_h = float(1 - alpha)
+        a_t = float(alpha)
         B = max(1, int(head_block_size))
 
         # Global buffers for this chunk
@@ -472,7 +472,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
           1. Compute an effective cap from quantile q (cap_q = ceil((1-q) * E*R*E)), and/or cap_candidates.
              The final cap is min(cap_candidates, cap_q) if both are set.
           2. Compute joint log-probabilities for all (h, r, t) triples using:
-                joint(h, r, t) = alpha * log P(r|h) + (1-alpha) * log P(r^{-1}|t)
+                joint(h, r, t) = (1-alpha) * log P(r|h) + alpha * log P(r^{-1}|t)
              without materializing the full (E, R, E) tensor.
           3. Use a streaming top-k algorithm to keep only the highest-probability candidates globally.
           4. Stack all candidate triples and their scores.
@@ -487,7 +487,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             p: Optional[float], global probability threshold for candidate filtering.
             q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
             temperature: float, softmax temperature for calibration.
-            alpha: float in [0,1], weight for head vs tail log-probabilities.
+            alpha: float in [0,1], weight for tail vs head log-probabilities.
             cap_candidates: Optional[int], hard cap on number of candidates.
 
         Returns:
@@ -576,10 +576,10 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         return candidates, scores
 
 class CandidateGeneratorPerHead(BaseCandidateGenerator):
-    def __init__(self, per_group_cap: int, alpha: float = 1.0):
+    def __init__(self, per_group_cap: int, alpha: float):
         super().__init__()
         self.per_group_cap = per_group_cap    # number of (r,t) pairs to keep per head entity
-        self.alpha = alpha  # weight for head logits
+        self.alpha = alpha  # weight for tail vs head logits
         assert self.per_group_cap and self.per_group_cap > 0, "per_group_cap must be > 0"
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
 
@@ -655,7 +655,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
         
         for h_idx in tqdm(range(E), desc="Generating Top-K per head", leave=False):
             p_r_h = prob_r_given_h[h_idx]
-            scores = (p_r_h ** self.alpha).unsqueeze(1) * (prob_rinv_T ** (1 - self.alpha))  # (R, E)
+            scores = (p_r_h ** (1 - self.alpha)).unsqueeze(1) * (prob_rinv_T ** self.alpha)  # (R, E)
             flat = scores.view(-1)
             
             topk_vals, topk_idx = torch.topk(flat, k=k_eff, largest=True, sorted=True)
@@ -689,7 +689,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.p = p                              # keep candidates with P >= p (global threshold)
         self.q = q                              # use as fraction-cap: cap = ceil((1-q) * |E|*|R|*|E|)
         self.temperature = temperature          # temperature for softmax calibration
-        self.alpha = alpha                      # weight for head vs tail
+        self.alpha = alpha                      # weight for tail vs head
         self.beta = beta                        # weight for tail prediction prob
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
@@ -714,9 +714,9 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         """Worker function for parallel chunk processing with tail prediction."""
         torch.set_num_threads(1)  # 1 thread per worker as we parallelize over processes, otherwise it breaks
         C = len(chunk_indices)
-        a_h = (1 - beta) * alpha
+        a_h = (1 - beta) * (1 - alpha)
         a_t_pred = beta
-        a_t_inv = (1 - beta) * (1 - alpha)
+        a_t_inv = (1 - beta) * alpha
         B = max(1, int(head_block_size))
 
         # Global buffers for this chunk
@@ -859,7 +859,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
              The final cap is min(cap_candidates, cap_q) if both are set.
           2. Compute joint log-probabilities for all (h, r, t) triples using:
                 joint(h, r, t) = a_h * log P(r|h) + a_t_inv * log P(r^{-1}|t) + a_t_pred * log P(t|h)
-                where a_h = (1-beta)*alpha, a_t_inv = (1-beta)*(1-alpha), a_t_pred = beta
+                where a_h = (1-beta)*(1-alpha), a_t_inv = (1-beta)*alpha, a_t_pred = beta
              without materializing the full (E, R, E) tensor.
           3. Use a streaming top-k algorithm to keep only the highest-probability candidates globally.
           4. Stack all candidate triples and their scores.
@@ -875,7 +875,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             p: Optional[float], global probability threshold for candidate filtering.
             q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
             temperature: float, softmax temperature for calibration.
-            alpha: float in [0,1], weight for head vs tail.
+            alpha: float in [0,1], weight for tail vs head.
             beta: float, weight for tail prediction probability.
             cap_candidates: Optional[int], hard cap on number of candidates.
 
