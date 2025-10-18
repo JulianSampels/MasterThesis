@@ -385,7 +385,7 @@ def collate_multipaths(
         batch["heads"] = torch.stack([s["head"] for s in samples])
 
     end_time = time.time()
-    print(f"collate_multipaths took {end_time - start_time:.4f} seconds")
+    # print(f"collate_multipaths took {end_time - start_time:.4f} seconds")
     
     return batch
 

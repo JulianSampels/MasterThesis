@@ -34,6 +34,7 @@ from .wrappers import PathEModelWrapperTriples, PathEModelWrapperTuples, PathEMo
 from .path_lib import encode_relcontext_freqs
 from . import data_utils as du
 from .figures import create_candidate_figures
+from pytorch_lightning.profilers import SimpleProfiler
 
 logger = logging.getLogger(__name__)
 
@@ -675,7 +676,7 @@ def create_and_run_training_exp_two_phases(args):
         parallel=parallel, num_workers=args.num_workers,
         head_tail_adjacency=train_head_tail_adjacency,
         tokens_to_idxs=tokens_to_idxs,
-        augmentation_factor=20
+        augmentation_factor=2
     )
     # Using shared data structures for valid and test
     tokens_to_idxs = train_set_t.tokens_to_idxs
@@ -774,6 +775,7 @@ def create_and_run_training_exp_two_phases(args):
     # Automatic gradient clipping and Automatic gradient accumulation is not supported for manual optimization.
     if args.use_manual_optimization:
         trainer_t = Trainer(
+            profiler=SimpleProfiler(),
             max_epochs=args.max_epochs,
             accelerator=accelerator, devices=args.num_devices, num_nodes=1,
             limit_train_batches=tr_limit, limit_val_batches=va_limit,
