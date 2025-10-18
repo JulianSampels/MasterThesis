@@ -1259,7 +1259,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         total_batches = int(getattr(self.trainer, "num_training_batches", None))
         if total_batches is not None:
             remaining_including_this = total_batches - batch_idx
-            num_in_accum = min(self.accumulate_gradient, remaining_including_this)
+            if remaining_including_this <= self.accumulate_gradient:
+                remainder = total_batches % self.accumulate_gradient
+                num_in_accum = remainder if remainder != 0 else self.accumulate_gradient
+            else:
+                num_in_accum = self.accumulate_gradient
             scale = 1.0 / num_in_accum
         else: scale = 1.0 / self.accumulate_gradient
 
