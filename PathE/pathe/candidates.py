@@ -420,7 +420,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk and returns partial results, which are merged globally
-        num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size)) if self.rel_block_size is not None else self.max_num_workers
+        num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
         self.pool = self._get_or_create_pool(num_workers)
@@ -806,7 +806,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
-        num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size)) if self.rel_block_size is not None else self.max_num_workers
+        num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
         self.pool = self._get_or_create_pool(num_workers)
@@ -1049,10 +1049,6 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
     print(f"Best params for total coverage: alpha={best_params_total[0]}, beta={best_params_total[1]}, temperature={best_params_total[2]}, total_cov={best_total_cov:<.4f}")
     print(f"Best params for per-group coverage: alpha={best_params_per_group[0]}, beta={best_params_per_group[1]}, temperature={best_params_per_group[2]}, avg_recall_per_group={best_per_group:<.4f}")
     print()
-    # results_sorted = sorted(results, key=lambda x: x['total_cov'], reverse=True)
-    # print("All results sorted by total_cov (alpha, beta, temp, total_cov, avg_recall_per_group):")
-    # for row in results_sorted:
-    #     print(row)
     
     # Create heatmaps
     create_heatmaps(results, save_dir=args.figure_dir)
@@ -1064,68 +1060,6 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
     print(f"Set candidate generator to best params for total coverage: alpha={candidate_generator.alpha}, beta={candidate_generator.beta}, temperature={candidate_generator.temperature}")
     
     return best_params_total, best_params_per_group
-
-# def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
-#     """
-#     Perform grid search over per_group_cap (candidate sizes) for CandidateGeneratorGlobalWithTail
-#     to analyze total coverage and average recall per group on the test set.
-#     Initializes the candidate generator once and manually changes per_group_cap.
-#     Assumes CandidateGeneratorGlobalWithTail is used.
-#     """
-#     # Define candidate sizes (log-distributed)
-#     min_val = 1
-#     max_val = 1000
-#     total_count = 15  # Adjust as needed; matches approx. length of original list
-#     candidate_sizes = np.unique(np.logspace(np.log10(min_val), np.log10(max_val), num=total_count, dtype=int)).tolist()
-#     p = 5  # Power for stretching (higher p = more emphasis on small sizes)
-#     candidate_sizes = np.unique(np.round(np.linspace(min_val**(1/p), max_val**(1/p), num=total_count)**p).astype(int)).tolist()
-
-#     print(f"Grid search over {len(candidate_sizes)} candidate sizes {candidate_sizes[:5]}...{candidate_sizes[-5:]}.")
-
-#     results = []
-    
-#     # Compute num_groups for test (only needed for test)
-#     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
-    
-#     # Initialize multiprocessing pool and other resources once
-#     if hasattr(candidate_generator, 'rel_block_size'):
-#         candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
-#     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
-    
-#     for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False):
-#         if size > 400:
-#             candidate_generator.head_block_size = 512  # reduce memory for large sizes
-#         else: 
-#             candidate_generator.head_block_size = 1024
-#         # Manually set per_group_cap
-#         candidate_generator.per_group_cap = size
-        
-#         # Generate candidates for test set
-#         candidates, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, te_logits_tp_all)
-        
-#         # Compute group IDs for candidates (assuming group by head for simplicity; adapt if needed)
-#         candidates_group_ids = triple_lib.generate_group_id_function(candidates, args.group_strategy)(candidates)
-        
-#         # Analyze total coverage
-#         total_cov, pos_density = candidate_generator.analyze_total_coverage(candidates, test_triples, test_set_t.relation_maps, name=f"size={size}", print_results=False)
-        
-#         # Analyze coverage per group
-#         avg_cov_per_group, avg_group_density, avg_group_count = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
-
-#         results.append({'candidate_size': candidates.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'avg_group_density': avg_group_density, 'pos_density': pos_density})
-#         # tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
-
-#         if total_cov >= 0.95:
-#             tqdm.write(f"Reached total coverage {total_cov} with candidate size {size}. Stopping early.")
-#             break
-    
-#     candidate_generator.per_group_cap = args.candidates_cap # reset to original
-#     # Create coverage vs size plot
-#     create_coverage_vs_total_size_plot(results, save_dir=args.figure_dir)
-#     create_coverage_vs_avg_group_size_plot(results, save_dir=args.figure_dir)
-    
-#     return
-
 
 def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
