@@ -674,7 +674,8 @@ def create_and_run_training_exp_two_phases(args):
         maximum_tuple_paths=args.max_ppt,
         parallel=parallel, num_workers=args.num_workers,
         head_tail_adjacency=train_head_tail_adjacency,
-        tokens_to_idxs=tokens_to_idxs
+        tokens_to_idxs=tokens_to_idxs,
+        augmentation_factor=20
     )
     # Using shared data structures for valid and test
     tokens_to_idxs = train_set_t.tokens_to_idxs
@@ -686,7 +687,8 @@ def create_and_run_training_exp_two_phases(args):
         original_relation_to_inverse_relation=val_rel2inv,
         maximum_tuple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
         parallel=parallel, num_workers=args.num_workers,
-        head_tail_adjacency=val_head_tail_adjacency
+        head_tail_adjacency=val_head_tail_adjacency,
+        augmentation_factor=1
     )
     test_set_t = UniqueHeadEntityMultiPathDataset(
         path_store=path_store, relcontext_store=relcon,
@@ -694,7 +696,8 @@ def create_and_run_training_exp_two_phases(args):
         original_relation_to_inverse_relation=test_rel2inv,
         maximum_tuple_paths=args.max_ppt, tokens_to_idxs=tokens_to_idxs,
         parallel=parallel, num_workers=args.num_workers,
-        head_tail_adjacency=test_head_tail_adjacency
+        head_tail_adjacency=test_head_tail_adjacency,
+        augmentation_factor=1
     )
 
     print(f"Found {len(train_set_t) + len(valid_set_t) + len(test_set_t)} samples in the dataset: Tr {len(train_set_t)}, Va {len(valid_set_t)}, Te {len(test_set_t)}")

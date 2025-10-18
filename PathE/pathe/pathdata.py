@@ -1485,7 +1485,8 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
 class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
     def __init__(self, path_store, relcontext_store, tuple_store, context_triple_store=None,
                  original_relation_to_inverse_relation=None, tokens_to_idxs=None,
-                 maximum_tuple_paths=50, seed=46, parallel=False, num_workers=0, head_tail_adjacency=None):
+                 maximum_tuple_paths=50, seed=46, parallel=False, num_workers=0, head_tail_adjacency=None,
+                 augmentation_factor: int = 1):
         super().__init__(path_store, relcontext_store, tuple_store, context_triple_store,
                          original_relation_to_inverse_relation, tokens_to_idxs, maximum_tuple_paths,
                          num_negatives=0, tuple_corruptor=None, seed=seed, parallel=parallel, num_workers=num_workers,
@@ -1498,6 +1499,7 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
             head_to_tuples.setdefault(head, []).append(tuple)
 
         self.unique_heads = torch.tensor(list(head_to_tuples.keys()))
+        self.augmentation_factor = augmentation_factor
         
         # Precompute true relations per head (as a tensor)
         self.head_to_true_relations = {}
@@ -1506,12 +1508,12 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
             self.head_to_true_relations[head] = torch.tensor(list(true_rels))
 
     def __len__(self):
-        return len(self.unique_heads)
+        return len(self.unique_heads) * self.augmentation_factor
     
     def __getitem__(self, index):
-        head = self.unique_heads[index]
+        head = self.unique_heads[index % len(self.unique_heads)] # Wrap around for augmentation
         # Retrieving combined incoming and outgoing paths per entity
-        with du.local_seed(self.seed, self.epoch, index):
+        with du.local_seed(self.seed, self.epoch, index): # each augmentation gets different paths
             ent_paths, rel_paths, head_indexes, pos = self._create_inout_contextpaths(head)
         path_origins = [0] * len(ent_paths)
         
