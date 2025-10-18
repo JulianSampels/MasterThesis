@@ -6,6 +6,7 @@ Scalable routines for training and finetuning a PathER model.
 import logging
 from functools import partial
 import math
+import time
 from typing import Optional
 
 import torch
@@ -1300,6 +1301,13 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("train_tp_loss", tp_loss_unscaled, prog_bar=True)
         self.log("train_total_loss", total_loss)
         return {"rp_loss": rp_loss_unscaled, "tp_loss": tp_loss_unscaled}
+    
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        start = time.time()
+        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
+        transfer_time = time.time() - start
+        print(f"GPU transfer took {transfer_time:.4f}s")
+        return batch
     
     def validation_step(self, batch, batch_idx):
         logits_rp, logits_tail = self.model_forward(batch)
