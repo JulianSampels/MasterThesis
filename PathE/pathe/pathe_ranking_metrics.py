@@ -202,22 +202,31 @@ class RelationMRRUniqueHeads(Metric):
                 continue
 
             head_id = heads[i].item()
-            all_true_for_head = set(self.all_relations.get(head_id, set()))  # all true r for head across splits
+            all_true_for_head = self.all_relations.get(head_id, set())  # all true r for head across splits
 
-            # Compute ranks for each true relation, filtering other true relations
-            ranks = []
-            for r in true_rels:
-                filtered_logits = logits.clone()
-                other_true = all_true_for_head - {r.item()}
-                filtered_logits[list(other_true)] = SMALLEST_FLOAT
+            # --- Vectorized rank computation using slicing ---
 
-                true_score = filtered_logits[r]
-                optimistic_rank = (filtered_logits > true_score).sum() + 1
-                pessimistic_rank = (filtered_logits >= true_score).sum()
-                realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
-                ranks.append(realistic_rank)
+            # Get scores of the true relations we are evaluating
+            true_rel_scores = logits[true_rels]  # Shape: (num_true_rels,)
 
-            ranks = torch.stack(ranks)
+            # Identify negative relations by excluding all known true relations for this head
+            all_true_indices = torch.tensor(list(all_true_for_head), device=logits.device, dtype=torch.long)
+
+            # Create a mask for all relations, setting true only for negatives
+            is_negative_mask = torch.ones_like(logits, dtype=torch.bool)
+            if all_true_indices.numel() > 0:
+                is_negative_mask[all_true_indices] = False
+
+            # Slice to get only the scores of negative relations
+            negative_scores = logits[is_negative_mask]
+
+            # Compare each true score against all negative scores via broadcasting.
+            # The rank is the count of negative scores better than the true score, plus one for the true score itself.
+            optimistic_rank = (negative_scores.unsqueeze(0) > true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
+            pessimistic_rank = (negative_scores.unsqueeze(0) >= true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
+            
+            ranks = (optimistic_rank + pessimistic_rank).float() * 0.5
+
             # Average reciprocal ranks for this head
             avg_recip = (1.0 / ranks).mean()
             self.reciprocal_ranks += avg_recip
@@ -452,22 +461,31 @@ class RelationHitsAtKUniqueHeads(Metric):
                 continue
 
             head_id = heads[i].item()
-            all_true_for_head = set(self.all_relations.get(head_id, set()))
+            all_true_for_head = self.all_relations.get(head_id, set())
 
-            # Compute ranks for each true relation, filtering other true relations
-            ranks = []
-            for r in true_rels:
-                filtered_logits = logits.clone()
-                other_true = all_true_for_head - {r.item()}
-                filtered_logits[list(other_true)] = SMALLEST_FLOAT
+            # --- Vectorized rank computation using slicing ---
 
-                true_score = filtered_logits[r]
-                optimistic_rank = (filtered_logits > true_score).sum() + 1
-                pessimistic_rank = (filtered_logits >= true_score).sum()
-                realistic_rank = (optimistic_rank + pessimistic_rank).float() * 0.5
-                ranks.append(realistic_rank)
+            # Get scores of the true relations we are evaluating
+            true_rel_scores = logits[true_rels]  # Shape: (num_true_rels,)
 
-            ranks = torch.stack(ranks)
+            # Identify negative relations by excluding all known true relations for this head
+            all_true_indices = torch.tensor(list(all_true_for_head), device=logits.device, dtype=torch.long)
+
+            # Create a mask for all relations, setting true only for negatives
+            is_negative_mask = torch.ones_like(logits, dtype=torch.bool)
+            if all_true_indices.numel() > 0:
+                is_negative_mask[all_true_indices] = False
+
+            # Slice to get only the scores of negative relations
+            negative_scores = logits[is_negative_mask]
+
+            # Compare each true score against all negative scores via broadcasting.
+            # The rank is the count of negative scores better than the true score, plus one for the true score itself.
+            optimistic_rank = (negative_scores.unsqueeze(0) > true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
+            pessimistic_rank = (negative_scores.unsqueeze(0) >= true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
+            
+            ranks = (optimistic_rank + pessimistic_rank).float() * 0.5
+
             # Fraction of true relations with rank <= k
             hits_for_head = (ranks <= self.k).float().mean()
             self.hits += hits_for_head
@@ -861,33 +879,25 @@ class TailMRRTuples(Metric):
             if tails_to_evaluate.numel() == 0:
                 continue
 
-            # These are all known true tails for this head (from all splits)
-            all_known_true_tails = torch.where(filter_labels[i] > 0.5)[0]
-            
             row_scores = scores[i]
 
-            for t in tails_to_evaluate:
-                score_t = row_scores[t]
+            # Get scores of the true tails we are evaluating
+            true_tail_scores = row_scores[tails_to_evaluate]
 
-                # Create a copy of scores for filtering to avoid in-place modification issues
-                filtered_scores = row_scores.clone()
+            # Create a boolean mask that is True for all entities that are NOT known true tails
+            is_negative_mask = ~(filter_labels[i] > 0.5)
 
-                # Filter out other known true tails by setting their scores to a very low value
-                # This prevents them from affecting the rank of the current tail `t`
-                if all_known_true_tails.numel() > 1:
-                    other_true_tails = all_known_true_tails[all_known_true_tails != t]
-                    filtered_scores[other_true_tails] = SMALLEST_FLOAT
-                
-                # The currently evaluated tail `t` should not be filtered
-                filtered_scores[t] = score_t
+            # Slice to get only the scores of negative entities
+            negative_scores = row_scores[is_negative_mask]
 
-                # Calculate rank against all entities (including negatives and excluding other positives)
-                optimistic_rank = (filtered_scores > score_t).sum() + 1
-                pessimistic_rank = (filtered_scores >= score_t).sum()
-                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).float()
+            # Compare each true score against all negative scores via broadcasting.
+            # The rank is the count of negative scores better/equal than the true score, plus one.
+            optimistic_rank = (negative_scores.unsqueeze(0) > true_tail_scores.unsqueeze(1)).sum(dim=1) + 1
+            pessimistic_rank = (negative_scores.unsqueeze(0) >= true_tail_scores.unsqueeze(1)).sum(dim=1) + 1
+            realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).float()
 
-                self.reciprocal_ranks += (1.0 / realistic_rank)
-                self.total += 1
+            self.reciprocal_ranks += (1.0 / realistic_rank).sum()
+            self.total += realistic_rank.numel()
 
     def compute(self):
         return self.reciprocal_ranks / self.total.clamp_min(1)
@@ -931,31 +941,25 @@ class TailHitsAtKTuples(Metric):
             if tails_to_evaluate.numel() == 0:
                 continue
 
-            # These are all known true tails for this head (from all splits)
-            all_known_true_tails = torch.where(filter_labels[i] > 0.5)[0]
-
             row_scores = scores[i]
 
-            for t in tails_to_evaluate:
-                score_t = row_scores[t]
+            # Get scores of the true tails we are evaluating
+            true_tail_scores = row_scores[tails_to_evaluate]
 
-                # Create a copy of scores for filtering
-                filtered_scores = row_scores.clone()
+            # Create a boolean mask that is True for all entities that are NOT known true tails
+            is_negative_mask = ~(filter_labels[i] > 0.5)
 
-                # Filter out other known true tails
-                if all_known_true_tails.numel() > 1:
-                    other_true_tails = all_known_true_tails[all_known_true_tails != t]
-                    filtered_scores[other_true_tails] = SMALLEST_FLOAT
-                
-                filtered_scores[t] = score_t
+            # Slice to get only the scores of negative entities
+            negative_scores = row_scores[is_negative_mask]
 
-                # Calculate rank against all entities
-                optimistic_rank = (filtered_scores > score_t).sum() + 1
-                pessimistic_rank = (filtered_scores >= score_t).sum()
-                realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).float()
+            # Compare each true score against all negative scores via broadcasting.
+            # The rank is the count of negative scores better/equal than the true score, plus one.
+            optimistic_rank = (negative_scores.unsqueeze(0) > true_tail_scores.unsqueeze(1)).sum(dim=1) + 1
+            pessimistic_rank = (negative_scores.unsqueeze(0) >= true_tail_scores.unsqueeze(1)).sum(dim=1) + 1
+            realistic_rank = 0.5 * (optimistic_rank + pessimistic_rank).float()
 
-                self.hits += (realistic_rank <= self.k).to(self.hits.dtype)
-                self.total += 1
+            self.hits += (realistic_rank <= self.k).sum()
+            self.total += realistic_rank.numel()
 
     def compute(self):
         return self.hits / self.total.clamp_min(1)
