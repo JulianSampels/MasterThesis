@@ -861,14 +861,37 @@ class MultiPathDatasetTriples(SimplePathDatasetTriples):
         self.ppe = maximum_triple_paths // 2  # paths per entity
         self.ppc = self.ppe // 2  # paths per entity context (in/out)
 
+        # Caching entity contexts to speed up __getitem__
+        self._entity_context_cache = {}
+        if self.context_triple_store is not None:
+            logger.info("Pre-building entity context path cache...")
+            unique_entities_in_context = torch.unique(self.context_triple_store[:, [0, 2]])
+            for entity in tqdm(unique_entities_in_context, desc="Caching entity contexts"):
+                entity_item = entity.item()
+                self._entity_context_cache[entity_item] = plib.create_contextpaths(
+                    entity_item, self.path_index, self.context_triple_store)
+            logger.info(f"Entity context cache built for {len(self._entity_context_cache)} entities.")
+
+    def _create_contextpaths(self, entity):
+        """
+        Retrieves or computes the contextual paths for a given entity, using caching for efficiency.
+        """
+        entity_item = entity.item() if torch.is_tensor(entity) else entity
+        if entity_item in self._entity_context_cache:
+            return self._entity_context_cache[entity_item]
+        else:
+            # Compute and cache if not present (fallback, though cache should be pre-built)
+            paths = plib.create_contextpaths(entity, self.path_index, self.context_triple_store)
+            self._entity_context_cache[entity_item] = paths
+            return paths
+
     def _create_inout_contextpaths(self, entity):
         """
         Creates contextualised paths by combining incoming and outgoing paths
         for a given entity, and updating positional informatioon.
         """
         et = lambda: torch.IntTensor([])
-        in_paths, out_paths = plib.create_contextpaths(
-            entity, self.path_index, self.context_triple_store)
+        in_paths, out_paths = self._create_contextpaths(entity)
         # Get maximum posible num paths and sample from each context
         max_ppe = min(self.ppe, max(len(in_paths), len(out_paths)))
         path_sample_a = sample_or_repeat(in_paths, max_ppe)
@@ -1485,7 +1508,8 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
 class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
     def __init__(self, path_store, relcontext_store, tuple_store, context_triple_store=None,
                  original_relation_to_inverse_relation=None, tokens_to_idxs=None,
-                 maximum_tuple_paths=50, seed=46, parallel=False, num_workers=0, head_tail_adjacency=None):
+                 maximum_tuple_paths=50, seed=46, parallel=False, num_workers=0, head_tail_adjacency=None,
+                 num_augmentations=10):
         super().__init__(path_store, relcontext_store, tuple_store, context_triple_store,
                          original_relation_to_inverse_relation, tokens_to_idxs, maximum_tuple_paths,
                          num_negatives=0, tuple_corruptor=None, seed=seed, parallel=parallel, num_workers=num_workers,
@@ -1505,26 +1529,37 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
             true_rels = set(t[1].item() for t in tuples)
             self.head_to_true_relations[head] = torch.tensor(list(true_rels))
 
+        # Pre-compute and cache all items to accelerate training
+        self._precomputed_items = []
+        logger.info(f"Pre-computing {num_augmentations} augmentations for {len(self.unique_heads)} unique heads...")
+        for head_tensor in tqdm(self.unique_heads, desc="Pre-computing items"):
+            head_item = head_tensor.item()
+            true_relations = self.head_to_true_relations[head_item]
+            for aug_idx in range(num_augmentations):
+                # Use a deterministic seed for each augmented sample
+                with du.local_seed(self.seed, head_item, aug_idx):
+                    ent_paths, rel_paths, head_indexes, pos = self._create_inout_contextpaths(head_tensor)
+                
+                path_origins = [0] * len(ent_paths)
+                
+                self._precomputed_items.append({
+                    "head": head_tensor,
+                    "pos": pos, 
+                    "ent_paths": ent_paths,
+                    "rel_paths": rel_paths,
+                    "head_indexes": head_indexes,
+                    "true_relations": true_relations,
+                    "path_origins": path_origins,
+                })
+        logger.info("Item pre-computation complete.")
+
     def __len__(self):
-        return len(self.unique_heads)
+        return len(self._precomputed_items)
     
     def __getitem__(self, index):
-        head = self.unique_heads[index]
-        # Retrieving combined incoming and outgoing paths per entity
-        with du.local_seed(self.seed, self.epoch, index):
-            ent_paths, rel_paths, head_indexes, pos = self._create_inout_contextpaths(head)
-        path_origins = [0] * len(ent_paths)
-        
-        return {
-            "id": index,
-            "head": head,
-            "pos": pos, 
-            "ent_paths": ent_paths,
-            "rel_paths": rel_paths,
-            "head_indexes": head_indexes,
-            "true_relations": self.head_to_true_relations[head.item()],
-            "path_origins": path_origins,
-        }
+        item = self._precomputed_items[index]
+        item['id'] = index  # Add id for compatibility
+        return item
 
 @dataclass
 class RelationMaps:
