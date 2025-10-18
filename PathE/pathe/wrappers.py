@@ -1213,8 +1213,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         relation_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
         # relation_weights = torch.ones_like(targets)  # uncomment to disable weighting
 
+        # Apply label smoothing
+        smoothed_targets = targets * (1 - self.label_smoothing) + (1 - targets) * self.label_smoothing
+
         # Use BCE with logits, averaged over all elements (batch * relations)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, targets, weight=relation_weights, reduction='sum')
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, smoothed_targets, weight=relation_weights, reduction='sum')
         loss /= relation_weights.sum().clamp_min(1.0)
         return loss
 
@@ -1233,8 +1236,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         
         tail_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
         # tail_weights = torch.ones_like(targets)  # uncomment to disable weighting
+
+        # Apply label smoothing
+        smoothed_targets = targets * (1 - self.label_smoothing) + (1 - targets) * self.label_smoothing
         
-        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, targets, weight=tail_weights, reduction='sum')
+        loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, smoothed_targets, weight=tail_weights, reduction='sum')
         loss /= tail_weights.sum().clamp_min(1.0)
         return loss
     
