@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 import torch
+import time
 from torch.utils.data import Subset, random_split
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,8 @@ def collate_multipaths(
     if len(samples) == 0:
         return {}
 
+    start_time = time.time()
+
     def merge(key, left_pad, move_eos_to_beginning=False, pad_to_length=None):
         # First merge all sequences/tensors in a single list
         if isinstance(samples[0][key], list):
@@ -380,6 +383,9 @@ def collate_multipaths(
 
     if "head" in samples[0]:
         batch["heads"] = torch.stack([s["head"] for s in samples])
+
+    end_time = time.time()
+    print(f"collate_multipaths took {end_time - start_time:.4f} seconds")
     
     return batch
 
