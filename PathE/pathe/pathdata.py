@@ -766,7 +766,7 @@ class SimplePathDatasetTriples(Dataset):
 
         self.epoch = None
         self.xtokens = xtokens
-        self.triplestore = triple_store
+        self.triplestore: torch.Tensor = triple_store
         self.max_paths = maximum_triple_paths
         self.vocab_size = len(self.tokens_to_idxs)
         self.context_triple_store = context_triple_store \
@@ -1483,7 +1483,7 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
         }
 
 class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
-    def __init__(self, path_store, relcontext_store, tuple_store, context_triple_store=None,
+    def __init__(self, path_store, relcontext_store, tuple_store: torch.Tensor, context_triple_store=None,
                  original_relation_to_inverse_relation=None, tokens_to_idxs=None,
                  maximum_tuple_paths=50, seed=46, parallel=False, num_workers=0, head_tail_adjacency=None,
                  augmentation_factor: int = 1):
@@ -1492,21 +1492,14 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
                          num_negatives=0, tuple_corruptor=None, seed=seed, parallel=parallel, num_workers=num_workers,
                          neg_tuple_store=None, head_tail_adjacency=head_tail_adjacency)
         
-        # Group tuples by unique heads
-        head_to_tuples: dict[int, list[torch.Tensor]] = {}
-        for tuple in self.tuplestore:
-            head = tuple[0].item()
-            head_to_tuples.setdefault(head, []).append(tuple)
-
-        self.unique_heads = torch.tensor(list(head_to_tuples.keys()))
+        # Group triples by unique heads
+        self.head_incidence_matrix = torch.zeros((self.num_entities, len(self.tokens_to_idxs)-2), dtype=torch.int32)  # Exclude PAD and MSK
+        for triple in self.triplestore:
+            head = triple[0].item()
+            relation = triple[1].item()
+            self.head_incidence_matrix[head, relation] += 1
+        self.unique_heads: torch.Tensor = tuple_store[:,0].unique()
         self.augmentation_factor = augmentation_factor
-        
-        # Precompute true relations per head (as a tensor)
-        self.head_to_true_relations = {}
-        for head, tuples in head_to_tuples.items():
-            true_rels = set(t[1].item() for t in tuples)
-            self.head_to_true_relations[head] = torch.zeros(len(self.tokens_to_idxs)-2, dtype=torch.float32)
-            self.head_to_true_relations[head][list(true_rels)] = 1
 
     def __len__(self):
         return len(self.unique_heads) * self.augmentation_factor
@@ -1525,7 +1518,7 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
             "ent_paths": ent_paths,
             "rel_paths": rel_paths,
             "head_indexes": head_indexes,
-            "true_relations": self.head_to_true_relations[head.item()],
+            "relation_count_matrix": self.head_incidence_matrix[head.item()],
             "path_origins": path_origins,
         }
 

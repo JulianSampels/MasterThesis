@@ -374,9 +374,9 @@ def collate_multipaths(
     if "lp_weight" in samples[0]:
         batch["lp_weights"] = torch.tensor([s["lp_weight"] for s in samples], dtype=torch.float32)
     
-    # Add true_relations as a list of tensors (one list per head)
-    if "true_relations" in samples[0]:
-        batch["true_relations"] = torch.stack([s["true_relations"] for s in samples])
+    # Add relation_count_matrix as a incidence matrix counting relations per head
+    if "relation_count_matrix" in samples[0]:
+        batch["relation_count_matrix"] = torch.stack([s["relation_count_matrix"] for s in samples])
 
     if "head" in samples[0]:
         batch["heads"] = torch.stack([s["head"] for s in samples])

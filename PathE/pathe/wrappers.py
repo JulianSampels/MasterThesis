@@ -1197,45 +1197,55 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_dict=filter_dict)
     
 
-    def compute_rp_loss(self, logits, targets: torch.Tensor):
+    def compute_rp_loss(self, logits, relation_count_matrix: torch.Tensor):
         """
         Compute multi-label BCE loss for relation prediction.
         logits: (batch_size, num_relations)
-        true_relations: (batch_size, num_relations)
+        relation_count_matrix: (batch_size, num_relations) - counts of how often each relation is used for each head
         """
         batch_size, num_relations = logits.shape
-        # weights = torch.ones_like(targets)
-        pos_counts = targets.sum(dim=1)
-        neg_counts = targets.shape[1] - pos_counts
-        w_pos = 0.5 / pos_counts.clamp_min(1.0)
-        w_neg = 0.5 / neg_counts.clamp_min(1.0)
+        
+        # Create binary labels: 1 if used (count > 0), 0 otherwise
+        targets = (relation_count_matrix > 0).float()
 
-        relation_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
-        # relation_weights = torch.ones_like(targets)  # uncomment to disable weighting
+        # weights = torch.ones_like(relation_count_matrix)
+        # pos_counts = relation_count_matrix.sum(dim=1)
+        # neg_counts = relation_count_matrix.shape[1] - pos_counts
+        # w_pos = 0.5 / pos_counts.clamp_min(1.0)
+        # w_neg = 0.5 / neg_counts.clamp_min(1.0)
+        # weights = torch.where(relation_count_matrix > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
+        # weights = torch.ones_like(targets)  # uncomment to disable weighting
+
+        # Weights: use the count for positives, 1.0 for negatives
+        weights = torch.where(targets > 0.5, relation_count_matrix, 1.0)
 
         # Apply label smoothing
         smoothed_targets = targets * (1 - self.label_smoothing) + (1 - targets) * self.label_smoothing
 
         # Use BCE with logits, averaged over all elements (batch * relations)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, smoothed_targets, weight=relation_weights, reduction='sum')
-        loss /= relation_weights.sum().clamp_min(1.0)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, smoothed_targets, weight=weights, reduction='sum')
+        loss /= weights.sum().clamp_min(1.0)
         return loss
 
-    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, adjacency_matrix: torch.Tensor):
-        if adjacency_matrix is None:
+    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, entity_count_matrix: torch.Tensor):
+        if entity_count_matrix is None:
             raise ValueError("An adjacency matrix must be provided for on-the-fly loss calculation.")
         
         # Generate labels and weights on the fly using the provided adjacency matrix
-        targets = adjacency_matrix[heads.to(adjacency_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
-        
-        pos_counts = targets.sum(dim=1)
-        neg_counts = targets.shape[1] - pos_counts
-        
-        w_pos = 0.5 / pos_counts.clamp_min(1.0)
-        w_neg = 0.5 / neg_counts.clamp_min(1.0)
-        
-        tail_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
+        entity_count_matrix = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        # Create binary labels: 1 if used (count > 0), 0 otherwise
+        targets = (entity_count_matrix > 0).float()
+
+        # weights = torch.ones_like(targets)
+        # pos_counts = targets.sum(dim=1)
+        # neg_counts = targets.shape[1] - pos_counts
+        # w_pos = 0.5 / pos_counts.clamp_min(1.0)
+        # w_neg = 0.5 / neg_counts.clamp_min(1.0)
+        # tail_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
         # tail_weights = torch.ones_like(targets)  # uncomment to disable weighting
+
+        # Weights: use the count for positives, 1.0 for negatives
+        tail_weights = torch.where(targets > 0.5, entity_count_matrix, 1.0)
 
         # Apply label smoothing
         smoothed_targets = targets * (1 - self.label_smoothing) + (1 - targets) * self.label_smoothing
@@ -1247,10 +1257,10 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def training_step(self, batch, batch_idx):
         logits_rp, logits_tail = self.model_forward(batch)
         heads = batch["heads"]
-        true_relations = batch["true_relations"]
+        relation_count_matrix = batch["relation_count_matrix"]
         
         # Losses
-        rp_loss_unscaled = self.compute_rp_loss(logits_rp, true_relations)
+        rp_loss_unscaled = self.compute_rp_loss(logits_rp, relation_count_matrix)
         tp_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads, self.train_head_tail_adjacency)
 
         if not self.use_manual_optimization:
@@ -1307,10 +1317,10 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def validation_step(self, batch, batch_idx):
         logits_rp, logits_tail = self.model_forward(batch)
         heads = batch["heads"]
-        true_relations = batch["true_relations"]
+        relation_count_matrix = batch["relation_count_matrix"]
 
         # Losses
-        rp_loss = self.compute_rp_loss(logits_rp, true_relations)
+        rp_loss = self.compute_rp_loss(logits_rp, relation_count_matrix)
         tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.val_head_tail_adjacency)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
@@ -1319,11 +1329,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("valid_total_loss", total_loss)
 
         # Update metrics directly on each step
-        self.val_relationMRR.update(heads, logits_rp, true_relations)
-        self.val_relationHitsAt1.update(heads, logits_rp, true_relations)
-        self.val_relationHitsAt3.update(heads, logits_rp, true_relations)
-        self.val_relationHitsAt5.update(heads, logits_rp, true_relations)
-        self.val_relationHitsAt10.update(heads, logits_rp, true_relations)
+        self.val_relationMRR.update(heads, logits_rp, relation_count_matrix)
+        self.val_relationHitsAt1.update(heads, logits_rp, relation_count_matrix)
+        self.val_relationHitsAt3.update(heads, logits_rp, relation_count_matrix)
+        self.val_relationHitsAt5.update(heads, logits_rp, relation_count_matrix)
+        self.val_relationHitsAt10.update(heads, logits_rp, relation_count_matrix)
 
         true_tails = self.val_head_tail_adjacency[heads.to(self.val_head_tail_adjacency.device)].to(torch.float32)
         self.val_tailMRR.update(heads, logits_tail, true_tails)
@@ -1351,10 +1361,10 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def test_step(self, batch, batch_idx):
         logits_rp, logits_tail = self.model_forward(batch)
         heads = batch["heads"]
-        true_relations = batch["true_relations"]
+        relation_count_matrix = batch["relation_count_matrix"]
 
         # Losses
-        rp_loss = self.compute_rp_loss(logits_rp, true_relations)
+        rp_loss = self.compute_rp_loss(logits_rp, relation_count_matrix)
         tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.test_head_tail_adjacency)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
@@ -1363,11 +1373,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("test_total_loss", total_loss)
 
         # Update metrics directly on each step
-        self.test_relationMRR.update(heads, logits_rp, true_relations)
-        self.test_relationHitsAt1.update(heads, logits_rp, true_relations)
-        self.test_relationHitsAt3.update(heads, logits_rp, true_relations)
-        self.test_relationHitsAt5.update(heads, logits_rp, true_relations)
-        self.test_relationHitsAt10.update(heads, logits_rp, true_relations)
+        self.test_relationMRR.update(heads, logits_rp, relation_count_matrix)
+        self.test_relationHitsAt1.update(heads, logits_rp, relation_count_matrix)
+        self.test_relationHitsAt3.update(heads, logits_rp, relation_count_matrix)
+        self.test_relationHitsAt5.update(heads, logits_rp, relation_count_matrix)
+        self.test_relationHitsAt10.update(heads, logits_rp, relation_count_matrix)
 
         true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
         self.test_tailMRR.update(heads, logits_tail, true_tails)

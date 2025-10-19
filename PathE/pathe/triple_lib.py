@@ -151,9 +151,9 @@ def get_full_adjacency_matrix(triples: torch.Tensor, num_entities: int) -> torch
     """
     assert triples[:, 0].unique().max() < num_entities, "Entity index in triples head exceeds num_entities"
     assert triples[:, 2].unique().max() < num_entities, "Entity index in triples tail exceeds num_entities"
-    adj = torch.zeros((num_entities, num_entities), dtype=torch.bool, device="cpu")
+    adj = torch.zeros((num_entities, num_entities), dtype=torch.int32, device="cpu")
     for h, r, t in triples.tolist():
-        adj[h, t] = True
+        adj[h, t] += 1
     return adj
 
 
