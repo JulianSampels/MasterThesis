@@ -1217,7 +1217,13 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # weights = torch.ones_like(targets)  # uncomment to disable weighting
 
         # Weights: use the count for positives, 1.0 for negatives
-        weights = torch.where(targets > 0.5, relation_count_matrix, 1.0)
+        # weights = torch.where(targets > 0.5, relation_count_matrix, 1.0)
+
+        # Weights: use the count for positives, and for negatives, distribute the total positive weight equally
+        sum_pos = relation_count_matrix.sum(dim=1)  # (batch_size,)
+        num_neg = (targets <= 0.5).sum(dim=1)  # (batch_size,)
+        weight_neg = sum_pos / num_neg.clamp_min(1.0)  # (batch_size,)
+        weights = torch.where(targets > 0.5, relation_count_matrix, weight_neg.unsqueeze(1).expand_as(relation_count_matrix))
 
         # Apply label smoothing
         smoothed_targets = targets * (1 - self.label_smoothing) + (1 - targets) * self.label_smoothing
@@ -1245,7 +1251,13 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # tail_weights = torch.ones_like(targets)  # uncomment to disable weighting
 
         # Weights: use the count for positives, 1.0 for negatives
-        tail_weights = torch.where(targets > 0.5, entity_count_matrix, 1.0)
+        # tail_weights = torch.where(targets > 0.5, entity_count_matrix, 1.0)
+
+        # Weights: use the count for positives, and for negatives, distribute the total positive weight equally
+        sum_pos = entity_count_matrix.sum(dim=1)  # (batch_size,)
+        num_neg = (targets <= 0.5).sum(dim=1)  # (batch_size,)
+        weight_neg = sum_pos / num_neg.clamp_min(1.0)  # (batch_size,)
+        tail_weights = torch.where(targets > 0.5, entity_count_matrix, weight_neg.unsqueeze(1).expand_as(entity_count_matrix))
 
         # Apply label smoothing
         smoothed_targets = targets * (1 - self.label_smoothing) + (1 - targets) * self.label_smoothing
@@ -1348,14 +1360,14 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
         self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
         self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
-        self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True)
+        self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
         
         # Log tail metrics
         self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
         self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
         self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
         self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
-        self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True)
+        self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
         print()
 
     def test_step(self, batch, batch_idx):
