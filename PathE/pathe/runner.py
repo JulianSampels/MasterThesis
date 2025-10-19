@@ -45,6 +45,8 @@ def main():
                         help='Partition assignment for each path in pathstore.')
     parser.add_argument('--max_ppt', action='store', type=int, default=50,
                         help='Maximum number of paths per triple to sample.')
+    parser.add_argument('--augmentation_factor', action='store', type=int, default=20,
+                        help='Factor for data augmentation during training.')
     parser.add_argument('--xtokens', type=float, nargs="+", default=["MSK"],
                         help='All the special tokens that will be embedded.')
 
@@ -127,7 +129,13 @@ def main():
                         help='Batch size for training and validation loaders.')
     parser.add_argument('--lrate', action='store', type=float, default=1e-3,
                         help='Starting learning rate (before any scheduling).')
-    parser.add_argument('--loss_weight', type=float, default=1.,
+    parser.add_argument('--scheduler', action='store', choices=['none', 'reduce_on_plateau'], default='none',
+                        help='The learning rate scheduler to use.')
+    parser.add_argument('--scheduler_monitor', action='store', default="valid_total_loss",
+                        help='The metric to monitor for the scheduler.')
+    parser.add_argument('--scheduler_patience', action='store', type=int, default=5,
+                        help='Patience for the scheduler.')
+    parser.add_argument('--loss_weight', type=float, default=0.5,
                         help='Controls loss weighting for multi-task learning. '
                              'The weight for the relation prediction loss is '
                              'implemented as (1-loss_weight). Must be [0,1]')
@@ -225,6 +233,11 @@ def main():
     args.val_num_negatives = args.num_negatives if args.val_num_negatives is None else args.val_num_negatives
     if args.link_head_detached and not args.use_manual_optimization:
         raise ValueError("link_head_detached=True has no effect when use_manual_optimization=False")
+    # Warning for scheduler patience vs. early stopping patience
+    if args.scheduler != 'none' and args.scheduler_patience >= args.patience:
+        print(f"Warning: Scheduler patience ({args.scheduler_patience}) is not smaller than early stopping patience ({args.patience}). "
+            "Consider reducing --scheduler_patience to allow LR reduction before early stopping.")
+
 
     # Setting the random seed for all modules
     set_random_seed(args.seed, args.device)
@@ -259,6 +272,8 @@ def main():
         if args.val_num_negatives == 0:
             assert "link" not in args.triple_monitor, f"Link prediction metric {args.triple_monitor} cannot be used when val_num_negatives=0"
         assert "recall" not in args.triple_monitor, f"Recall metrics cannot be used with single phase triple model."
+        if args.loss_weight != 1:
+            print("Warning: loss_weight != 1 does also train rp in triples mode, this may be unintended.")
         pathe_trainer.create_and_run_training_exp_triples(args)
     elif args.model == "patheTuples":
         if args.val_num_negatives == 0:
@@ -268,7 +283,6 @@ def main():
         if args.val_num_negatives == 0:
             assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
         assert args.use_manual_optimization, "Two-phase training requires --use_manual_optimization to be set for proper relation prediction in tuples training."
-        assert args.loss_weight == 1, "Loss weight must be 1 for two-phase training (only link loss is used in phase 2)."
         # assert args.link_head_detached, "Two-phase training requires --link_head_detached to be set for proper relation prediction in tuples training."
         assert not (args.tuple_checkpoint is None and args.skip_phase1), "Cannot skip phase 1 if no tuple_checkpoint is provided."
         pathe_trainer.create_and_run_training_exp_two_phases(args)

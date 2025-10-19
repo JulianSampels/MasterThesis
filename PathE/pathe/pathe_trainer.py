@@ -675,7 +675,7 @@ def create_and_run_training_exp_two_phases(args):
         parallel=parallel, num_workers=args.num_workers,
         head_tail_adjacency=train_head_tail_adjacency,
         tokens_to_idxs=tokens_to_idxs,
-        augmentation_factor=20
+        augmentation_factor=args.augmentation_factor
     )
     # Using shared data structures for valid and test
     tokens_to_idxs = train_set_t.tokens_to_idxs
