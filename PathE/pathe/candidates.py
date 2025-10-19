@@ -23,6 +23,7 @@ class BaseCandidateGenerator(ABC):
 
     def _get_or_create_pool(self, num_processes):
         """Generate or reuse the multiprocessing pool if the pool is empty or has fewer processes."""
+        num_processes = min(num_processes, self.max_num_workers)
         if self.pool is None or self.pool._processes < num_processes:
             if self.pool is not None:
                 self.close_pool()
@@ -1031,8 +1032,9 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
     
     # Initialize multiprocessing pool and other resources once
-    if hasattr(candidate_generator, 'rel_block_size'):
-        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
+    # if hasattr(candidate_generator, 'rel_block_size'):
+    #     candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
+    candidate_generator._get_or_create_pool(args.num_workers)
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
@@ -1108,8 +1110,9 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
     
     # Initialize multiprocessing pool and other resources once
-    if hasattr(candidate_generator, 'rel_block_size'):
-        candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
+    # if hasattr(candidate_generator, 'rel_block_size'):
+    #     candidate_generator._get_or_create_pool(min(args.num_workers, math.ceil(test_set_t.relation_maps.original_relations_tensor.size(0) / (candidate_generator.rel_block_size if candidate_generator.rel_block_size else 1))))
+    candidate_generator._get_or_create_pool(args.num_workers)
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
     # Optimization for global generators: generate once for max size, then iteratively slice for smaller sizes
