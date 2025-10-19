@@ -163,25 +163,37 @@ class BaseCandidateGenerator(ABC):
 
 
     @staticmethod
-    def _process_group_for_analyze_coverage_per_group(gid, gold_triples, gold_group_ids, candidates, candidates_group_ids, name):
-        gid = int(gid)
-        gold_idx = (gold_group_ids == gid).nonzero(as_tuple=False).flatten()
-        if gold_idx.numel() == 0:
-            return None
-        gold_subset = gold_triples[gold_idx]
+    def _process_group_for_analyze_coverage_per_group(gids, gold_triples, gold_group_ids, candidates, candidates_group_ids, name):
+        torch.set_num_threads(1)  # Prevent thread oversubscription and deadlocks in worker processes
+        per_group_cov = {}
+        per_group_density = {}
+        per_group_count = {}
+        covered_total = 0.0
+        total_total = 0
+        for gid in tqdm(gids, position=2, leave=False, desc="Processing groups"):
+            gid = int(gid)
+            gold_idx = (gold_group_ids == gid).nonzero(as_tuple=False).flatten()
+            if gold_idx.numel() == 0:
+                continue
+            gold_subset = gold_triples[gold_idx]
 
-        cand_idx = (candidates_group_ids == gid).nonzero(as_tuple=False).flatten()
-        cand_subset = candidates[cand_idx] if cand_idx.numel() > 0 else candidates.new_zeros((0, 3), dtype=candidates.dtype)
+            cand_idx = (candidates_group_ids == gid).nonzero(as_tuple=False).flatten()
+            cand_subset = candidates[cand_idx] if cand_idx.numel() > 0 else candidates.new_zeros((0, 3), dtype=candidates.dtype)
 
-        cov, dens = BaseCandidateGenerator.analyze_total_coverage(
-            candidates=cand_subset,
-            gold_triples=gold_subset,
-            name=f"{name}|gid={gid}",
-            print_results=False,
-        )
-        count = cand_subset.size(0)
-        group_size = int(gold_subset.size(0))
-        return gid, cov, dens, count, group_size
+            cov, dens = BaseCandidateGenerator.analyze_total_coverage(
+                candidates=cand_subset,
+                gold_triples=gold_subset,
+                name=f"{name}|gid={gid}",
+                print_results=False,
+            )
+            count = cand_subset.size(0)
+            group_size = int(gold_subset.size(0))
+            per_group_cov[gid] = float(cov)
+            per_group_density[gid] = float(dens)
+            per_group_count[gid] = count
+            covered_total += cov * group_size
+            total_total += group_size
+        return per_group_cov, per_group_density, per_group_count, covered_total, total_total
 
 
 
@@ -243,8 +255,9 @@ class BaseCandidateGenerator(ABC):
         candidates.share_memory_()
         candidates_group_ids.share_memory_()
 
-        # Parallel processing
+        # Parallel processing: divide unique_gids into num_workers chunks
         num_workers = min(self.max_num_workers, len(unique_gids))
+        chunks = np.array_split(unique_gids.tolist(), num_workers)
         self.pool = self._get_or_create_pool(num_workers)
         worker_function = partial(BaseCandidateGenerator._process_group_for_analyze_coverage_per_group, 
                                   gold_triples=gold_triples, 
@@ -252,17 +265,16 @@ class BaseCandidateGenerator(ABC):
                                   candidates=candidates, 
                                   candidates_group_ids=candidates_group_ids, 
                                   name=name)
-        for result in tqdm(self.pool.imap_unordered(worker_function, unique_gids.tolist()), 
+        for result in tqdm(self.pool.imap_unordered(worker_function, chunks), 
                            desc=f"Coverage per group [{name}]", 
                            leave=False, 
-                           total=len(unique_gids)):
-            if result is not None:
-                gid, cov, dens, count, group_size = result
-                per_group_cov[gid] = float(cov)
-                per_group_density[gid] = float(dens)
-                per_group_count[gid] = count
-                covered_total += cov * group_size
-                total_total += group_size
+                           total=len(chunks)):
+            per_group_cov_chunk, per_group_density_chunk, per_group_count_chunk, covered_total_chunk, total_total_chunk = result
+            per_group_cov.update(per_group_cov_chunk)
+            per_group_density.update(per_group_density_chunk)
+            per_group_count.update(per_group_count_chunk)
+            covered_total += covered_total_chunk
+            total_total += total_total_chunk
 
         if not per_group_cov:
             print(f"[Coverage::{name}] No groups with gold triples. Per-group coverage unavailable.")
