@@ -464,34 +464,40 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Submit jobs
         worker_function = partial(CandidateGeneratorGlobal._process_chunk, log_p_head_2d=log_p_head_2d, log_p_tail_2d=log_p_tail_2d, alpha=self.alpha, k=k_total, E=E, R=R, head_block_size=head_block_size)
         results_iterator = self.pool.imap_unordered(worker_function, chunks)
-        # Collect and merge
-        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Merging parallel chunks", unit="chunk", leave=False, total=len(chunks)):
-            # Merge into global top-k
-            if filled == 0:
-                take = min(k_total, vals_chunk.numel())
-                top_vals[:take] = vals_chunk[:take]
-                top_r[:take]    = r_idx[:take]
-                top_h[:take]    = h_idx[:take]
-                top_t[:take]    = t_idx[:take]
-                filled = take
+        # Collect all results first
+        all_vals_chunks = []
+        all_r_chunks = []
+        all_h_chunks = []
+        all_t_chunks = []
+        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Collecting parallel chunks", unit="chunk", leave=False, total=len(chunks)):
+            all_vals_chunks.append(vals_chunk)
+            all_r_chunks.append(r_idx)
+            all_h_chunks.append(h_idx)
+            all_t_chunks.append(t_idx)
+
+        # Concatenate all chunks at once
+        if all_vals_chunks:
+            cand_vals = torch.cat(all_vals_chunks, dim=0)
+            cand_r = torch.cat(all_r_chunks, dim=0)
+            cand_h = torch.cat(all_h_chunks, dim=0)
+            cand_t = torch.cat(all_t_chunks, dim=0)
+            
+            # Single global top-k
+            if cand_vals.numel() > k_total:
+                vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
+                top_vals[:k_total] = vtop
+                top_r[:k_total] = cand_r[order]
+                top_h[:k_total] = cand_h[order]
+                top_t[:k_total] = cand_t[order]
+                filled = k_total
             else:
-                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
-                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
-                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
-                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
-                if cand_vals.numel() > k_total:
-                    vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
-                    top_vals[:k_total] = vtop
-                    top_r[:k_total]    = cand_r[order]
-                    top_h[:k_total]    = cand_h[order]
-                    top_t[:k_total]    = cand_t[order]
-                    filled = k_total
-                else:
-                    top_vals[:cand_vals.numel()] = cand_vals
-                    top_r[:cand_vals.numel()]    = cand_r
-                    top_h[:cand_vals.numel()]    = cand_h
-                    top_t[:cand_vals.numel()]    = cand_t
-                    filled = cand_vals.numel()
+                top_vals[:cand_vals.numel()] = cand_vals
+                top_r[:cand_vals.numel()] = cand_r
+                top_h[:cand_vals.numel()] = cand_h
+                top_t[:cand_vals.numel()] = cand_t
+                filled = cand_vals.numel()
+        else:
+            filled = 0
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
@@ -850,33 +856,40 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         worker_function = partial(CandidateGeneratorGlobalWithTail._process_chunk, log_p_head_2d=log_p_head_2d, log_p_tail_2d=log_p_tail_2d, log_p_t_given_h_2d=log_p_t_given_h_2d, alpha=self.alpha, beta=self.beta, k=k_total, E=E, R=R, head_block_size=head_block_size)
         results_iterator = self.pool.imap_unordered(worker_function, chunks)
-        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Merging parallel chunks", unit="chunk", leave=False, total=len(chunks)):
-            # Merge into global top-k (same as before)
-            if filled == 0:
-                take = min(k_total, vals_chunk.numel())
-                top_vals[:take] = vals_chunk[:take]
-                top_r[:take]    = r_idx[:take]
-                top_h[:take]    = h_idx[:take]
-                top_t[:take]    = t_idx[:take]
-                filled = take
+        # Collect all results first
+        all_vals_chunks = []
+        all_r_chunks = []
+        all_h_chunks = []
+        all_t_chunks = []
+        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Collecting parallel chunks", unit="chunk", leave=False, total=len(chunks)):
+            all_vals_chunks.append(vals_chunk)
+            all_r_chunks.append(r_idx)
+            all_h_chunks.append(h_idx)
+            all_t_chunks.append(t_idx)
+
+        # Concatenate all chunks at once
+        if all_vals_chunks:
+            cand_vals = torch.cat(all_vals_chunks, dim=0)
+            cand_r = torch.cat(all_r_chunks, dim=0)
+            cand_h = torch.cat(all_h_chunks, dim=0)
+            cand_t = torch.cat(all_t_chunks, dim=0)
+            
+            # Single global top-k
+            if cand_vals.numel() > k_total:
+                vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
+                top_vals[:k_total] = vtop
+                top_r[:k_total] = cand_r[order]
+                top_h[:k_total] = cand_h[order]
+                top_t[:k_total] = cand_t[order]
+                filled = k_total
             else:
-                cand_vals = torch.cat([top_vals[:filled], vals_chunk], dim=0)
-                cand_r    = torch.cat([top_r[:filled],    r_idx],      dim=0)
-                cand_h    = torch.cat([top_h[:filled],    h_idx],      dim=0)
-                cand_t    = torch.cat([top_t[:filled],    t_idx],      dim=0)
-                if cand_vals.numel() > k_total:
-                    vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
-                    top_vals[:k_total] = vtop
-                    top_r[:k_total]    = cand_r[order]
-                    top_h[:k_total]    = cand_h[order]
-                    top_t[:k_total]    = cand_t[order]
-                    filled = k_total
-                else:
-                    top_vals[:cand_vals.numel()] = cand_vals
-                    top_r[:cand_vals.numel()]    = cand_r
-                    top_h[:cand_vals.numel()]    = cand_h
-                    top_t[:cand_vals.numel()]    = cand_t
-                    filled = cand_vals.numel()
+                top_vals[:cand_vals.numel()] = cand_vals
+                top_r[:cand_vals.numel()] = cand_r
+                top_h[:cand_vals.numel()] = cand_h
+                top_t[:cand_vals.numel()] = cand_t
+                filled = cand_vals.numel()
+        else:
+            filled = 0
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
