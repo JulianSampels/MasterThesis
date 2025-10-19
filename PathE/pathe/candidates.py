@@ -478,9 +478,13 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Concatenate all chunks at once
         if all_vals_chunks:
             cand_vals = torch.cat(all_vals_chunks, dim=0)
+            del all_vals_chunks
             cand_r = torch.cat(all_r_chunks, dim=0)
+            del all_r_chunks
             cand_h = torch.cat(all_h_chunks, dim=0)
+            del all_h_chunks
             cand_t = torch.cat(all_t_chunks, dim=0)
+            del all_t_chunks
             
             # Single global top-k
             if cand_vals.numel() > k_total:
@@ -870,10 +874,14 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Concatenate all chunks at once
         if all_vals_chunks:
             cand_vals = torch.cat(all_vals_chunks, dim=0)
+            del all_vals_chunks
             cand_r = torch.cat(all_r_chunks, dim=0)
+            del all_r_chunks
             cand_h = torch.cat(all_h_chunks, dim=0)
+            del all_h_chunks
             cand_t = torch.cat(all_t_chunks, dim=0)
-            
+            del all_t_chunks
+
             # Single global top-k
             if cand_vals.numel() > k_total:
                 vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
