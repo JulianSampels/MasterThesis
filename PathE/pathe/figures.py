@@ -20,7 +20,7 @@ def create_heatmaps(results, save_dir="./figures"):
     
     # Save results to CSV using pandas for simplicity
     df = pd.DataFrame(results)
-    df.to_csv(f'{save_dir}/grid_search_results.csv', index=False)
+    df.to_csv(f'{save_dir}/heatmaps_results.csv', index=False)
     
     # Extract unique alphas and betas
     alpha_grid = sorted(set([r['alpha'] for r in results]))  # Unique alphas
@@ -65,7 +65,7 @@ def create_heatmaps(results, save_dir="./figures"):
     plt.xlabel('Alpha')
     plt.ylabel('Beta')
     plt.title('Total Coverage Heatmap')
-    plt.savefig(f'{save_dir}/total_coverage_heatmap.svg')  # Saves as SVG image
+    plt.savefig(f'{save_dir}/heatmap_total_coverage.svg')  # Saves as SVG image
     plt.close()
 
     # Plot average recall per group heatmap
@@ -76,10 +76,20 @@ def create_heatmaps(results, save_dir="./figures"):
     plt.xlabel('Alpha')
     plt.ylabel('Beta')
     plt.title('Average Coverage per Group Heatmap')
-    plt.savefig(f'{save_dir}/avg_coverage_heatmap.svg')  # Saves as SVG image
+    plt.savefig(f'{save_dir}/heatmap_avg_coverage_per_group.svg')  # Saves as SVG image
     plt.close()
 
     print(f"Heatmaps and results saved to {save_dir}/")
+
+def create_coverage_vs_size_plot(results, save_dir="./figures"):
+    os.makedirs(save_dir, exist_ok=True)
+    results.sort(key=lambda x: x['total_cov'])  # Sort by total coverage
+    # Save results to CSV using pandas for simplicity
+    df = pd.DataFrame(results)
+    df.to_csv(f'{save_dir}/coverage_vs_size_results.csv', index=False)
+    create_coverage_vs_total_size_plot(results, save_dir=save_dir)
+    create_coverage_vs_avg_group_size_plot(results, save_dir=save_dir)
+
 
 def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="coverage_vs_total_size.svg"):
     """
@@ -93,16 +103,13 @@ def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
-    results.sort(key=lambda x: x['avg_group_count'])  # Sort by avg candidate count per group
-    # Save results to CSV using pandas for simplicity
-    df = pd.DataFrame(results)
-    df.to_csv(f'{save_dir}/coverage_vs_size_results.csv', index=False)
+    results.sort(key=lambda x: x['total_cov'])  # Sort by total coverage
     # Extract data
     candidate_sizes = [r['candidate_size'] for r in results]  # Total candidate size
     total_covs = [r['total_cov'] for r in results]
     avg_cov_per_groups = [r['avg_cov_per_group'] for r in results]
     pos_densities = [r['pos_density'] for r in results]
-    avg_group_counts = [r['avg_group_count'] for r in results]
+    # avg_group_counts = [r['avg_group_count'] for r in results]
     
     # Create the plot with dual y-axes
     fig, ax1 = plt.subplots(figsize=(10, 6))
@@ -150,9 +157,6 @@ def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filena
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     results.sort(key=lambda x: x['avg_group_count'])  # Sort by avg candidate count per group
-    # Save results to CSV using pandas for simplicity
-    df = pd.DataFrame(results)
-    df.to_csv(f'{save_dir}/coverage_vs_avg_group_size_results.csv', index=False)
     # Extract data
     avg_group_counts = [r['avg_group_count'] for r in results]  # Avg candidate size per group
     total_covs = [r['total_cov'] for r in results]
@@ -192,7 +196,7 @@ def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filena
     
     print(f"Plot and results saved to {save_dir}/")
 
-def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, save_dir="./figures", filename="relation_coverage_bar.svg", num_bins=10):
+def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, save_dir="./figures", filename="bar_relation_coverage.svg", num_bins=10):
     """
     Create a bar chart showing average coverage per quantile bin for relation types.
     Saves the plot as an SVG file.
@@ -448,7 +452,7 @@ def create_candidates_per_head_by_degree_chart(candidates, context_triple_store,
     
     print(f"Plot saved to {save_dir}/{filename}")
 
-def create_entity_coverage_bar_chart(candidates, gold_triples, context_triple_store, save_dir="./figures", filename="entity_coverage_bar.svg", num_bins=25):
+def create_entity_coverage_bar_chart(candidates, gold_triples, context_triple_store, save_dir="./figures", filename="bar_entity_coverage.svg", num_bins=25):
     """
     Create a bar chart showing average coverage per quantile bin for head entities.
     Saves the plot as an SVG file.

@@ -162,7 +162,7 @@ class BaseCandidateGenerator(ABC):
 
 
     @staticmethod
-    def _process_group(gid, gold_triples, gold_group_ids, candidates, candidates_group_ids, name):
+    def _process_group_for_analyze_coverage_per_group(gid, gold_triples, gold_group_ids, candidates, candidates_group_ids, name):
         gid = int(gid)
         gold_idx = (gold_group_ids == gid).nonzero(as_tuple=False).flatten()
         if gold_idx.numel() == 0:
@@ -245,7 +245,7 @@ class BaseCandidateGenerator(ABC):
         # Parallel processing
         num_workers = min(self.max_num_workers, len(unique_gids))
         self.pool = self._get_or_create_pool(num_workers)
-        worker_function = partial(BaseCandidateGenerator._process_group, 
+        worker_function = partial(BaseCandidateGenerator._process_group_for_analyze_coverage_per_group, 
                                   gold_triples=gold_triples, 
                                   gold_group_ids=gold_group_ids, 
                                   candidates=candidates, 
@@ -996,7 +996,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
 from . import triple_lib
 import itertools
-from .figures import create_heatmaps, create_coverage_vs_total_size_plot, create_coverage_vs_avg_group_size_plot
+from .figures import create_coverage_vs_size_plot, create_heatmaps
 
 def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
@@ -1189,7 +1189,6 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
     
     candidate_generator.per_group_cap = args.candidates_cap  # reset to original
     # Create coverage vs size plot
-    create_coverage_vs_total_size_plot(results, save_dir=args.figure_dir)
-    create_coverage_vs_avg_group_size_plot(results, save_dir=args.figure_dir)
+    create_coverage_vs_size_plot(results, save_dir=args.figure_dir)
     
     return
