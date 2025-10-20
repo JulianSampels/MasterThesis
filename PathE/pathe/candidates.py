@@ -342,6 +342,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
                  rel_block_size: int | None = None,
                  head_block_size: int | None = None,
                  max_num_workers: int | None = None,
+                 phase1_loss_fn: str = "bce",
                  ):
         super().__init__(max_num_workers=max_num_workers)
         self.p = p                              # keep candidates with P >= p (global threshold)
@@ -350,6 +351,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         self.alpha = alpha                      # weight for tail vs head log-probs
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
+        self.phase1_loss_fn = phase1_loss_fn    # "bce" or "poisson"
 
         # new knobs for memory and parallelism
         self.rel_block_size = max(1, int(rel_block_size)) if rel_block_size is not None else None
@@ -557,6 +559,11 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
 
+        # Apply softplus for Poisson loss
+        if self.phase1_loss_fn == "poisson":
+            head_logits_subset = torch.nn.functional.softplus(head_logits_subset)
+            tail_logits_subset = torch.nn.functional.softplus(tail_logits_subset)
+
         # 5. Calibrated log-probabilities or raw logits based on normalize_mode
         if self.normalize_mode == "per_head":
             log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=1).to(torch.float32).cpu()                 # (E, R)
@@ -623,10 +630,11 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         return candidates, scores
 
 class CandidateGeneratorPerHead(BaseCandidateGenerator):
-    def __init__(self, per_group_cap: int, alpha: float):
+    def __init__(self, per_group_cap: int, alpha: float, phase1_loss_fn: str = "bce"):
         super().__init__()
         self.per_group_cap = per_group_cap    # number of (r,t) pairs to keep per head entity
         self.alpha = alpha  # weight for tail vs head logits
+        self.phase1_loss_fn = phase1_loss_fn  # "bce" or "poisson"
         assert self.per_group_cap and self.per_group_cap > 0, "per_group_cap must be > 0"
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
 
@@ -673,6 +681,12 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
         # 4. Slice logits for originals & inverses then softmax separately
         logits_orig = logits_rp_grouped[:, original_relation_ids]          # (E', R)
         logits_inv  = logits_rp_grouped[:, inverse_relation_ids]           # (E', R)
+
+        # Apply softplus for Poisson loss
+        if self.phase1_loss_fn == "poisson":
+            logits_orig = torch.nn.functional.softplus(logits_orig)
+            logits_inv = torch.nn.functional.softplus(logits_inv)
+
         prob_r_given_h = torch.softmax(logits_orig, dim=1)      # (E', R)
         prob_rinv_given_t = torch.softmax(logits_inv, dim=1)    # (E', R)
         prob_rinv_T = prob_rinv_given_t.transpose(0, 1).contiguous()  # (R, E')
@@ -730,6 +744,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
                  rel_block_size: int = None,
                  head_block_size: int | None = None,
                  max_num_workers: int | None = None,
+                 phase1_loss_fn: str = "bce",
                 #  num_threads: int | None = None
                  ):
         super().__init__(max_num_workers=max_num_workers)
@@ -740,6 +755,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         self.beta = beta                        # weight for tail prediction prob
         self.per_group_cap = per_group_cap      # per-group cap, used to compute total cap
         self.normalize_mode = normalize_mode    # "per_head" | "global_joint" | "none"
+        self.phase1_loss_fn = phase1_loss_fn    # "bce" or "poisson"
 
         # new knobs for memory and parallelism
         self.rel_block_size = max(1, int(rel_block_size)) if rel_block_size is not None else None
@@ -962,6 +978,12 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # 4. Slice logits for original and inverse relation columns
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
+
+        # Apply softplus for Poisson loss
+        if self.phase1_loss_fn == "poisson":
+            head_logits_subset = torch.nn.functional.softplus(head_logits_subset)
+            tail_logits_subset = torch.nn.functional.softplus(tail_logits_subset)
+            logits_tp_grouped = torch.nn.functional.softplus(logits_tp_grouped)
 
         # 5. Calibrated log-probabilities or raw logits based on normalize_mode
         if self.normalize_mode == "per_head":

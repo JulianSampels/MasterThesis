@@ -1182,6 +1182,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.phase1_loss_fn = kwargs.get('phase1_loss_fn', 'bce')
         filter_dict = kwargs.get("filtration_dict", {})
         # Override relation metrics for unique heads
         self.val_relationMRR = RelationMRRUniqueHeads(filter_dict)
@@ -1197,7 +1198,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_dict=filter_dict)
     
 
-    def compute_rp_loss(self, logits, relation_count_matrix: torch.Tensor):
+    def compute_rp_bce_loss(self, logits, relation_count_matrix: torch.Tensor):
         """
         Compute multi-label BCE loss for relation prediction.
         logits: (batch_size, num_relations)
@@ -1265,6 +1266,64 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         loss = nn.functional.binary_cross_entropy_with_logits(logits_tail, smoothed_targets, weight=tail_weights, reduction='sum')
         loss /= tail_weights.sum().clamp_min(1.0)
         return loss
+
+    def compute_rp_poisson_loss(self, logits: torch.Tensor, relation_count_matrix: torch.Tensor):
+        """
+        Compute Poisson NLL loss for relation prediction.
+        """
+        predictions = torch.nn.functional.softplus(logits)
+        loss = torch.nn.functional.poisson_nll_loss(predictions, relation_count_matrix, log_input=True, reduction='sum')
+        loss /= relation_count_matrix.numel()
+        return loss
+
+    def compute_tail_poisson_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, entity_count_matrix: torch.Tensor):
+        """
+        Compute weighted Poisson NLL loss for tail prediction.
+        Weights are automatically set based on zero vs. non-zero counts for balance.
+        """
+        if entity_count_matrix is None:
+            raise ValueError("An entity count matrix must be provided for Poisson loss calculation.")
+        
+        entity_count_matrix = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        predictions = torch.nn.functional.softplus(logits_tail)
+        
+        # Compute per-element Poisson NLL (reduction='none')
+        # loss_per_element = torch.nn.functional.poisson_nll_loss(predictions, entity_count_matrix, log_input=True, reduction='none')
+        
+        # Automatic weighting: balance zeros vs. non-zeros
+        # num_entities = entity_count_matrix.shape[1]
+        # num_zeros = (entity_count_matrix == 0).sum(dim=1)
+        # num_non_zeros = num_entities - num_zeros
+        
+        # Inverse frequency weights (avoid division by zero)
+        # zero_weights = num_entities / num_zeros.clamp_min(1.0)
+        # non_zero_weights = num_entities / num_non_zeros.clamp_min(1.0)
+
+        # weights = torch.where(entity_count_matrix == 0, zero_weights.unsqueeze(1), non_zero_weights.unsqueeze(1))
+        # weights = torch.where(entity_count_matrix == 0, zero_weights, non_zero_weights)
+
+        # Weighted sum, normalized by total weight (ensures scale stability)
+        # weighted_loss = (loss_per_element * weights).sum()
+        # total_weight = weights.sum().clamp_min(1.0)
+        # loss = weighted_loss / total_weight
+
+        loss = torch.nn.functional.poisson_nll_loss(predictions, entity_count_matrix, log_input=True, reduction='sum')
+        loss /= entity_count_matrix.numel()
+        return loss
+
+    def compute_phase1_losses(self, logits_rp: torch.Tensor, logits_tail: torch.Tensor, heads: torch.Tensor, relation_count_matrix: torch.Tensor, entity_count_matrix: torch.Tensor, phase1_loss_fn: str):
+        """
+        Centralized function to compute phase 1 losses (relation and tail prediction) based on the loss function type.
+        """
+        if phase1_loss_fn == 'bce':
+            rp_loss = self.compute_rp_bce_loss(logits_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_bce_loss(logits_tail, heads, entity_count_matrix)
+        elif phase1_loss_fn == 'poisson':
+            rp_loss = self.compute_rp_poisson_loss(logits_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_poisson_loss(logits_tail, heads, entity_count_matrix)
+        else:
+            raise ValueError(f"Invalid phase1_loss_fn: {phase1_loss_fn}. Must be 'bce' or 'poisson'.")
+        return rp_loss, tp_loss
     
     def training_step(self, batch, batch_idx):
         logits_rp, logits_tail = self.model_forward(batch)
@@ -1272,8 +1331,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         relation_count_matrix = batch["relation_count_matrix"]
         
         # Losses
-        rp_loss_unscaled = self.compute_rp_loss(logits_rp, relation_count_matrix)
-        tp_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads, self.train_head_tail_adjacency)
+        rp_loss_unscaled, tp_loss_unscaled = self.compute_phase1_losses(logits_rp, logits_tail, heads, relation_count_matrix, self.train_head_tail_adjacency, self.phase1_loss_fn)
 
         if not self.use_manual_optimization:
             total_loss = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tp_loss_unscaled
@@ -1332,8 +1390,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         relation_count_matrix = batch["relation_count_matrix"]
 
         # Losses
-        rp_loss = self.compute_rp_loss(logits_rp, relation_count_matrix)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.val_head_tail_adjacency)
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp, logits_tail, heads, relation_count_matrix, self.val_head_tail_adjacency, self.phase1_loss_fn)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
         self.log("valid_rp_loss", rp_loss)
@@ -1376,8 +1433,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         relation_count_matrix = batch["relation_count_matrix"]
 
         # Losses
-        rp_loss = self.compute_rp_loss(logits_rp, relation_count_matrix)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.test_head_tail_adjacency)
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp, logits_tail, heads, relation_count_matrix, self.test_head_tail_adjacency, self.phase1_loss_fn)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
         self.log("test_rp_loss", rp_loss)

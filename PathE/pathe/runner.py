@@ -92,7 +92,7 @@ def main():
                         help='Weight for tail prediction probability in candidate scoring. Only used if candidate_generator includes tail predictions.')
     parser.add_argument('--candidates_cap', type=int, default=100,
                         help='Maximum number of top-k candidates to keep per group (e.g., per head entity).')
-    parser.add_argument('--candidates_normalize_mode', choices=['per_head', 'global_joint', 'per_relation'], default='global_joint',
+    parser.add_argument('--candidates_normalize_mode', choices=['per_head', 'global_joint', 'per_relation', 'none'], default='global_joint',
                         help='Normalization mode for candidate scoring: per_head (conditional probs), global_joint (joint probs), per_relation (normalize per relation), none (raw logits).')
     parser.add_argument('--candidate_generator', choices=['global', 'global_with_tail', 'per_head'], default='global_with_tail',
                         help='Type of candidate generator to use: global (threshold/quantile-based), global_with_tail (includes tail logits), per_head (top-k per head).')
@@ -119,6 +119,9 @@ def main():
     parser.add_argument('--lp_loss_fn', action='store',
                         choices=['bce', 'ce', 'nssa'], default='nssa',
                         help='The name of the loss to use for link prediction.')
+    parser.add_argument('--phase1_loss_fn', action='store',
+                        choices=['bce', 'poisson'], default='bce',
+                        help='The name of the loss to use for phase 1 (tuples) training: bce or poisson.')
     parser.add_argument('--use_manual_optimization', action='store_true', default=False,
                         help='Whether to use manual optimization with independent heads.')
     parser.add_argument('--link_head_detached', action='store_true', default=False,
