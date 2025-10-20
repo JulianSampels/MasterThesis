@@ -33,7 +33,7 @@ from .utils import stageprint, bundle_arguments, namespace_to_dict
 from .wrappers import PathEModelWrapperTriples, PathEModelWrapperTuples, PathEModelWrapperUniqueHeads
 from .path_lib import encode_relcontext_freqs
 from . import data_utils as du
-from .figures import create_candidate_figures
+from .figures import create_figures
 
 logger = logging.getLogger(__name__)
 
@@ -894,7 +894,7 @@ def create_and_run_training_exp_two_phases(args):
     candidate_generator.print_candidate_statistics(candidates_test, get_group_ids(candidates_test), test_triples, get_group_ids(test_triples), test_set_t.relation_maps, name="Test")
 
     # Create candidate figures
-    create_candidate_figures(candidates_test, test_triples, test_set_t.relation_maps, train_triples, args.figure_dir)
+    create_figures(candidates_test, test_triples, test_set_t.relation_maps, train_triples, args.figure_dir)
 
     # Cleanup Phase 1 resources to stop workers and free memory
     del tr_loader_t, va_loader_t, te_loader_t

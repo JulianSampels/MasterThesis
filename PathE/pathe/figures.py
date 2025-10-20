@@ -647,7 +647,79 @@ def create_test_set_statistics_figure(context_triple_store, train_triples, save_
     
     print(f"Figure saved to {save_dir}/{filename}")
 
-def create_candidate_figures(candidates, test_triples, relation_maps, context_triple_store, save_dir):
+def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filename="tail_occurrence_per_head.svg"):
+    """
+    Create a histogram showing the distribution of the total number of tail occurrences per head entity (out-degree).
+    This provides statistics on the occurrence count of tails for heads in the knowledge graph.
+
+    Args:
+        triples: (N, 3) tensor of triples (head, relation, tail)
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Compute total tail occurrences per head (out-degree)
+    head_to_tail_count = defaultdict(int)
+    for triple in triples:
+        head = triple[0].item()
+        head_to_tail_count[head] += 1
+    
+    # Get the count of tail occurrences per head
+    tail_counts = list(head_to_tail_count.values())
+    
+    # Create histogram
+    plt.figure(figsize=(10, 6))
+    plt.hist(tail_counts, bins=range(min(tail_counts), max(tail_counts) + 2), alpha=0.7, color='purple', edgecolor='black')
+    plt.xlabel('Number of Tail Occurrences per Head')
+    plt.ylabel('Number of Heads')
+    plt.title('Distribution of Tail Occurrence Counts per Head')
+    plt.grid(True, alpha=0.3)
+    
+    # Save the plot
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Figure saved to {save_dir}/{filename}")
+
+def create_relation_occurrence_figure(triples, save_dir="./figures", filename="relation_occurrence.svg"):
+    """
+    Create a histogram showing the distribution of the occurrence count of each relation.
+    This provides statistics on how frequently each relation appears in the knowledge graph.
+
+    Args:
+        triples: (N, 3) tensor of triples (head, relation, tail)
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+    """
+    # Ensure the save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Compute occurrence count per relation
+    relation_counts = defaultdict(int)
+    for triple in triples:
+        rel = triple[1].item()
+        relation_counts[rel] += 1
+    
+    # Get the counts
+    counts = list(relation_counts.values())
+    
+    # Create histogram
+    plt.figure(figsize=(10, 6))
+    plt.hist(counts, bins=range(min(counts), max(counts) + 2), alpha=0.7, color='orange', edgecolor='black')
+    plt.xlabel('Number of Occurrences per Relation')
+    plt.ylabel('Number of Relations')
+    plt.title('Distribution of Relation Occurrence Counts')
+    plt.grid(True, alpha=0.3)
+    
+    # Save the plot
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Figure saved to {save_dir}/{filename}")
+
+def create_figures(candidates, test_triples, relation_maps, context_triple_store, save_dir):
     """
     Top-level function for creating candidate-related figures.
     Calls individual figure creation functions.
