@@ -16,6 +16,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning import Trainer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch_scatter
 from tqdm import tqdm
 
@@ -113,7 +114,7 @@ class PathEModelWrapperTriples(LightningModule):
                  train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
                  val_num_negatives=0, full_test=False, max_ppt=None,
                  margin=10, nssa_alpha=1, lp_loss_fn="nssa",
-                 loss_weight: float = 0.5,  **hparams):
+                 loss_weight: float = 0.5, scheduler_monitor="valid_total_loss", scheduler_patience=5, **hparams):
         """
         Parameters
         ----------
@@ -145,6 +146,10 @@ class PathEModelWrapperTriples(LightningModule):
         self.momentum = momentum
         self.weight_decay = weight_decay
         self.label_smoothing = label_smoothing
+        self.scheduler_monitor = scheduler_monitor
+        self.scheduler_patience = scheduler_patience
+        self.use_manual_optimization = False
+        self.link_head_detached = False
         # [List of metrics we will be watching on validation and test sets]
         # Relation prediction metrics: always watched
         self.val_relationMRR = RelationMRRTriples(filtration_dict)
@@ -560,8 +565,7 @@ class PathEModelWrapperTriples(LightningModule):
 
             lp_loss = self.calculate_lp_bce(logits_lp, labels=lp_labels, sample_weights=lp_weights, num_negatives=None)
             self.log("valid_lp_loss", lp_loss, prog_bar=True)
-            # self.log("valid_total_loss", (self.loss_weight * lp_loss) + ((1.0 - self.loss_weight) * rp_loss),
-            #          prog_bar=self.loss_weight not in [0.0, 1.0])
+            self.log("valid_total_loss", lp_loss)
 
             # Accumulate everything into unified _val_acc
             if not hasattr(self, "_val_acc"):
@@ -653,6 +657,14 @@ class PathEModelWrapperTriples(LightningModule):
                     self.calculate_and_log_val_links_metrics(triples_lp, logits_lp)
             del self._val_acc  # delete reference for next validation epoch
 
+        # Step schedulers if in manual optimization mode
+        if self.use_manual_optimization and self.scheduler == "reduce_on_plateau":
+            for scheduler in self.lr_schedulers():
+                if self.scheduler_monitor in self.trainer.callback_metrics:
+                    scheduler.step(self.trainer.callback_metrics[self.scheduler_monitor])
+                    new_lr = scheduler.optimizer.param_groups[0]['lr']
+                    self.log("lr", new_lr, on_epoch=True, prog_bar=True)
+
     def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         if self.test_sub_batch_size is None:
             logits_rp, logits_lp = self.model_forward(batch=batch)
@@ -727,34 +739,108 @@ class PathEModelWrapperTriples(LightningModule):
         del self._test_acc  # delete reference for next test epoch
 
     def configure_optimizers(self):
-        """
-        Called by PL-Lightning to initialise and setup optimisers and learning
-        rate schedulers. Currently supports basic optims and functionalities.
+        if self.use_manual_optimization:
+            if self.optimiser == 'adam':
+                # Return separate optimizers for relation and link prediction
+                relation_params = []
+                tail_params = []
+                shared_params = []
+                
+                # Separate parameters based on their role
+                for name, param in self.model.named_parameters():
+                    if 'relpredict_head_avg' in name:
+                        relation_params.append(param)
+                        print(f"Relation param: {name}")
+                    elif 'tail_predict_head' in name:
+                        tail_params.append(param)
+                        print(f"Tail param: {name}")
+                    else:
+                        shared_params.append(param)
+                
+                relation_optimizer = torch.optim.Adam(
+                    shared_params + relation_params, 
+                    lr=self.lr, 
+                    weight_decay=self.weight_decay
+                )
+                
+                link_optimizer = torch.optim.Adam(
+                    (shared_params + tail_params) if not self.link_head_detached else tail_params,
+                    lr=self.lr,
+                    weight_decay=self.weight_decay
+                )
+            else:
+                raise ValueError(f"Optimizer `{self.optimiser}` not supported for manual optimization.")
+            
+            # Create schedulers if needed
+            optimizers_and_schedulers = [
+                {"optimizer": relation_optimizer},
+                {"optimizer": link_optimizer}
+            ]
+            if self.scheduler == "reduce_on_plateau":
+                relation_scheduler = ReduceLROnPlateau(
+                    optimizer=relation_optimizer,
+                    mode='min' if self.scheduler_monitor.endswith("loss") else "max",
+                    factor=0.1,
+                    patience=self.scheduler_patience,
+                )
+                link_scheduler = ReduceLROnPlateau(
+                    optimizer=link_optimizer,
+                    mode='min' if self.scheduler_monitor.endswith("loss") else "max",
+                    factor=0.1,
+                    patience=self.scheduler_patience,
+                )
+                optimizers_and_schedulers[0]["lr_scheduler"] = {
+                    "scheduler": relation_scheduler,
+                    "monitor": self.scheduler_monitor,
+                }
+                optimizers_and_schedulers[1]["lr_scheduler"] = {
+                    "scheduler": link_scheduler,
+                    "monitor": self.scheduler_monitor,
+                }
+            elif self.scheduler != "none":
+                raise ValueError(f"Scheduler `{self.scheduler}` not supported.")
+            
+            return optimizers_and_schedulers
+        else:
+            """
+            Called by PL-Lightning to initialise and setup optimisers and learning
+            rate schedulers. Currently supports basic optims and functionalities.
 
-        Note: most of this function can be implemented in a util.
-        """
-        optim_hps = dict(params=self.model.parameters(),
-                         lr=self.lr,  # initial if scheduler
-                         weight_decay=self.weight_decay)
-        optimiser = None  # one of the supported optimisers below
-        if self.optimiser == "adam":
-            optimiser = torch.optim.Adam(
-                **optim_hps)
-        elif self.optimiser == "sgd":
-            optimiser = torch.optim.SGD(
-                **optim_hps,
-                momentum=self.momentum)
-        elif self.optimiser == "rms":
-            optimiser = torch.optim.RMSprop(
-                **optim_hps,
-                momentum=self.momentum)
-        else:  # not supported or implemented
-            raise ValueError(f"Not a valid optimiser: {self.optimiser}")
+            Note: most of this function can be implemented in a util.
+            """
+            optim_hps = dict(params=self.model.parameters(),
+                             lr=self.lr,  # initial if scheduler
+                             weight_decay=self.weight_decay)
+            optimiser = None  # one of the supported optimisers below
+            if self.optimiser == "adam":
+                optimiser = torch.optim.Adam(
+                    **optim_hps)
+            elif self.optimiser == "sgd":
+                optimiser = torch.optim.SGD(
+                    **optim_hps,
+                    momentum=self.momentum)
+            elif self.optimiser == "rms":
+                optimiser = torch.optim.RMSprop(
+                    **optim_hps,
+                    momentum=self.momentum)
+            else:  # not supported or implemented
+                raise ValueError(f"Not a valid optimiser: {self.optimiser}")
 
-        opt_dict = {"optimizer": optimiser}
-        if self.scheduler != "none":
-            raise NotImplementedError()
-        return opt_dict  # makes distinction among optimisers and schedulers
+            opt_dict = {"optimizer": optimiser}
+            if self.scheduler == "reduce_on_plateau":
+                scheduler = ReduceLROnPlateau(
+                    optimizer=optimiser,
+                    mode='min' if self.scheduler_monitor.endswith("loss") else "max",
+                    factor=0.1,
+                    patience=self.scheduler_patience,
+                )
+                opt_dict["lr_scheduler"] = {
+                    "scheduler": scheduler,
+                    "monitor": self.scheduler_monitor,
+                }
+            elif self.scheduler != "none":
+                raise ValueError(f"Scheduler `{self.scheduler}` not supported.")
+            return opt_dict  # makes distinction among optimisers and schedulers
     
     def model_forward(self, batch):
         return self.pathe_forward_step_triples(batch=batch)
@@ -818,7 +904,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
                          val_num_negatives=val_num_negatives,
                          full_test=full_test, max_ppt=max_ppt,
                          margin=margin, nssa_alpha=nssa_alpha,
-                         lp_loss_fn=lp_loss_fn, loss_weight=loss_weight)
+                         lp_loss_fn=lp_loss_fn, loss_weight=loss_weight, **hparams)
         
         # Ensure sane integer gradient accumulation
         self.accumulate_gradient = max(1, int(round(accumulate_gradient)))
@@ -884,42 +970,6 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             self.test_linkHitsAt10 = EntityHitsAtKTriples(k=10)
 
         # self.save_hyperparameters(ignore=['pathe_model', 'global_head_tail_adjacency', 'train_head_tail_adjacency', 'val_head_tail_adjacency', 'test_head_tail_adjacency', 'filtration_dict'])
-
-    def configure_optimizers(self):
-        if self.use_manual_optimization:
-            # perhaps consider adding other optimizers as in triples version
-            assert(self.optimiser == "adam"), "Currently only Adam is supported for manual optimization."
-            # Return separate optimizers for relation and link prediction
-            relation_params = []
-            tail_params = []
-            shared_params = []
-            
-            # Separate parameters based on their role
-            for name, param in self.model.named_parameters():
-                if 'relpredict_head_avg' in name:
-                    relation_params.append(param)
-                    print(f"Relation param: {name}")
-                elif 'tail_predict_head' in name:
-                    tail_params.append(param)
-                    print(f"Tail param: {name}")
-                else:
-                    shared_params.append(param)
-            
-            relation_optimizer = torch.optim.Adam(
-                shared_params + relation_params, 
-                lr=self.lr, 
-                weight_decay=self.weight_decay
-            )
-            
-            link_optimizer = torch.optim.Adam(
-                (shared_params + tail_params) if not self.link_head_detached else tail_params,
-                lr=self.lr,
-                weight_decay=self.weight_decay
-            )
-            
-            return [relation_optimizer, link_optimizer]
-        else:
-            return super().configure_optimizers()
 
     def compute_rp_loss(self, logits, targets, num_negatives):
         loss_rp = self.rp_loss_fn(logits, targets)
@@ -1014,7 +1064,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # Logging losses
         self.log("valid_rp_loss", rp_loss, prog_bar=True)
         self.log("valid_tp_loss", tp_loss, prog_bar=True)
-        self.log("valid_total_loss", rp_loss + tp_loss)
+        self.log("valid_total_loss", (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss)
 
         # --- Relation prediction metrics (only positives) --------------------
         pos_indices = torch.arange(0, tuples.size(0), self.val_num_negatives + 1)
@@ -1069,6 +1119,14 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
         self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
         self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True)
+
+        # Step schedulers if in manual optimization mode
+        if self.use_manual_optimization and self.scheduler == "reduce_on_plateau":
+            for scheduler in self.lr_schedulers():
+                if self.scheduler_monitor in self.trainer.callback_metrics:
+                    scheduler.step(self.trainer.callback_metrics[self.scheduler_monitor])
+                    new_lr = scheduler.optimizer.param_groups[0]['lr']
+                    self.log("lr", new_lr, on_epoch=True, prog_bar=True)
 
         # Cleanup
         del self._val_acc
@@ -1395,7 +1453,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         
         self.log("valid_rp_loss", rp_loss)
         self.log("valid_tp_loss", tp_loss)
-        self.log("valid_total_loss", total_loss)
+        self.log("valid_total_loss", total_loss, prog_bar=True)
 
         # Update metrics directly on each step
         self.val_relationMRR.update(heads, logits_rp, relation_count_matrix)
@@ -1426,6 +1484,14 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
         self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
         print()
+
+        # Step schedulers if in manual optimization mode
+        if self.use_manual_optimization and self.scheduler == "reduce_on_plateau":
+            for scheduler in self.lr_schedulers():
+                if self.scheduler_monitor in self.trainer.callback_metrics:
+                    scheduler.step(self.trainer.callback_metrics[self.scheduler_monitor])
+                    new_lr = scheduler.optimizer.param_groups[0]['lr']
+                    self.log("lr", new_lr, on_epoch=True, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
         logits_rp, logits_tail = self.model_forward(batch)
