@@ -85,6 +85,9 @@ class BaseCandidateGenerator(ABC):
         # 2. Aggregate logits per local head index
         # logits_rp has shape (num_samples, R_total); inverse_entity_indices maps each row to its head index
         logits_rp_grouped = torch_scatter.scatter_mean(logits_rp, inverse_entity_indices, dim=0)
+        if logits_rp_grouped.shape != logits_rp_grouped.shape:
+            logger.warning(f"Needed to aggregated logit, this might be a bad sign as averaging over raw logits (before: {logits_rp.shape}, after: {logits_rp_grouped.shape})!")
+            # print(f"before: {logits_rp.shape}, after: {logits_rp_grouped.shape}")
         return unique_heads, logits_rp_grouped
 
 
@@ -309,7 +312,7 @@ class BaseCandidateGenerator(ABC):
             return self.head_block_size
 
         # Adaptive head_block_size based on number of unique entities
-        memory_budget_bytes = int(2.5e8)  # 250MB per worker (adjust based on your RAM/GPU)
+        memory_budget_bytes = int(1e8)  # 250MB per worker (adjust based on your RAM/GPU)
         bytes_per_float = 4
         bytes_per_long = 8
 
@@ -327,7 +330,7 @@ class BaseCandidateGenerator(ABC):
             # The dominant memory usage in a block is multiple (B, E) tensors (e.g., V, v_top, vals_flat).
             # Estimate peak as 4 * (B, E) for safety.
             head_block_size_calc = int(score_calc_memory_budget // (4 * E * bytes_per_float)) if E > 0 else 1
-            head_block_size = min(max_head_block_size, max(1, head_block_size_calc))
+            head_block_size = min(max_head_block_size, max(100, head_block_size_calc))
 
         estimated_block_memory = 4 * head_block_size * E * bytes_per_float
         total_estimated_memory_per_worker = buffer_memory_bytes + estimated_block_memory
@@ -559,10 +562,10 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
 
-        # Apply softplus for Poisson loss
-        if self.phase1_loss_fn == "poisson":
-            head_logits_subset = torch.nn.functional.softplus(head_logits_subset)
-            tail_logits_subset = torch.nn.functional.softplus(tail_logits_subset)
+        # # Apply softplus for Poisson loss
+        # if self.phase1_loss_fn == "poisson":
+        #     head_logits_subset = torch.exp(head_logits_subset)
+        #     tail_logits_subset = torch.exp(tail_logits_subset)
 
         # 5. Calibrated log-probabilities or raw logits based on normalize_mode
         if self.normalize_mode == "per_head":
@@ -682,10 +685,10 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
         logits_orig = logits_rp_grouped[:, original_relation_ids]          # (E', R)
         logits_inv  = logits_rp_grouped[:, inverse_relation_ids]           # (E', R)
 
-        # Apply softplus for Poisson loss
-        if self.phase1_loss_fn == "poisson":
-            logits_orig = torch.nn.functional.softplus(logits_orig)
-            logits_inv = torch.nn.functional.softplus(logits_inv)
+        # # Apply softplus for Poisson loss
+        # if self.phase1_loss_fn == "poisson":
+        #     logits_orig = torch.exp(logits_orig)
+        #     logits_inv = torch.exp(logits_inv)
 
         prob_r_given_h = torch.softmax(logits_orig, dim=1)      # (E', R)
         prob_rinv_given_t = torch.softmax(logits_inv, dim=1)    # (E', R)
@@ -979,11 +982,10 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
         tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
 
-        # Apply softplus for Poisson loss
-        if self.phase1_loss_fn == "poisson":
-            head_logits_subset = torch.nn.functional.softplus(head_logits_subset)
-            tail_logits_subset = torch.nn.functional.softplus(tail_logits_subset)
-            logits_tp_grouped = torch.nn.functional.softplus(logits_tp_grouped)
+        # if self.phase1_loss_fn == "poisson":
+        #     head_logits_subset = torch.exp(head_logits_subset)
+        #     tail_logits_subset = torch.exp(tail_logits_subset)
+        #     logits_tp_grouped = torch.exp(logits_tp_grouped)
 
         # 5. Calibrated log-probabilities or raw logits based on normalize_mode
         if self.normalize_mode == "per_head":

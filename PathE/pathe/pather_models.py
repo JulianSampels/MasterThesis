@@ -953,7 +953,8 @@ class PathEModelTuples(PathEModelTriples):
             )
         
         #adjust dimension because only heads and not heads and tails are used
-        self.relpredict_head_avg = nn.Linear(d_model * 1, vocab_size - 2)
+        self.rel_predict_head1 = nn.Linear(d_model, vocab_size - 2)
+        self.rel_predict_head2 = nn.Linear(d_model, vocab_size - 2)
         self.link_predict_head1 = nn.Linear(d_model * 2, d_model)
         self.link_predict_head2 = nn.Linear(d_model, 1)
 
@@ -965,7 +966,8 @@ class PathEModelTuples(PathEModelTriples):
             # Fallback in case the provided relcontext_graph has unexpected structure
             num_entities = vocab_size - 2  # safe fallback; will be corrected by trainer usage
         self.num_entities = num_entities
-        self.tail_predict_head = nn.Linear(d_model * 1, self.num_entities)
+        self.tail_predict_head1 = nn.Linear(d_model, self.num_entities)
+        self.tail_predict_head2 = nn.Linear(d_model, self.num_entities)
     
     def select_separated_head_embeddings(self, memory, head_idxs, entity_origin):
         """
@@ -1054,24 +1056,18 @@ class PathEModelTuples(PathEModelTriples):
         head_emb = head_emb.unsqueeze(0) if head_emb.ndim < 2 else head_emb
 
         # Relation prediction P(r | h) (always with gradients)
-        logits_rp = self.predict_relation_from_h(head_emb)
+        logits_rp1, logits_rp2 = self.predict_relation_from_h(head_emb)
         
-        # # Link prediction (optionally detached)
-        # if detach_link_head:
-        #     logits_link = self.link_predict_from_h(head_emb.detach(), targets)
-        # else:
-        #     logits_link = self.link_predict_from_h(head_emb, targets)
-
         # Tail prediction P(t | h, r) (optionally detached)
-        logits_tail = self.tail_predict_from_h(head_emb.detach() if detach_link_head else head_emb)
+        logits_tail1, logits_tail2 = self.tail_predict_from_h(head_emb.detach() if detach_link_head else head_emb)
 
-        # return logits_rp, logits_link
-        return logits_rp, logits_tail
+
+        return logits_rp1, logits_tail1, logits_rp2, logits_tail2
 
     def predict_relation_from_h(self, head_emb):
-        # Predict relation class logits from head embedding only
-        predictions = self.relpredict_head_avg(head_emb)
-        return predictions
+        relation_logits1 = self.rel_predict_head1(head_emb)
+        relation_logits2 = self.rel_predict_head2(head_emb)
+        return relation_logits1, relation_logits2
 
     def link_predict_from_h(self, head_emb, targets):
         # Get relation embeddings for the target relations
@@ -1084,12 +1080,10 @@ class PathEModelTuples(PathEModelTriples):
         predictions = self.link_predict_head2(predictions)
         return predictions
     
-    def tail_predict_from_h(self, head_emb: torch.Tensor) -> torch.Tensor:
-        """
-        Predict tail logits over all entities for a given head.
-        Shape: (batch_size, num_entities)
-        """
-        return self.tail_predict_head(head_emb)
+    def tail_predict_from_h(self, head_emb: torch.Tensor):
+        tail_logits1 = self.tail_predict_head1(head_emb)
+        tail_logits2 = self.tail_predict_head2(head_emb)
+        return tail_logits1, tail_logits2
 
     # ---------------------------
     # DIFFERENCE TO TRIPLES PREDICTION:

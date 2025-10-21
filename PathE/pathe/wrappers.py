@@ -1002,14 +1002,14 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
     def training_step(self, batch, batch_idx):
         # Forward pass
-        logits_rp, logits_tail = self.model_forward(batch)
+        logits_rp1, logits_rp2, logits_tail1, logits_tail2 = self.model_forward(batch)
         targets = batch["target"] - 2
         tuples = batch["ori_triple"]                    # (N, 2) => (h, r)
         heads = tuples[:, 0].to(self.device)
 
         # Losses (unscaled)
-        rp_loss_unscaled = self.compute_rp_loss(logits_rp, targets, self.train_num_negatives)
-        tail_loss_unscaled = self.compute_tail_bce_loss(logits_tail, heads, self.train_head_tail_adjacency)
+        rp_loss_unscaled = self.compute_rp_loss(logits_rp1, targets, self.train_num_negatives)
+        tail_loss_unscaled = self.compute_tail_bce_loss(logits_tail1, heads, self.train_head_tail_adjacency)
 
         if not self.use_manual_optimization:
             total = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tail_loss_unscaled
@@ -1052,14 +1052,14 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
     
     def validation_step(self, batch, batch_idx):
         # Forward pass
-        logits_rp, logits_tail = self.model_forward(batch)
+        logits_rp1, logits_rp2, logits_tail1, logits_tail2 = self.model_forward(batch)
         targets = batch["target"] - 2
         tuples = batch['ori_triple']
         heads = tuples[:, 0].to(self.device)
 
         # Losses
-        rp_loss = self.compute_rp_loss(logits_rp, targets, self.val_num_negatives)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.val_head_tail_adjacency)
+        rp_loss = self.compute_rp_loss(logits_rp2, targets, self.val_num_negatives)
+        tp_loss = self.compute_tail_bce_loss(logits_tail2, heads, self.val_head_tail_adjacency)
 
         # Logging losses
         self.log("valid_rp_loss", rp_loss, prog_bar=True)
@@ -1069,7 +1069,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # --- Relation prediction metrics (only positives) --------------------
         pos_indices = torch.arange(0, tuples.size(0), self.val_num_negatives + 1)
         tuples_only_positives = tuples[pos_indices]
-        logits_rp_only_positives = logits_rp[pos_indices]
+        logits_rp_only_positives = logits_rp2[pos_indices]
 
         # Accumulate validation data for epoch-end processing
         if not hasattr(self, "_val_acc"):
@@ -1078,7 +1078,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self._val_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
         self._val_acc["tuples_tp"].append(tuples.detach().cpu())
         self._val_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
-        self._val_acc["logits_tp"].append(logits_tail.detach().cpu())
+        self._val_acc["logits_tp"].append(logits_tail2.detach().cpu())
 
         return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
@@ -1144,14 +1144,14 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
     # quite similar to validation_step but with different logging names and metric calculation functions
     def test_step(self, batch, batch_idx):
         # Forward pass
-        logits_rp, logits_tail = self.model_forward(batch)
+        logits_rp1, logits_rp2, logits_tail1, logits_tail2 = self.model_forward(batch)
         targets = batch["target"] - 2
         tuples = batch['ori_triple']
         heads = tuples[:, 0].to(self.device)
 
         # Compute losses
-        rp_loss = self.compute_rp_loss(logits_rp, targets, self.test_num_negatives)
-        tp_loss = self.compute_tail_bce_loss(logits_tail, heads, self.test_head_tail_adjacency)
+        rp_loss = self.compute_rp_loss(logits_rp2, targets, self.test_num_negatives)
+        tp_loss = self.compute_tail_bce_loss(logits_tail2, heads, self.test_head_tail_adjacency)
 
         # Logging losses
         self.log("test_rp_loss", rp_loss, prog_bar=True)
@@ -1159,8 +1159,8 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.log("test_total_loss", rp_loss + tp_loss)
 
         # Relation metrics (tuples)
-        assert(tuples.size()[0] == logits_rp.size()[0])
-        logits_rp_only_positives = logits_rp[torch.arange(0, logits_rp.size()[0], self.test_num_negatives + 1)]
+        assert(tuples.size()[0] == logits_rp2.size()[0])
+        logits_rp_only_positives = logits_rp2[torch.arange(0, logits_rp2.size()[0], self.test_num_negatives + 1)]
         tuples_only_positives = tuples[torch.arange(0, tuples.size()[0], self.test_num_negatives + 1)]
 
         if not hasattr(self, "_test_acc"):
@@ -1170,7 +1170,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self._test_acc["tuples_rp"].append(tuples_only_positives.detach().cpu())
         self._test_acc["logits_rp"].append(logits_rp_only_positives.detach().cpu())
         self._test_acc["tuples_tp"].append(tuples.detach().cpu())
-        self._test_acc["logits_tp"].append(logits_tail.detach().cpu())
+        self._test_acc["logits_tp"].append(logits_tail2.detach().cpu())
 
         return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
@@ -1225,7 +1225,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         head_idxs = head_idxs * 2
         ppt = batch["ppt"]
 
-        logits_rp, logits_tp = self.model(
+        logits_rp, logits_tp, logits_rcount, logits_tcount = self.model(
             ent_paths=ent_paths,
             rel_paths=rel_paths,
             head_idxs=head_idxs,
@@ -1235,7 +1235,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
             detach_link_head=self.link_head_detached
         )
         # loss_rp = self.criterion(logits_rp, targets)
-        return logits_rp, logits_tp
+        return logits_rp, logits_tp, logits_rcount, logits_tcount
 
 class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def __init__(self, *args, **kwargs):
@@ -1279,10 +1279,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # weights = torch.where(targets > 0.5, relation_count_matrix, 1.0)
 
         # Weights: use the count for positives, and for negatives, distribute the total positive weight equally
-        sum_pos = relation_count_matrix.sum(dim=1)  # (batch_size,)
+        num_pos = targets.sum(dim=1)  # (batch_size,)
         num_neg = (targets <= 0.5).sum(dim=1)  # (batch_size,)
-        weight_neg = sum_pos / num_neg.clamp_min(1.0)  # (batch_size,)
-        weights = torch.where(targets > 0.5, relation_count_matrix, weight_neg.unsqueeze(1).expand_as(relation_count_matrix))
+        weight_neg = 1 / num_neg.clamp_min(1.0)  # (batch_size,)
+        weight_pos = 1 / num_pos.clamp_min(1.0)  # (batch_size,)
+        weights = torch.where(targets > 0.5, weight_pos.unsqueeze(1).expand_as(targets), weight_neg.unsqueeze(1).expand_as(targets))
 
         # Apply label smoothing
         smoothed_targets = targets * (1 - self.label_smoothing) + (1 - targets) * self.label_smoothing
@@ -1329,8 +1330,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         """
         Compute Poisson NLL loss for relation prediction.
         """
-        predictions = torch.nn.functional.softplus(logits)
-        loss = torch.nn.functional.poisson_nll_loss(predictions, relation_count_matrix, log_input=True, reduction='sum')
+        loss = torch.nn.functional.poisson_nll_loss(logits, relation_count_matrix, log_input=True, full=True, reduction='sum')
         loss /= relation_count_matrix.numel()
         return loss
 
@@ -1343,7 +1343,6 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             raise ValueError("An entity count matrix must be provided for Poisson loss calculation.")
         
         entity_count_matrix = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
-        predictions = torch.nn.functional.softplus(logits_tail)
         
         # Compute per-element Poisson NLL (reduction='none')
         # loss_per_element = torch.nn.functional.poisson_nll_loss(predictions, entity_count_matrix, log_input=True, reduction='none')
@@ -1365,31 +1364,79 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # total_weight = weights.sum().clamp_min(1.0)
         # loss = weighted_loss / total_weight
 
-        loss = torch.nn.functional.poisson_nll_loss(predictions, entity_count_matrix, log_input=True, reduction='sum')
+        loss = torch.nn.functional.poisson_nll_loss(logits_tail, entity_count_matrix, log_input=True, full=True, reduction='sum')
         loss /= entity_count_matrix.numel()
         return loss
 
-    def compute_phase1_losses(self, logits_rp: torch.Tensor, logits_tail: torch.Tensor, heads: torch.Tensor, relation_count_matrix: torch.Tensor, entity_count_matrix: torch.Tensor, phase1_loss_fn: str):
+    def compute_tail_hurdle_loss(self, logits1, logits2, heads, entity_count_matrix):
+        hurdle_loss = self.compute_tail_bce_loss(logits1, heads, entity_count_matrix)
+        entity_count_matrix2 = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        poisson_mask = (entity_count_matrix2 > 0).float()
+        if poisson_mask.sum() > 0:
+            # Compute per-element Poisson NLL loss on the full tensors
+            loss_per_element = torch.nn.functional.poisson_nll_loss(
+                logits2, entity_count_matrix2, log_input=True, full=True, reduction='none'
+            )
+            # Mask out losses for non-positive tails (where mask == 0)
+            masked_loss = loss_per_element * poisson_mask
+            # Sum only the masked losses and normalize by the number of positive elements
+            count_loss = masked_loss.sum() / poisson_mask.sum().clamp_min(1.0)
+        else:
+            count_loss = torch.tensor(0.0, device=self.device)
+        # print(f"hurdle_loss: {hurdle_loss}, count_loss: {count_loss}")
+        hurdle_loss /= hurdle_loss.detach().clamp_min(1.0)
+        count_loss /= count_loss.detach().clamp_min(1.0)
+        return hurdle_loss + count_loss
+
+    def compute_rp_hurdle_loss(self, logits1, logits2, relation_count_matrix):
+        hurdle_loss = self.compute_rp_bce_loss(logits1, relation_count_matrix)
+        poisson_mask = (relation_count_matrix > 0).float()
+        if poisson_mask.sum() > 0:
+            # Compute per-element Poisson NLL loss on the full tensors
+            loss_per_element = torch.nn.functional.poisson_nll_loss(
+                logits2, relation_count_matrix, log_input=True, full=True, reduction='none'
+            )
+            # Mask out losses for non-positive relations (where mask == 0)
+            masked_loss = loss_per_element * poisson_mask
+            # Sum only the masked losses and normalize by the number of positive elements
+            count_loss =  masked_loss.sum() / poisson_mask.sum().clamp_min(1.0)
+        else:
+            count_loss = torch.tensor(0.0, device=self.device)
+        # print(f"hurdle_loss: {hurdle_loss}, count_loss: {count_loss}")
+        hurdle_loss /= hurdle_loss.detach().clamp_min(1.0)
+        count_loss /= count_loss.detach().clamp_min(1.0)
+        return hurdle_loss + count_loss
+
+    def compute_phase1_losses(self, logits_rp_bce, logits_rp_poisson, logits_tail_bce, logits_tail_poisson, heads, relation_count_matrix, entity_count_matrix, phase1_loss_fn):
         """
         Centralized function to compute phase 1 losses (relation and tail prediction) based on the loss function type.
         """
         if phase1_loss_fn == 'bce':
-            rp_loss = self.compute_rp_bce_loss(logits_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_bce_loss(logits_tail, heads, entity_count_matrix)
+            rp_loss = self.compute_rp_bce_loss(logits_rp_bce, relation_count_matrix)
+            tp_loss = self.compute_tail_bce_loss(logits_tail_bce, heads, entity_count_matrix)
         elif phase1_loss_fn == 'poisson':
-            rp_loss = self.compute_rp_poisson_loss(logits_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_poisson_loss(logits_tail, heads, entity_count_matrix)
+            rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
+            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, heads, entity_count_matrix)
+        elif phase1_loss_fn == 'hurdletail':
+            rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
+            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, heads, entity_count_matrix)
+        elif phase1_loss_fn == 'hurdlerelation':
+            rp_loss = self.compute_rp_hurdle_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
+            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, heads, entity_count_matrix)
+        elif phase1_loss_fn == 'hurdleboth':
+            rp_loss = self.compute_rp_hurdle_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
+            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, heads, entity_count_matrix)
         else:
-            raise ValueError(f"Invalid phase1_loss_fn: {phase1_loss_fn}. Must be 'bce' or 'poisson'.")
+            raise ValueError(f"Invalid phase1_loss_fn: {phase1_loss_fn}. Must be 'bce', 'poisson', 'hurdle', 'hurdlerelation', or 'hurdleboth'.")
         return rp_loss, tp_loss
     
     def training_step(self, batch, batch_idx):
-        logits_rp, logits_tail = self.model_forward(batch)
+        logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
         relation_count_matrix = batch["relation_count_matrix"]
         
         # Losses
-        rp_loss_unscaled, tp_loss_unscaled = self.compute_phase1_losses(logits_rp, logits_tail, heads, relation_count_matrix, self.train_head_tail_adjacency, self.phase1_loss_fn)
+        rp_loss_unscaled, tp_loss_unscaled = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, heads, relation_count_matrix, self.train_head_tail_adjacency, self.phase1_loss_fn)
 
         if not self.use_manual_optimization:
             total_loss = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tp_loss_unscaled
@@ -1443,12 +1490,12 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         return {"rp_loss": rp_loss_unscaled, "tp_loss": tp_loss_unscaled}
     
     def validation_step(self, batch, batch_idx):
-        logits_rp, logits_tail = self.model_forward(batch)
+        logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
         relation_count_matrix = batch["relation_count_matrix"]
 
         # Losses
-        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp, logits_tail, heads, relation_count_matrix, self.val_head_tail_adjacency, self.phase1_loss_fn)
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, heads, relation_count_matrix, self.val_head_tail_adjacency, self.phase1_loss_fn)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
         self.log("valid_rp_loss", rp_loss)
@@ -1456,18 +1503,18 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("valid_total_loss", total_loss, prog_bar=True)
 
         # Update metrics directly on each step
-        self.val_relationMRR.update(heads, logits_rp, relation_count_matrix)
-        self.val_relationHitsAt1.update(heads, logits_rp, relation_count_matrix)
-        self.val_relationHitsAt3.update(heads, logits_rp, relation_count_matrix)
-        self.val_relationHitsAt5.update(heads, logits_rp, relation_count_matrix)
-        self.val_relationHitsAt10.update(heads, logits_rp, relation_count_matrix)
+        self.val_relationMRR.update(heads, logits_rp1, relation_count_matrix)
+        self.val_relationHitsAt1.update(heads, logits_rp1, relation_count_matrix)
+        self.val_relationHitsAt3.update(heads, logits_rp1, relation_count_matrix)
+        self.val_relationHitsAt5.update(heads, logits_rp1, relation_count_matrix)
+        self.val_relationHitsAt10.update(heads, logits_rp1, relation_count_matrix)
 
         true_tails = self.val_head_tail_adjacency[heads.to(self.val_head_tail_adjacency.device)].to(torch.float32)
-        self.val_tailMRR.update(heads, logits_tail, true_tails)
-        self.val_tailHitsAt1.update(heads, logits_tail, true_tails)
-        self.val_tailHitsAt3.update(heads, logits_tail, true_tails)
-        self.val_tailHitsAt5.update(heads, logits_tail, true_tails)
-        self.val_tailHitsAt10.update(heads, logits_tail, true_tails)
+        self.val_tailMRR.update(heads, logits_tail1, true_tails)
+        self.val_tailHitsAt1.update(heads, logits_tail1, true_tails)
+        self.val_tailHitsAt3.update(heads, logits_tail1, true_tails)
+        self.val_tailHitsAt5.update(heads, logits_tail1, true_tails)
+        self.val_tailHitsAt10.update(heads, logits_tail1, true_tails)
     
     def validation_epoch_end(self, outputs):
         # Log relation metrics (torchmetrics computes and resets them automatically)
@@ -1494,12 +1541,12 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
                     self.log("lr", new_lr, on_epoch=True, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
-        logits_rp, logits_tail = self.model_forward(batch)
+        logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
         relation_count_matrix = batch["relation_count_matrix"]
 
         # Losses
-        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp, logits_tail, heads, relation_count_matrix, self.test_head_tail_adjacency, self.phase1_loss_fn)
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, heads, relation_count_matrix, self.test_head_tail_adjacency, self.phase1_loss_fn)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
         self.log("test_rp_loss", rp_loss)
@@ -1507,18 +1554,18 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("test_total_loss", total_loss)
 
         # Update metrics directly on each step
-        self.test_relationMRR.update(heads, logits_rp, relation_count_matrix)
-        self.test_relationHitsAt1.update(heads, logits_rp, relation_count_matrix)
-        self.test_relationHitsAt3.update(heads, logits_rp, relation_count_matrix)
-        self.test_relationHitsAt5.update(heads, logits_rp, relation_count_matrix)
-        self.test_relationHitsAt10.update(heads, logits_rp, relation_count_matrix)
+        self.test_relationMRR.update(heads, logits_rp1, relation_count_matrix)
+        self.test_relationHitsAt1.update(heads, logits_rp1, relation_count_matrix)
+        self.test_relationHitsAt3.update(heads, logits_rp1, relation_count_matrix)
+        self.test_relationHitsAt5.update(heads, logits_rp1, relation_count_matrix)
+        self.test_relationHitsAt10.update(heads, logits_rp1, relation_count_matrix)
 
         true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
-        self.test_tailMRR.update(heads, logits_tail, true_tails)
-        self.test_tailHitsAt1.update(heads, logits_tail, true_tails)
-        self.test_tailHitsAt3.update(heads, logits_tail, true_tails)
-        self.test_tailHitsAt5.update(heads, logits_tail, true_tails)
-        self.test_tailHitsAt10.update(heads, logits_tail, true_tails)
+        self.test_tailMRR.update(heads, logits_tail1, true_tails)
+        self.test_tailHitsAt1.update(heads, logits_tail1, true_tails)
+        self.test_tailHitsAt3.update(heads, logits_tail1, true_tails)
+        self.test_tailHitsAt5.update(heads, logits_tail1, true_tails)
+        self.test_tailHitsAt10.update(heads, logits_tail1, true_tails)
 
     def on_test_epoch_end(self):
         # Log relation metrics
@@ -1536,10 +1583,47 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        logits_rp, logits_tp = self.model_forward(batch)
+        logits_rp_bce, logits_tp_bce, logits_rp_poisson, logits_tp_poisson = self.model_forward(batch)
         heads = batch["heads"]
-        return {
-            "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
-            "logits_rp": logits_rp.detach().cpu(),
-            "logits_tp": logits_tp.detach().cpu(),
-        }
+        if self.phase1_loss_fn == 'bce':
+            return {
+                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+                "logits_rp": logits_rp_bce.detach().cpu(),
+                "logits_tp": logits_tp_bce.detach().cpu(),
+            }
+        elif self.phase1_loss_fn == 'poisson':
+            return {
+                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+                "logits_rp": logits_rp_poisson.detach().cpu(),
+                "logits_tp": logits_tp_poisson.detach().cpu(),
+            }
+        elif self.phase1_loss_fn == 'hurdletail':
+            prob_non_zero = torch.sigmoid(logits_tp_bce)
+            expected_count = prob_non_zero * torch.exp(logits_tp_poisson)
+            expected_count = torch.log(expected_count + 1e-10)  # log(0) safety
+            return {
+                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+                "logits_rp": logits_rp_poisson.detach().cpu(),
+                "logits_tp": expected_count.detach().cpu(),
+            }
+        elif self.phase1_loss_fn == 'hurdlerelation':
+            prob_non_zero_rp = torch.sigmoid(logits_rp_bce)
+            expected_count_rp = prob_non_zero_rp * torch.exp(logits_rp_poisson)
+            expected_count_rp = torch.log(expected_count_rp + 1e-10)
+            return {
+                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+                "logits_rp": expected_count_rp.detach().cpu(),
+                "logits_tp": logits_tp_poisson.detach().cpu(),
+            }
+        elif self.phase1_loss_fn == 'hurdleboth':
+            prob_non_zero_rp = torch.sigmoid(logits_rp_bce)
+            expected_count_rp = prob_non_zero_rp * torch.exp(logits_rp_poisson)
+            expected_count_rp = torch.log(expected_count_rp + 1e-10)
+            prob_non_zero_tp = torch.sigmoid(logits_tp_bce)
+            expected_count_tp = prob_non_zero_tp * torch.exp(logits_tp_poisson)
+            expected_count_tp = torch.log(expected_count_tp + 1e-10)
+            return {
+                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+                "logits_rp": expected_count_rp.detach().cpu(),
+                "logits_tp": expected_count_tp.detach().cpu(),
+            }

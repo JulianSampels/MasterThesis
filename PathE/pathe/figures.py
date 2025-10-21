@@ -103,7 +103,7 @@ def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
-    results.sort(key=lambda x: x['total_cov'])  # Sort by total coverage
+    results.sort(key=lambda x: x['candidate_size'])  # Sort by candidate size
     # Extract data
     candidate_sizes = [r['candidate_size'] for r in results]  # Total candidate size
     total_covs = [r['total_cov'] for r in results]
@@ -666,6 +666,47 @@ def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filena
         head = triple[0].item()
         head_to_tail_count[head] += 1
     
+    # Get all unique tails
+    all_tails = set()
+    for triple in triples:
+        all_tails.add(triple[2].item())
+    
+    # Compute per-head per-tail counts
+    head_to_tail_count_per_tail = defaultdict(lambda: defaultdict(int))
+    for triple in triples:
+        head = triple[0].item()
+        tail = triple[2].item()
+        head_to_tail_count_per_tail[head][tail] += 1
+    
+    # Add 0 for missing tails per head
+    for head in head_to_tail_count_per_tail:
+        for tail in all_tails:
+            if tail not in head_to_tail_count_per_tail[head]:
+                head_to_tail_count_per_tail[head][tail] = 0
+    
+    # Compute average tail count per head
+    avg_tail_per_head_list = []
+    for head, tail_dict in head_to_tail_count_per_tail.items():
+        counts = list(tail_dict.values())
+        if counts:
+            avg = sum(counts) / len(counts)
+            avg_tail_per_head_list.append(avg)
+    
+    avg_tail = sum(avg_tail_per_head_list) / len(avg_tail_per_head_list) if avg_tail_per_head_list else 0
+    
+    # For excluding zero: average of averages where counts > 0
+    nonzero_avg_tail_per_head_list = []
+    for head, tail_dict in head_to_tail_count_per_tail.items():
+        counts = [c for c in tail_dict.values() if c > 0]
+        if counts:
+            avg = sum(counts) / len(counts)
+            nonzero_avg_tail_per_head_list.append(avg)
+    
+    avg_tail_nonzero = sum(nonzero_avg_tail_per_head_list) / len(nonzero_avg_tail_per_head_list) if nonzero_avg_tail_per_head_list else 0
+    
+    print(f"Average tail occurrences per head: {avg_tail:.2f}")
+    print(f"Average tail occurrences per head (excluding 0): {avg_tail_nonzero:.2f}")
+    
     # Get the count of tail occurrences per head
     tail_counts = list(head_to_tail_count.values())
     
@@ -676,6 +717,11 @@ def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filena
     plt.ylabel('Number of Heads')
     plt.title('Distribution of Tail Occurrence Counts per Head')
     plt.grid(True, alpha=0.3)
+    
+    # Add text with averages
+    plt.text(0.7, 0.9, f'Avg tails/head: {avg_tail:.2f}\nAvg tails/head (non-zero): {avg_tail_nonzero:.2f}', 
+             transform=plt.gca().transAxes, fontsize=10, verticalalignment='top', 
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
     # Save the plot
     plt.savefig(f'{save_dir}/{filename}')
@@ -702,6 +748,45 @@ def create_relation_occurrence_figure(triples, save_dir="./figures", filename="r
         rel = triple[1].item()
         relation_counts[rel] += 1
     
+    # Get all unique relations
+    all_relations = set(relation_counts.keys())
+    
+    # Compute per-head relation counts
+    head_to_rel_count = defaultdict(lambda: defaultdict(int))
+    for triple in triples:
+        head = triple[0].item()
+        rel = triple[1].item()
+        head_to_rel_count[head][rel] += 1
+    
+    # Add 0 for missing relations per head
+    for head in head_to_rel_count:
+        for rel in all_relations:
+            if rel not in head_to_rel_count[head]:
+                head_to_rel_count[head][rel] = 0
+    
+    # Compute average relation count per head
+    avg_rel_per_head_list = []
+    for head, rel_dict in head_to_rel_count.items():
+        counts = list(rel_dict.values())
+        if counts:
+            avg = sum(counts) / len(counts)
+            avg_rel_per_head_list.append(avg)
+    
+    avg_rel = sum(avg_rel_per_head_list) / len(avg_rel_per_head_list) if avg_rel_per_head_list else 0
+    
+    # For excluding zero: average of averages where counts > 0
+    nonzero_avg_rel_per_head_list = []
+    for head, rel_dict in head_to_rel_count.items():
+        counts = [c for c in rel_dict.values() if c > 0]
+        if counts:
+            avg = sum(counts) / len(counts)
+            nonzero_avg_rel_per_head_list.append(avg)
+    
+    avg_rel_nonzero = sum(nonzero_avg_rel_per_head_list) / len(nonzero_avg_rel_per_head_list) if nonzero_avg_rel_per_head_list else 0
+    
+    print(f"Average relation occurrences per head: {avg_rel:.2f}")
+    print(f"Average relation occurrences per head (excluding 0): {avg_rel_nonzero:.2f}")
+    
     # Get the counts
     counts = list(relation_counts.values())
     
@@ -713,11 +798,173 @@ def create_relation_occurrence_figure(triples, save_dir="./figures", filename="r
     plt.title('Distribution of Relation Occurrence Counts')
     plt.grid(True, alpha=0.3)
     
+    # Add text with averages for relations per head
+    plt.text(0.7, 0.9, f'Avg rels/head: {avg_rel:.2f}\nAvg rels/head (non-zero): {avg_rel_nonzero:.2f}', 
+             transform=plt.gca().transAxes, fontsize=10, verticalalignment='top', 
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
     # Save the plot
     plt.savefig(f'{save_dir}/{filename}')
     plt.close()
     
     print(f"Figure saved to {save_dir}/{filename}")
+
+
+def plot_relation_count_dispersion(triples, save_dir="./figures", filename="relation_dispersion.svg"):
+    """
+    Analyzes if relation counts per relation type follow a Poisson distribution by plotting variance vs. mean.
+    For each relation type, computes the mean and variance of its occurrence counts across all heads (including 0 for heads without that relation).
+
+    Args:
+        triples (torch.Tensor): (N, 3) tensor of (head, relation, tail).
+        save_dir (str): Directory to save the figure.
+        filename (str): Name of the output SVG file.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    rel_to_head_counts = defaultdict(lambda: defaultdict(int))
+    all_relations = set()
+    all_heads = set()
+
+    for h, r, t in triples:
+        h, r = h.item(), r.item()
+        rel_to_head_counts[r][h] += 1
+        all_relations.add(r)
+        all_heads.add(h)
+
+    means, variances = [], []
+    means_nonzero, variances_nonzero = [], []
+    num_heads = len(all_heads)
+
+    for rel in all_relations:
+        # Get counts for this relation, including 0 for heads not present
+        counts = [rel_to_head_counts[rel].get(h, 0) for h in all_heads]
+        
+        if len(counts) > 1:
+            means.append(np.mean(counts))
+            variances.append(np.var(counts))
+            
+            # Non-zero counts
+            counts_nonzero = [c for c in counts if c > 0]
+            if len(counts_nonzero) > 1:
+                means_nonzero.append(np.mean(counts_nonzero))
+                variances_nonzero.append(np.var(counts_nonzero))
+
+    if not means:
+        print("No data to plot for dispersion.")
+        return
+
+    # Create scatter plot
+    plt.figure(figsize=(8, 8))
+    plt.scatter(means, variances, alpha=0.5, color='red', label='Per-Relation Type Mean vs. Variance (including 0s)')
+    plt.scatter(means_nonzero, variances_nonzero, alpha=0.5, color='blue', label='Per-Relation Type Mean vs. Variance (excluding 0s)')
+    
+    # Add y=x line for reference
+    max_val = max(max(means + means_nonzero), max(variances + variances_nonzero))
+    plt.plot([0, max_val], [0, max_val], 'k--', label='y=x (Poisson ideal)')
+    
+    plt.xlabel('Mean of Head Counts per Relation Type')
+    plt.ylabel('Variance of Head Counts per Relation Type')
+    plt.title('Relation Count Dispersion per Relation Type')
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+    plt.axis('equal')
+    plt.xlim(0, 10)
+    plt.ylim(0, 10)
+    # plt.xscale('log')
+    # plt.yscale('log')
+    
+    # Calculate and display overall dispersion indices
+    overall_dispersion = np.mean(variances) / np.mean(means) if np.mean(means) > 0 else float('nan')
+    overall_dispersion_nonzero = np.mean(variances_nonzero) / np.mean(means_nonzero) if np.mean(means_nonzero) > 0 else float('nan')
+    textstr = f'Including 0s: {overall_dispersion:.2f}\nExcluding 0s: {overall_dispersion_nonzero:.2f}'
+    plt.text(0.95, 0.05, textstr, transform=plt.gca().transAxes, fontsize=12,
+             verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.savefig(os.path.join(save_dir, filename))
+    plt.close()
+    print(f"Dispersion plot saved to {os.path.join(save_dir, filename)}")
+    print(f"Including 0s dispersion index: {overall_dispersion:.2f}")
+    print(f"Excluding 0s dispersion index: {overall_dispersion_nonzero:.2f}")
+
+
+def plot_tail_count_dispersion(triples, save_dir="./figures", filename="tail_dispersion.svg"):
+    """
+    Analyzes if tail counts per tail follow a Poisson distribution by plotting variance vs. mean.
+    For each tail, computes the mean and variance of its occurrence counts across all heads (including 0 for heads without that tail).
+
+    Args:
+        triples (torch.Tensor): (N, 3) tensor of (head, relation, tail).
+        save_dir (str): Directory to save the figure.
+        filename (str): Name of the output SVG file.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    tail_to_head_counts = defaultdict(lambda: defaultdict(int))
+    all_tails = set()
+    all_heads = set()
+
+    for h, r, t in triples:
+        h, t = h.item(), t.item()
+        tail_to_head_counts[t][h] += 1
+        all_tails.add(t)
+        all_heads.add(h)
+
+    means, variances = [], []
+    means_nonzero, variances_nonzero = [], []
+    num_heads = len(all_heads)
+
+    for tail in all_tails:
+        # Get counts for this tail, including 0 for heads not present
+        counts = [tail_to_head_counts[tail].get(h, 0) for h in all_heads]
+        
+        if len(counts) > 1:
+            means.append(np.mean(counts))
+            variances.append(np.var(counts))
+            
+            # Non-zero counts
+            counts_nonzero = [c for c in counts if c > 0]
+            if len(counts_nonzero) > 1:
+                means_nonzero.append(np.mean(counts_nonzero))
+                variances_nonzero.append(np.var(counts_nonzero))
+
+    if not means:
+        print("No data to plot for dispersion.")
+        return
+
+    # Create scatter plot
+    plt.figure(figsize=(8, 8))
+    plt.scatter(means, variances, alpha=0.5, color='red', label='Per-Tail Mean vs. Variance (including 0s)')
+    plt.scatter(means_nonzero, variances_nonzero, alpha=0.5, color='blue', label='Per-Tail Mean vs. Variance (excluding 0s)')
+    
+    # Add y=x line for reference
+    max_val = max(max(means + means_nonzero), max(variances + variances_nonzero))
+    plt.plot([0, max_val], [0, max_val], 'k--', label='y=x (Poisson ideal)')
+    
+    plt.xlabel('Mean of Head Counts per Tail')
+    plt.ylabel('Variance of Head Counts per Tail')
+    plt.title('Tail Count Dispersion per Tail')
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
+    # plt.xscale('log')
+    # plt.yscale('log')
+    plt.axis('equal')
+    
+    # Calculate and display overall dispersion indices
+    overall_dispersion = np.mean(variances) / np.mean(means) if np.mean(means) > 0 else float('nan')
+    overall_dispersion_nonzero = np.mean(variances_nonzero) / np.mean(means_nonzero) if np.mean(means_nonzero) > 0 else float('nan')
+    textstr = f'Including 0s: {overall_dispersion:.2f}\nExcluding 0s: {overall_dispersion_nonzero:.2f}'
+    plt.text(0.95, 0.05, textstr, transform=plt.gca().transAxes, fontsize=12,
+             verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.savefig(os.path.join(save_dir, filename))
+    plt.close()
+    print(f"Dispersion plot saved to {os.path.join(save_dir, filename)}")
+    print(f"Including 0s dispersion index: {overall_dispersion:.2f}")
+    print(f"Excluding 0s dispersion index: {overall_dispersion_nonzero:.2f}")
+
 
 def create_figures(candidates, test_triples, relation_maps, context_triple_store, save_dir):
     """
