@@ -19,6 +19,20 @@ from .aggregation import ContextualAggregator, ContextualAggregatorTuples
 logger = logging.getLogger(__name__)
 
 
+class LowRankMultiHead(nn.Module):
+    def __init__(self, in_features: int, out_features: int, rank: int = None, bias: bool = True):
+        super().__init__()
+        if rank is None:
+            rank = min(in_features // 2, out_features // 2)  # Automatic rank based on d_model
+        self.proj = nn.Linear(in_features, rank, bias=False)   # shared bottleneck
+        self.head1 = nn.Linear(rank, out_features, bias=bias)  # first head (e.g., hurdle/log_mu)
+        self.head2 = nn.Linear(rank, out_features, bias=bias)  # second head (e.g., count/log_alpha)
+
+    def forward(self, x: torch.Tensor):
+        z = F.relu(self.proj(x))
+        return self.head1(z), self.head2(z)
+
+
 def init_transformer_params(module):
     """
     Initialise parameters in a transformer model.
@@ -953,8 +967,7 @@ class PathEModelTuples(PathEModelTriples):
             )
         
         #adjust dimension because only heads and not heads and tails are used
-        self.rel_predict_head1 = nn.Linear(d_model, vocab_size - 2)
-        self.rel_predict_head2 = nn.Linear(d_model, vocab_size - 2)
+        self.rel_heads = LowRankMultiHead(d_model, vocab_size - 2)
         self.link_predict_head1 = nn.Linear(d_model * 2, d_model)
         self.link_predict_head2 = nn.Linear(d_model, 1)
 
@@ -966,8 +979,7 @@ class PathEModelTuples(PathEModelTriples):
             # Fallback in case the provided relcontext_graph has unexpected structure
             num_entities = vocab_size - 2  # safe fallback; will be corrected by trainer usage
         self.num_entities = num_entities
-        self.tail_predict_head1 = nn.Linear(d_model, self.num_entities)
-        self.tail_predict_head2 = nn.Linear(d_model, self.num_entities)
+        self.tail_heads = LowRankMultiHead(d_model, self.num_entities)
     
     def select_separated_head_embeddings(self, memory, head_idxs, entity_origin):
         """
@@ -1065,9 +1077,7 @@ class PathEModelTuples(PathEModelTriples):
         return logits_rp1, logits_tail1, logits_rp2, logits_tail2
 
     def predict_relation_from_h(self, head_emb):
-        relation_logits1 = self.rel_predict_head1(head_emb)
-        relation_logits2 = self.rel_predict_head2(head_emb)
-        return relation_logits1, relation_logits2
+        return self.rel_heads(head_emb)
 
     def link_predict_from_h(self, head_emb, targets):
         # Get relation embeddings for the target relations
@@ -1081,9 +1091,7 @@ class PathEModelTuples(PathEModelTriples):
         return predictions
     
     def tail_predict_from_h(self, head_emb: torch.Tensor):
-        tail_logits1 = self.tail_predict_head1(head_emb)
-        tail_logits2 = self.tail_predict_head2(head_emb)
-        return tail_logits1, tail_logits2
+        return self.tail_heads(head_emb)
 
     # ---------------------------
     # DIFFERENCE TO TRIPLES PREDICTION:
