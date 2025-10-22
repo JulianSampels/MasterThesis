@@ -185,7 +185,6 @@ class RelationMRRUniqueHeads(Metric):
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
         self.filter_global_relation_count_matrix = filter_global_relation_count_matrix  # [num_entities, num_relations] with counts
 
-    @torch.no_grad()
     def update(self, heads: torch.Tensor, scores: torch.Tensor, relation_count_matrix: torch.Tensor):
         """
         heads: (num_heads,)
@@ -449,7 +448,6 @@ class RelationHitsAtKUniqueHeads(Metric):
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
         self.filter_global_relation_count_matrix = filter_global_relation_count_matrix  # [num_entities, num_relations] with counts
 
-    @torch.no_grad()
     def update(self, heads: torch.Tensor, scores: torch.Tensor, relation_count_matrix: torch.Tensor):
         """
         heads: (num_heads,)
@@ -648,7 +646,6 @@ class CandidateMRRPerSampleFiltered(Metric):
         self.add_state("reciprocal_ranks", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    @torch.no_grad()
     def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
         scores = scores.squeeze()
         labels = labels.to(dtype=torch.float32)
@@ -860,7 +857,6 @@ class TailMRRTuples(Metric):
         self.add_state("reciprocal_ranks", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    @torch.no_grad()
     def update(self, heads: torch.Tensor, scores: torch.Tensor, eval_labels: torch.Tensor):
         """
         heads: (H,) tensor of head ids
@@ -923,7 +919,6 @@ class TailHitsAtKTuples(Metric):
         self.add_state("hits", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    @torch.no_grad()
     def update(self, heads: torch.Tensor, scores: torch.Tensor, eval_labels: torch.Tensor):
         """
         heads: (H,) tensor of head ids
@@ -986,7 +981,6 @@ class CandidateHitsAtKPerSampleFiltered(Metric):
         self.add_state("hits", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    @torch.no_grad()
     def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
         scores = scores.squeeze()
         labels = labels.to(dtype=torch.float32)
@@ -1049,7 +1043,6 @@ class CandidateRecallAtKPerGroup(Metric):
         """
         self.group_true_counts = {int(k): int(v) for k, v in map_group_id_to_true_count.items()}
 
-    @torch.no_grad()
     def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
         scores = scores.squeeze()
         labels = labels.to(dtype=torch.float32)
@@ -1097,11 +1090,9 @@ class CandidateRecallAtKTotal(Metric):
         self.add_state("num_pos_in_topk", default=torch.tensor(0), dist_reduce_fx="sum")
         self.add_state("num_positives", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    @torch.no_grad()
     def set_num_positives(self, num_positives: int):
         self.total_num_positives = torch.tensor(num_positives, dtype=torch.long)
     
-    @torch.no_grad()
     def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids):
         scores = scores.squeeze()
 

@@ -538,6 +538,7 @@ class PathEModelWrapperTriples(LightningModule):
         return (logits_rp.to(torch.device(model_device)),
                 logits_lp.to(torch.device(model_device)))
 
+    @torch.no_grad()
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         if self.val_sub_batch_size is None:
             logits_rp, logits_lp = self.model_forward(batch=batch)
@@ -606,6 +607,7 @@ class PathEModelWrapperTriples(LightningModule):
             self._val_acc["triples_rp"].append(triples.detach().cpu())
             self._val_acc["logits_rp"].append(logits_rp.detach().cpu())
 
+    @torch.no_grad()
     def validation_epoch_end(self, outputs):
         print()
         if not hasattr(self, "_val_acc"):
@@ -656,6 +658,7 @@ class PathEModelWrapperTriples(LightningModule):
                     new_lr = scheduler.optimizer.param_groups[0]['lr']
                     self.log("lr", new_lr, on_epoch=True, prog_bar=True)
 
+    @torch.no_grad()
     def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int):
         if self.test_sub_batch_size is None:
             logits_rp, logits_lp = self.model_forward(batch=batch)
@@ -712,6 +715,7 @@ class PathEModelWrapperTriples(LightningModule):
             self.log("test_total_loss", rp_loss, prog_bar=True)
             self.calculate_and_log_test_relation_metrics(triples, logits_rp)
 
+    @torch.no_grad()
     def on_test_epoch_end(self):
         if not hasattr(self, "_test_acc"):
             return
@@ -1056,6 +1060,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.log("train_total_loss", rp_loss_unscaled + tail_loss_unscaled)
         return {"rp_loss": rp_loss_unscaled, "tp_loss": tail_loss_unscaled}
     
+    @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         # Forward pass
         logits_rp1, logits_rp2, logits_tail1, logits_tail2 = self.model_forward(batch)
@@ -1088,6 +1093,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         return {"rp_loss": rp_loss, "tp_loss": tp_loss}
 
+    @torch.no_grad()
     def validation_epoch_end(self, outputs):
         if not hasattr(self, "_val_acc"):
             logger.warning("validation_epoch_end() called without any accumulated validation data!")
@@ -1148,6 +1154,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
     
     
     # quite similar to validation_step but with different logging names and metric calculation functions
+    @torch.no_grad()
     def test_step(self, batch, batch_idx):
         # Forward pass
         logits_rp1, logits_rp2, logits_tail1, logits_tail2 = self.model_forward(batch)
@@ -1182,6 +1189,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # self.calculate_and_log_test_relation_metrics(tuples_only_positives, logits_rp_only_positives)
 
+    @torch.no_grad()
     def on_test_epoch_end(self):
         if not hasattr(self, "_test_acc"):
             return
@@ -1594,6 +1602,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("train_total_loss", total_loss)
         return {"rp_loss": rp_loss_unscaled, "tp_loss": tp_loss_unscaled}
     
+    @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
@@ -1623,6 +1632,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.val_tailHitsAt5.update(heads, scores_tp, true_tails)
         self.val_tailHitsAt10.update(heads, scores_tp, true_tails)
 
+    @torch.no_grad()
     def validation_epoch_end(self, outputs):
         # Log relation metrics (torchmetrics computes and resets them automatically)
         self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
@@ -1647,6 +1657,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
                     new_lr = scheduler.optimizer.param_groups[0]['lr']
                     self.log("lr", new_lr, on_epoch=True, prog_bar=True)
 
+    @torch.no_grad()
     def test_step(self, batch, batch_idx):
         logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
@@ -1676,6 +1687,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.test_tailHitsAt5.update(heads, scores_tp, true_tails)
         self.test_tailHitsAt10.update(heads, scores_tp, true_tails)
 
+    @torch.no_grad()
     def on_test_epoch_end(self):
         # Log relation metrics
         self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
