@@ -1142,8 +1142,8 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         tuples = batch['ori_triple']  # (num_samples, 2) -> (h, r)
         return {
             "tuples": tuples.detach().cpu(),
-            "logits_rp": logits_rp.detach().cpu(),
-            "logits_tp": logits_tp.detach().cpu()
+            "scores_rp": logits_rp.detach().cpu(),
+            "scores_tp": logits_tp.detach().cpu()
         }
     
     
@@ -1608,20 +1608,21 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("valid_tp_loss", tp_loss)
         self.log("valid_total_loss", total_loss, prog_bar=True)
 
-        # Update metrics directly on each step
-        self.val_relationMRR.update(heads, logits_rp1, relation_count_matrix)
-        self.val_relationHitsAt1.update(heads, logits_rp1, relation_count_matrix)
-        self.val_relationHitsAt3.update(heads, logits_rp1, relation_count_matrix)
-        self.val_relationHitsAt5.update(heads, logits_rp1, relation_count_matrix)
-        self.val_relationHitsAt10.update(heads, logits_rp1, relation_count_matrix)
+        # Update metrics
+        scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
+        self.val_relationMRR.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
         true_tails = self.val_head_tail_adjacency[heads.to(self.val_head_tail_adjacency.device)].to(torch.float32)
-        self.val_tailMRR.update(heads, logits_tail1, true_tails)
-        self.val_tailHitsAt1.update(heads, logits_tail1, true_tails)
-        self.val_tailHitsAt3.update(heads, logits_tail1, true_tails)
-        self.val_tailHitsAt5.update(heads, logits_tail1, true_tails)
-        self.val_tailHitsAt10.update(heads, logits_tail1, true_tails)
-    
+        self.val_tailMRR.update(heads, scores_tp, true_tails)
+        self.val_tailHitsAt1.update(heads, scores_tp, true_tails)
+        self.val_tailHitsAt3.update(heads, scores_tp, true_tails)
+        self.val_tailHitsAt5.update(heads, scores_tp, true_tails)
+        self.val_tailHitsAt10.update(heads, scores_tp, true_tails)
+
     def validation_epoch_end(self, outputs):
         # Log relation metrics (torchmetrics computes and resets them automatically)
         self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
@@ -1660,19 +1661,20 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("test_tp_loss", tp_loss)
         self.log("test_total_loss", total_loss)
 
-        # Update metrics directly on each step
-        self.test_relationMRR.update(heads, logits_rp1, relation_count_matrix)
-        self.test_relationHitsAt1.update(heads, logits_rp1, relation_count_matrix)
-        self.test_relationHitsAt3.update(heads, logits_rp1, relation_count_matrix)
-        self.test_relationHitsAt5.update(heads, logits_rp1, relation_count_matrix)
-        self.test_relationHitsAt10.update(heads, logits_rp1, relation_count_matrix)
+        # Update metrics
+        scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
+        self.test_relationMRR.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
         true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
-        self.test_tailMRR.update(heads, logits_tail1, true_tails)
-        self.test_tailHitsAt1.update(heads, logits_tail1, true_tails)
-        self.test_tailHitsAt3.update(heads, logits_tail1, true_tails)
-        self.test_tailHitsAt5.update(heads, logits_tail1, true_tails)
-        self.test_tailHitsAt10.update(heads, logits_tail1, true_tails)
+        self.test_tailMRR.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt1.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt3.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt5.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt10.update(heads, scores_tp, true_tails)
 
     def on_test_epoch_end(self):
         # Log relation metrics
@@ -1689,58 +1691,43 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("test_tail_hits5", self.test_tailHitsAt5, on_step=False, on_epoch=True)
         self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
 
+    def generate_scores(self, logits1_rp, logits2_rp, logits1_tp, logits2_tp):
+        if self.phase1_loss_fn == 'bce':
+            scores_rp = logits1_rp
+            scores_tp = logits1_tp
+        elif self.phase1_loss_fn == 'poisson':
+            scores_rp = logits2_rp
+            scores_tp = logits2_tp
+        elif self.phase1_loss_fn == 'negative_binomial':
+            scores_rp = logits1_rp
+            scores_tp = logits1_tp
+        elif self.phase1_loss_fn == 'hurdletail':
+            prob_non_zero = torch.sigmoid(logits1_tp)
+            expected_count = prob_non_zero * torch.exp(logits2_tp)
+            scores_rp = logits2_rp
+            scores_tp = torch.log(expected_count + 1e-10)
+        elif self.phase1_loss_fn == 'hurdlerelation':
+            prob_non_zero_rp = torch.sigmoid(logits1_rp)
+            expected_count_rp = prob_non_zero_rp * torch.exp(logits2_rp)
+            scores_rp = torch.log(expected_count_rp + 1e-10)
+            scores_tp = logits2_tp
+        elif self.phase1_loss_fn == 'hurdleboth':
+            prob_non_zero_rp = torch.sigmoid(logits1_rp)
+            expected_count_rp = prob_non_zero_rp * torch.exp(logits2_rp)
+            scores_rp = torch.log(expected_count_rp + 1e-10)
+            prob_non_zero_tp = torch.sigmoid(logits1_tp)
+            expected_count_tp = prob_non_zero_tp * torch.exp(logits2_tp)
+            scores_tp = torch.log(expected_count_tp + 1e-10)
+        else:
+            raise ValueError(f"Unknown phase1_loss_fn: {self.phase1_loss_fn}")
+        return scores_rp, scores_tp
+
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         logits_rp_bce, logits_tp_bce, logits_rp_poisson, logits_tp_poisson = self.model_forward(batch)
         heads = batch["heads"]
-        if self.phase1_loss_fn == 'bce':
-            return {
-                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
-                "logits_rp": logits_rp_bce.detach().cpu(),
-                "logits_tp": logits_tp_bce.detach().cpu(),
-            }
-        elif self.phase1_loss_fn == 'poisson':
-            return {
-                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
-                "logits_rp": logits_rp_poisson.detach().cpu(),
-                "logits_tp": logits_tp_poisson.detach().cpu(),
-            }
-        elif self.phase1_loss_fn == 'negative_binomial':
-            # expected_count_rp = torch.exp(logits_rp_bce)
-            # expected_count_tp = torch.exp(logits_tp_bce)
-            expected_count_rp = logits_rp_bce
-            expected_count_tp = logits_tp_bce
-            return {
-                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
-                "logits_rp": expected_count_rp.detach().cpu(),
-                "logits_tp": expected_count_tp.detach().cpu(),
-            }
-        elif self.phase1_loss_fn == 'hurdletail':
-            prob_non_zero = torch.sigmoid(logits_tp_bce)
-            expected_count = prob_non_zero * torch.exp(logits_tp_poisson)
-            expected_count = torch.log(expected_count + 1e-10)  # log(0) safety
-            return {
-                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
-                "logits_rp": logits_rp_poisson.detach().cpu(),
-                "logits_tp": expected_count.detach().cpu(),
-            }
-        elif self.phase1_loss_fn == 'hurdlerelation':
-            prob_non_zero_rp = torch.sigmoid(logits_rp_bce)
-            expected_count_rp = prob_non_zero_rp * torch.exp(logits_rp_poisson)
-            expected_count_rp = torch.log(expected_count_rp + 1e-10)
-            return {
-                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
-                "logits_rp": expected_count_rp.detach().cpu(),
-                "logits_tp": logits_tp_poisson.detach().cpu(),
-            }
-        elif self.phase1_loss_fn == 'hurdleboth':
-            prob_non_zero_rp = torch.sigmoid(logits_rp_bce)
-            expected_count_rp = prob_non_zero_rp * torch.exp(logits_rp_poisson)
-            expected_count_rp = torch.log(expected_count_rp + 1e-10)
-            prob_non_zero_tp = torch.sigmoid(logits_tp_bce)
-            expected_count_tp = prob_non_zero_tp * torch.exp(logits_tp_poisson)
-            expected_count_tp = torch.log(expected_count_tp + 1e-10)
-            return {
-                "tuples": heads.detach().cpu().unsqueeze(1),   # Use 'tuples' key for compatibility with trainer (contains heads)
-                "logits_rp": expected_count_rp.detach().cpu(),
-                "logits_tp": expected_count_tp.detach().cpu(),
-            }
+        scores_rp, scores_tp = self.generate_scores(logits_rp_bce, logits_rp_poisson, logits_tp_bce, logits_tp_poisson)
+        return {
+            "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+            "scores_rp": scores_rp.detach().cpu(),
+            "scores_tp": scores_tp.detach().cpu(),
+        }

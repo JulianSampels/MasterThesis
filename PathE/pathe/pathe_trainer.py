@@ -55,11 +55,11 @@ def predict_all(trainer, model, loader, ckpt_path=None):
     outs = trainer.predict(model, dataloaders=pred_loader, ckpt_path=ckpt_path)
 
     tuples_all = torch.cat([o["tuples"].cpu() for o in outs], dim=0)
-    logits_all = torch.cat([o["logits_rp"].cpu() for o in outs], dim=0)
-    logits_tp_all = torch.cat([o["logits_tp"].cpu() for o in outs], dim=0)
+    scores_rp_all = torch.cat([o["scores_rp"].cpu() for o in outs], dim=0)
+    scores_tp_all = torch.cat([o["scores_tp"].cpu() for o in outs], dim=0)
     
     del outs, pred_loader
-    return tuples_all, logits_all, logits_tp_all
+    return tuples_all, scores_rp_all, scores_tp_all
 
 def create_and_run_training_exp_tuples(args):
     """
@@ -824,9 +824,9 @@ def create_and_run_training_exp_two_phases(args):
     # ---------------------------
     stageprint(f"Phase 1b: Predicting over all tuples and building candidates...")
 
-    tr_tuples_all, tr_logits_all, tr_logits_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
-    va_tuples_all, va_logits_all, va_logits_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
-    te_tuples_all, te_logits_all, te_logits_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
+    train_tuples_all, train_scores_rp_all, train_scores_tp_all = predict_all(trainer_t, pl_model_t, tr_loader_t, ckpt_path=tuple_ckpt)
+    valid_tuples_all, valid_scores_rp_all, valid_scores_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
+    test_tuples_all, test_scores_rp_all, test_scores_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
     # Instantiate candidate generator based on args.candidate_generator
     if args.candidate_generator == 'global':
@@ -843,9 +843,9 @@ def create_and_run_training_exp_two_phases(args):
         best_params_total, best_params_per_group = grid_search_candidates(
             candidate_generator,
             args, 
-            tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
-            va_tuples_all, va_logits_all, va_logits_tp_all, 
-            te_tuples_all, te_logits_all, te_logits_tp_all, 
+            train_tuples_all, train_scores_rp_all, train_scores_tp_all, 
+            valid_tuples_all, valid_scores_rp_all, valid_scores_tp_all, 
+            test_tuples_all, test_scores_rp_all, test_scores_tp_all, 
             train_triples, val_triples, test_triples, 
             train_set_t, valid_set_t, test_set_t
         )
@@ -854,9 +854,9 @@ def create_and_run_training_exp_two_phases(args):
         grid_search_candidate_sizes(
             candidate_generator,
             args, 
-            tr_tuples_all, tr_logits_all, tr_logits_tp_all, 
-            va_tuples_all, va_logits_all, va_logits_tp_all, 
-            te_tuples_all, te_logits_all, te_logits_tp_all, 
+            train_tuples_all, train_scores_rp_all, train_scores_tp_all, 
+            valid_tuples_all, valid_scores_rp_all, valid_scores_tp_all, 
+            test_tuples_all, test_scores_rp_all, test_scores_tp_all, 
             train_triples, val_triples, test_triples, 
             train_set_t, valid_set_t, test_set_t
         )
@@ -866,13 +866,13 @@ def create_and_run_training_exp_two_phases(args):
     num_groups_val = len(torch.unique(val_triples[:, args.group_strategy], dim=0))
     num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
 
-    candidates_train, _scores_train = candidate_generator.generate_candidates(tr_tuples_all, tr_logits_all, train_set_t.relation_maps, num_groups_train, logits_tp=tr_logits_tp_all)
-    candidates_val, _scores_val = candidate_generator.generate_candidates(va_tuples_all, va_logits_all, valid_set_t.relation_maps, num_groups_val, logits_tp=va_logits_tp_all)
-    candidates_test, _scores_test = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
+    candidates_train, _scores_train = candidate_generator.generate_candidates(train_tuples_all, train_scores_rp_all, train_set_t.relation_maps, num_groups_train, scores_tp=train_scores_tp_all)
+    candidates_val, _scores_val = candidate_generator.generate_candidates(valid_tuples_all, valid_scores_rp_all, valid_set_t.relation_maps, num_groups_val, scores_tp=valid_scores_tp_all)
+    candidates_test, _scores_test = candidate_generator.generate_candidates(test_tuples_all, test_scores_rp_all, test_set_t.relation_maps, num_groups_test, scores_tp=test_scores_tp_all)
 
-    del tr_tuples_all, tr_logits_all, tr_logits_tp_all
-    del va_tuples_all, va_logits_all, va_logits_tp_all
-    del te_tuples_all, te_logits_all, te_logits_tp_all
+    del train_tuples_all, train_scores_rp_all, train_scores_tp_all
+    del valid_tuples_all, valid_scores_rp_all, valid_scores_tp_all
+    del test_tuples_all, test_scores_rp_all, test_scores_tp_all
 
     # add true triples to train candidates (if not already present) to ensure all positives are included
     candidates_train = torch.unique(torch.cat([candidates_train, train_triples], dim=0), dim=0)

@@ -46,16 +46,16 @@ class BaseCandidateGenerator(ABC):
     @abstractmethod
     def generate_candidates(self,
         tuples: torch.Tensor,
-        logits_rp: torch.Tensor,
+        scores_rp: torch.Tensor,
         relation_maps: RelationMaps,
         num_groups: int,
-        logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+        scores_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate candidate triples from tuple predictions.
         
         Args:
             tuples: (N, 2) tensor with head entities in column 0
-            logits_rp: (N, R_total) tensor of relation logits
+            scores_rp: (N, R_total) tensor of relation logits
             relation_maps: RelationMaps object with original/inverse relation mappings
             
         Returns:
@@ -68,27 +68,27 @@ class BaseCandidateGenerator(ABC):
     # Helpers
     # -------------------------
     @staticmethod
-    def _aggregate_logits_per_head(tuples: torch.Tensor, logits_rp: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _aggregate_logits_per_head(tuples: torch.Tensor, scores_rp: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Aggregate (mean) relation logits for each unique head entity using torch_scatter.
         Args:
             tuples: (num_samples, 2) tensor with head entities in column 0 and relations in column 1
-            logits_rp: (num_samples, R_total) tensor of relation logits
+            scores_rp: (num_samples, R_total) tensor of relation logits
         Returns:
             unique_heads: (H,) long tensor of unique entity ids;
-            logits_rp_grouped: (H, R_total) mean logits per head
+            scores_rp_grouped: (H, R_total) mean logits per head
         """
         # 1. Collect unique head entities (local indexing)
         unique_heads, inverse_entity_indices = tuples[:, 0].unique(return_inverse=True, sorted=False)
         if unique_heads.size(0) == 0:
             return tuples.new_zeros((0, 3)), tuples.new_zeros((0,), dtype=torch.float32)
         # 2. Aggregate logits per local head index
-        # logits_rp has shape (num_samples, R_total); inverse_entity_indices maps each row to its head index
-        logits_rp_grouped = torch_scatter.scatter_mean(logits_rp, inverse_entity_indices, dim=0)
-        if logits_rp_grouped.shape != logits_rp_grouped.shape:
-            logger.warning(f"Needed to aggregated logit, this might be a bad sign as averaging over raw logits (before: {logits_rp.shape}, after: {logits_rp_grouped.shape})!")
-            # print(f"before: {logits_rp.shape}, after: {logits_rp_grouped.shape}")
-        return unique_heads, logits_rp_grouped
+        # scores_rp has shape (num_samples, R_total); inverse_entity_indices maps each row to its head index
+        scores_rp_grouped = torch_scatter.scatter_mean(scores_rp, inverse_entity_indices, dim=0)
+        if scores_rp_grouped.shape != scores_rp_grouped.shape:
+            logger.warning(f"Needed to aggregated logit, this might be a bad sign as averaging over raw logits (before: {scores_rp.shape}, after: {scores_rp_grouped.shape})!")
+            # print(f"before: {scores_rp.shape}, after: {scores_rp_grouped.shape}")
+        return unique_heads, scores_rp_grouped
 
 
     # -------------------------
@@ -512,10 +512,10 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
 
     def generate_candidates(self,
         tuples: torch.Tensor,
-        logits_rp: torch.Tensor,
+        scores_rp: torch.Tensor,
         relation_maps: RelationMaps,
         num_groups: int,
-        logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+        scores_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Efficiently generate candidate (head, relation, tail) triples and their joint probabilities
         for two-phase PathE training, using global top-k streaming to avoid OOM on large graphs.
@@ -534,7 +534,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         Args:
             tuples: (num_samples, 2) tensor, entity in col 0.
             relation_maps: RelationMaps object mapping original to inverse relations.
-            logits_rp: (num_samples, num_relations) tensor of per-sample relation logits.
+            scores_rp: (num_samples, num_relations) tensor of per-sample relation logits.
             num_groups: int, number of groups for candidate cap.
             p: Optional[float], global probability threshold for candidate filtering.
             q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
@@ -546,12 +546,12 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
             candidates: (N, 3) tensor of (head_id, relation_id, tail_id) triples.
             scores: (N,) tensor of joint probabilities for each candidate.
         """
-        assert logits_rp is not None, "logits_rp required."
+        assert scores_rp is not None, "scores_rp required."
 
         # Aggregate logits per unique head entity
-        entities, logits_rp_grouped = self._aggregate_logits_per_head(tuples, logits_rp)
+        entities, scores_rp_grouped = self._aggregate_logits_per_head(tuples, scores_rp)
         E = entities.size(0)
-        device = logits_rp_grouped.device
+        device = scores_rp_grouped.device
 
         # 3. Resolve original & inverse relation ids
         original_relations = relation_maps.original_relations_tensor.to(device)  # (R,)
@@ -559,8 +559,8 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         R = original_relations.size(0)
 
         # 4. Slice logits for original and inverse relation columns
-        head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
-        tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
+        head_logits_subset = scores_rp_grouped[:, original_relations]   # (E, R)
+        tail_logits_subset = scores_rp_grouped[:, inverse_relations]    # (E, R)
 
         # # Apply softplus for Poisson loss
         # if self.phase1_loss_fn == "poisson":
@@ -642,7 +642,7 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
 
     def _aggregate_logits_per_entity(tuples_2col: torch.Tensor,
-                                     logits_rp: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                                     scores_rp: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Aggregate (mean) relation logits for each unique head entity using torch_scatter.
         Returns:
@@ -651,16 +651,16 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
         """
         heads = tuples_2col[:, 0]
         unique_heads, inverse = heads.unique(return_inverse=True, sorted=False)
-        # logits_rp has shape (num_samples, R_total); inverse maps each row to its head index
-        agg_logits = torch_scatter.scatter_mean(logits_rp, inverse, dim=0)
+        # scores_rp has shape (num_samples, R_total); inverse maps each row to its head index
+        agg_logits = torch_scatter.scatter_mean(scores_rp, inverse, dim=0)
         return unique_heads, agg_logits
 
     def generate_candidates(self, 
             tuples_all: torch.Tensor,
-            logits_rp_all: torch.Tensor,
+            scores_rp_all: torch.Tensor,
             relation_maps: RelationMaps,
             num_groups: int,
-            logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+            scores_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         For each head entity h present in tuples_all:
            Score (h, r, t) = P(r|h) * P(r^{-1}|t)
@@ -668,8 +668,8 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
         Only original relations are considered (relation_maps.original_relation_to_inverse_relation keys).
         """
         # 1. Aggregate logits per entity (treat any entity that appears as head)
-        entity_ids, logits_rp_grouped = self._aggregate_logits_per_head(tuples_all, logits_rp_all)  # (E',), (E', R_total)
-        device = logits_rp_grouped.device
+        entity_ids, scores_rp_grouped = self._aggregate_logits_per_head(tuples_all, scores_rp_all)  # (E',), (E', R_total)
+        device = scores_rp_grouped.device
         
         # 2. Prepare relation mappings
         orig2inv = relation_maps.original_relation_to_inverse_relation
@@ -682,8 +682,8 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
 
 
         # 4. Slice logits for originals & inverses then softmax separately
-        logits_orig = logits_rp_grouped[:, original_relation_ids]          # (E', R)
-        logits_inv  = logits_rp_grouped[:, inverse_relation_ids]           # (E', R)
+        logits_orig = scores_rp_grouped[:, original_relation_ids]          # (E', R)
+        logits_inv  = scores_rp_grouped[:, inverse_relation_ids]           # (E', R)
 
         # # Apply softplus for Poisson loss
         # if self.phase1_loss_fn == "poisson":
@@ -922,10 +922,10 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
     def generate_candidates(self,
         tuples: torch.Tensor,
-        logits_rp: torch.Tensor,
+        scores_rp: torch.Tensor,
         relation_maps: RelationMaps,
         num_groups: int,
-        logits_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+        scores_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Efficiently generate candidate (head, relation, tail) triples and their joint probabilities
         for two-phase PathE training, using global top-k streaming to avoid OOM on large graphs.
@@ -946,8 +946,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         Args:
             tuples: (num_samples, 2) tensor, entity in col 0.
             relation_maps: RelationMaps object mapping original to inverse relations.
-            logits_rp: (num_samples, num_relations) tensor of per-sample relation logits.
-            logits_tp: (num_samples, num_entities) tensor of per-sample tail logits (required for tail prediction).
+            scores_rp: (num_samples, num_relations) tensor of per-sample relation logits.
+            scores_tp: (num_samples, num_entities) tensor of per-sample tail logits (required for tail prediction).
             num_groups: int, number of groups for candidate cap.
             p: Optional[float], global probability threshold for candidate filtering.
             q: Optional[float] in [0,1), quantile threshold for global top-k (keeps top (1-q) fraction).
@@ -960,18 +960,18 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
             candidates: (N, 3) tensor of (head_id, relation_id, tail_id) triples.
             scores: (N,) tensor of joint probabilities for each candidate.
         """
-        assert logits_rp is not None, "logits_rp required."
-        assert logits_tp is not None, "logits_tp required for tail prediction."
+        assert scores_rp is not None, "scores_rp required."
+        assert scores_tp is not None, "scores_tp required for tail prediction."
 
         # Aggregate logits per unique head entity
-        entities, logits_rp_grouped = self._aggregate_logits_per_head(tuples, logits_rp)
-        _, logits_tp_grouped = self._aggregate_logits_per_head(tuples, logits_tp)  # Aggregate tail logits
+        entities, scores_rp_grouped = self._aggregate_logits_per_head(tuples, scores_rp)
+        _, scores_tp_grouped = self._aggregate_logits_per_head(tuples, scores_tp)  # Aggregate tail logits
         E = entities.size(0)
 
         # Restrict to known entities
-        logits_tp_grouped = logits_tp_grouped[:, entities]
+        scores_tp_grouped = scores_tp_grouped[:, entities]
 
-        device = logits_rp_grouped.device
+        device = scores_rp_grouped.device
 
         # 3. Resolve original & inverse relation ids
         original_relations = relation_maps.original_relations_tensor.to(device)  # (R,)
@@ -979,34 +979,34 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         R = original_relations.size(0)
 
         # 4. Slice logits for original and inverse relation columns
-        head_logits_subset = logits_rp_grouped[:, original_relations]   # (E, R)
-        tail_logits_subset = logits_rp_grouped[:, inverse_relations]    # (E, R)
+        head_logits_subset = scores_rp_grouped[:, original_relations]   # (E, R)
+        tail_logits_subset = scores_rp_grouped[:, inverse_relations]    # (E, R)
 
         # if self.phase1_loss_fn == "poisson":
         #     head_logits_subset = torch.exp(head_logits_subset)
         #     tail_logits_subset = torch.exp(tail_logits_subset)
-        #     logits_tp_grouped = torch.exp(logits_tp_grouped)
+        #     scores_tp_grouped = torch.exp(scores_tp_grouped)
 
         # 5. Calibrated log-probabilities or raw logits based on normalize_mode
         if self.normalize_mode == "per_head":
             log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=1).to(torch.float32).cpu()                 # (E, R)
             log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=1).to(torch.float32).cpu().transpose(0,1) # (R, E)
-            log_p_t_given_h_2d = torch.log_softmax(logits_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()          # (E, E)
+            log_p_t_given_h_2d = torch.log_softmax(scores_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()          # (E, E)
         elif self.normalize_mode == "global_joint":
             z_hr = (head_logits_subset / self.temperature).to(torch.float32).cpu()             # (E, R)
             log_p_head_2d = torch.log_softmax(z_hr.reshape(-1), dim=0).reshape(E, R)          # joint over (h,r)
             z_tr = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1)  # (R, E)
             log_p_tail_2d = torch.log_softmax(z_tr.reshape(-1), dim=0).reshape(R, E)          # joint over (r,t)
-            z_ht = (logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
+            z_ht = (scores_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
             log_p_t_given_h_2d = torch.log_softmax(z_ht.reshape(-1), dim=0).reshape(E, E)     # joint over (h,t)
         elif self.normalize_mode == "per_relation":
             log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=0).to(torch.float32).cpu()                 # (E, R)
             log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=0).to(torch.float32).cpu().transpose(0,1) # (R, E)
-            log_p_t_given_h_2d = torch.log_softmax(logits_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()          # (E, E)
+            log_p_t_given_h_2d = torch.log_softmax(scores_tp_grouped / self.temperature, dim=1).to(torch.float32).cpu()          # (E, E)
         else:  # "none"
             log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32).cpu()                 # (E, R)
             log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).cpu().transpose(0,1) # (R, E)
-            log_p_t_given_h_2d = (logits_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
+            log_p_t_given_h_2d = (scores_tp_grouped / self.temperature).to(torch.float32).cpu()             # (E, E)
 
         # Derive effective cap from q first (before any threshold). This bounds the search space.
         total = int(E) * int(R) * int(E)
@@ -1056,7 +1056,7 @@ from . import triple_lib
 import itertools
 from .figures import create_coverage_vs_size_plot, create_heatmaps
 
-def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
+def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_scores_tp_all, va_tuples_all, va_logits_all, va_scores_tp_all, te_tuples_all, te_logits_all, te_scores_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
     Perform grid search over alpha, beta, temperature for CandidateGeneratorGlobalWithTail
     to maximize total coverage and average recall per group on the test set.
@@ -1101,7 +1101,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
         candidate_generator.temperature = temp
         
         # Generate candidates only for test set
-        candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, logits_tp=te_logits_tp_all)
+        candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, scores_tp=te_scores_tp_all)
         
         # Compute total coverage on test
         total_cov, _ = BaseCandidateGenerator.analyze_total_coverage(candidates_test, test_triples, name=f"alpha={alpha}_beta={beta}_temp={temp}", print_results=False)
@@ -1144,7 +1144,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
     
     return best_params_total, best_params_per_group
 
-def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_logits_tp_all, va_tuples_all, va_logits_all, va_logits_tp_all, te_tuples_all, te_logits_all, te_logits_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
+def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_scores_tp_all, va_tuples_all, va_logits_all, va_scores_tp_all, te_tuples_all, te_logits_all, te_scores_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
     Perform grid search over per_group_cap (candidate sizes) for CandidateGeneratorGlobalWithTail
     to analyze total coverage and average recall per group on the test set.
@@ -1183,7 +1183,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
         # Manually set per_group_cap
         candidate_generator.per_group_cap = largest_size
         # The returned candidates from global generators are sorted by score.
-        all_candidates, all_scores = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, te_logits_tp_all)
+        all_candidates, all_scores = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, te_scores_tp_all)
         
         # Ensure candidates are sorted by scores (descending) to guarantee order
         sorted_indices = torch.argsort(all_scores, descending=True)
@@ -1224,7 +1224,7 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
             candidate_generator.per_group_cap = size
             
             # Generate candidates for test set
-            candidates, scores = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, te_logits_tp_all)
+            candidates, scores = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, te_scores_tp_all)
             
             # Ensure candidates are sorted by scores (descending) to guarantee order
             sorted_indices = torch.argsort(scores, descending=True)
