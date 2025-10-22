@@ -869,8 +869,8 @@ def plot_relation_count_dispersion(triples, save_dir="./figures", filename="rela
     plt.legend(loc='upper right')
     plt.grid(True, alpha=0.3)
     plt.axis('equal')
-    plt.xlim(0, 10)
-    plt.ylim(0, 10)
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
     # plt.xscale('log')
     # plt.yscale('log')
     
