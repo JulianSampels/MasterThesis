@@ -11,6 +11,7 @@ from typing import Callable
 
 import torch
 torch.set_float32_matmul_precision('high') # Set high precision for matrix multiplications for fast training on tensor cores
+import pandas as pd
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
@@ -345,11 +346,8 @@ def create_and_run_training_exp_tuples(args):
                              ckpt_path=args.tuple_checkpoint)[0]
     print("\nTesting results: {}".format(test_dict))
 
-    # results_dict = {**valid_dict, **test_dict}
-    # results_dict.update(namespace_to_dict(args))  # +hparams
-    # fname = os.path.join(args.log_dir, "results_summary.csv")
-    # write_csv(results_dict, fname)
-    # results_raw = pd.read_csv(fname)
+    results_dict = test_dict
+    pd.DataFrame([results_dict]).to_csv(os.path.join(tb_logger.log_dir, "results_summary.csv"), index=False)
 
     # return results_dict, results_raw
 
@@ -604,11 +602,8 @@ def create_and_run_training_exp_triples(args):
                              ckpt_path=args.triple_checkpoint)[0]
     print("\nTesting results: {}".format(test_dict))
 
-    # results_dict = {**valid_dict, **test_dict}
-    # results_dict.update(namespace_to_dict(args))  # +hparams
-    # fname = os.path.join(args.log_dir, "results_summary.csv")
-    # write_csv(results_dict, fname)
-    # results_raw = pd.read_csv(fname)
+    results_dict = test_dict
+    pd.DataFrame([results_dict]).to_csv(os.path.join(tb_logger.log_dir, "results_summary.csv"), index=False)
 
     # return results_dict, results_raw
 
@@ -817,6 +812,9 @@ def create_and_run_training_exp_two_phases(args):
             ckpt_path=tuple_ckpt
         )[0]
         print("\nTesting results (tuple model): {}".format(tuple_test_dict))
+
+        results_dict = tuple_test_dict
+        pd.DataFrame([results_dict]).to_csv(os.path.join(tb_logger_t.log_dir, "results_summary.csv"), index=False)
 
     # ---------------------------
     # Phase 1b: Global candidate generation (predict over ALL tuples)
@@ -1066,6 +1064,9 @@ def create_and_run_training_exp_two_phases(args):
             ckpt_path=triple_ckpt
         )[0]
         print("\nFinal testing results (triple model): {}".format(test_dict))
+
+        results_dict = test_dict
+        pd.DataFrame([results_dict]).to_csv(os.path.join(tb_logger_tri.log_dir, "results_summary.csv"), index=False)
 
     # Cleanup before exit
     print("Cleaning up resources...")
