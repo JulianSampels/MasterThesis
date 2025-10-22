@@ -312,7 +312,7 @@ class BaseCandidateGenerator(ABC):
             return self.head_block_size
 
         # Adaptive head_block_size based on number of unique entities
-        memory_budget_bytes = int(1e8)  # 250MB per worker (adjust based on your RAM/GPU)
+        memory_budget_bytes = int(2.5e8)  # 250MB per worker (adjust based on your RAM/GPU)
         bytes_per_float = 4
         bytes_per_long = 8
 
