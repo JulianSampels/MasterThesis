@@ -1514,30 +1514,30 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # Return negative log-likelihood, averaged over batch
         return -log_likelihood.mean()
 
-    def compute_phase1_losses(self, logits_rp_bce, logits_rp_poisson, logits_tail_bce, logits_tail_poisson, relation_count_matrix, entity_count_matrix, phase1_loss_fn):
+    def compute_phase1_losses(self, logits1_rp, logits2_rp, logits1_tail, logits2_tail, relation_count_matrix, entity_count_matrix, phase1_loss_fn):
         """
         Centralized function to compute phase 1 losses (relation and tail prediction) based on the loss function type.
         For negative_binomial, reuse logits_rp_bce as log_mu_rp, logits_rp_poisson as log_alpha_rp,
         logits_tail_bce as log_mu_tp, logits_tail_poisson as log_alpha_tp.
         """
         if phase1_loss_fn == 'bce':
-            rp_loss = self.compute_rp_bce_loss(logits_rp_bce, relation_count_matrix)
-            tp_loss = self.compute_tail_bce_loss(logits_tail_bce, entity_count_matrix)
+            rp_loss = self.compute_rp_bce_loss(logits1_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_bce_loss(logits1_tail, entity_count_matrix)
         elif phase1_loss_fn == 'poisson':
-            rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, entity_count_matrix)
+            rp_loss = self.compute_rp_poisson_loss(logits2_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_poisson_loss(logits2_tail, entity_count_matrix)
         elif phase1_loss_fn == 'negative_binomial':
-            rp_loss = self.compute_rp_negative_binomial_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_negative_binomial_loss(logits_tail_bce, logits_tail_poisson, entity_count_matrix)
+            rp_loss = self.compute_rp_negative_binomial_loss(logits1_rp, logits2_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_negative_binomial_loss(logits1_tail, logits2_tail, entity_count_matrix)
         elif phase1_loss_fn == 'hurdletail':
-            rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, entity_count_matrix)
+            rp_loss = self.compute_rp_poisson_loss(logits2_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_hurdle_loss(logits1_tail, logits2_tail, entity_count_matrix)
         elif phase1_loss_fn == 'hurdlerelation':
-            rp_loss = self.compute_rp_hurdle_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, entity_count_matrix)
+            rp_loss = self.compute_rp_hurdle_loss(logits1_rp, logits2_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_poisson_loss(logits2_tail, entity_count_matrix)
         elif phase1_loss_fn == 'hurdleboth':
-            rp_loss = self.compute_rp_hurdle_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, entity_count_matrix)
+            rp_loss = self.compute_rp_hurdle_loss(logits1_rp, logits2_rp, relation_count_matrix)
+            tp_loss = self.compute_tail_hurdle_loss(logits1_tail, logits2_tail, entity_count_matrix)
         else:
             raise ValueError(f"Invalid phase1_loss_fn: {phase1_loss_fn}. Must be 'bce', 'poisson', 'hurdle', 'hurdlerelation', or 'hurdleboth'.")
         return rp_loss, tp_loss
