@@ -469,44 +469,65 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Submit jobs
         worker_function = partial(CandidateGeneratorGlobal._process_chunk, log_p_head_2d=log_p_head_2d, log_p_tail_2d=log_p_tail_2d, alpha=self.alpha, k=k_total, E=E, R=R, head_block_size=head_block_size)
         results_iterator = self.pool.imap_unordered(worker_function, chunks)
-        # Collect all results first
-        all_vals_chunks = []
-        all_r_chunks = []
-        all_h_chunks = []
-        all_t_chunks = []
-        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Collecting parallel chunks", unit="chunk", leave=False, total=len(chunks)):
-            all_vals_chunks.append(vals_chunk)
-            all_r_chunks.append(r_idx)
-            all_h_chunks.append(h_idx)
-            all_t_chunks.append(t_idx)
-
-        # Concatenate all chunks at once
-        if all_vals_chunks:
-            cand_vals = torch.cat(all_vals_chunks, dim=0)
-            del all_vals_chunks
-            cand_r = torch.cat(all_r_chunks, dim=0)
-            del all_r_chunks
-            cand_h = torch.cat(all_h_chunks, dim=0)
-            del all_h_chunks
-            cand_t = torch.cat(all_t_chunks, dim=0)
-            del all_t_chunks
+        # Process results in batches to control memory usage
+        batch_size = max(16, len(chunks) // 2)  # Concatenate when half of chunks are collected efficient for cpu with high core count
+        collected_chunks = 0
+        batch_vals = []
+        batch_r = []
+        batch_h = []
+        batch_t = []
+        
+        for vals_chunk, r_chunk, h_chunk, t_chunk in tqdm(results_iterator, desc="Processing parallel chunks in batches", unit="chunk", leave=False, total=len(chunks)):
+            batch_vals.append(vals_chunk)
+            batch_r.append(r_chunk)
+            batch_h.append(h_chunk)
+            batch_t.append(t_chunk)
+            collected_chunks += 1
             
-            # Single global top-k
-            if cand_vals.numel() > k_total:
-                vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
-                top_vals[:k_total] = vtop
-                top_r[:k_total] = cand_r[order]
-                top_h[:k_total] = cand_h[order]
-                top_t[:k_total] = cand_t[order]
-                filled = k_total
-            else:
-                top_vals[:cand_vals.numel()] = cand_vals
-                top_r[:cand_vals.numel()] = cand_r
-                top_h[:cand_vals.numel()] = cand_h
-                top_t[:cand_vals.numel()] = cand_t
-                filled = cand_vals.numel()
-        else:
-            filled = 0
+            if len(batch_vals) >= batch_size or collected_chunks == len(chunks):
+                # Concatenate the current batch
+                cand_vals = torch.cat(batch_vals, dim=0)
+                cand_r = torch.cat(batch_r, dim=0)
+                cand_h = torch.cat(batch_h, dim=0)
+                cand_t = torch.cat(batch_t, dim=0)
+                
+                # Merge batch into global top-k
+                if filled == 0:
+                    take = min(k_total, cand_vals.numel())
+                    top_vals[:take] = cand_vals[:take]
+                    top_r[:take] = cand_r[:take]
+                    top_h[:take] = cand_h[:take]
+                    top_t[:take] = cand_t[:take]
+                    filled = take
+                else:
+                    global_cand_vals = torch.cat([top_vals[:filled], cand_vals], dim=0)
+                    global_cand_r = torch.cat([top_r[:filled], cand_r], dim=0)
+                    global_cand_h = torch.cat([top_h[:filled], cand_h], dim=0)
+                    global_cand_t = torch.cat([top_t[:filled], cand_t], dim=0)
+                    if global_cand_vals.numel() > k_total:
+                        vtop, order = torch.topk(global_cand_vals, k=k_total, largest=True)
+                        top_vals[:k_total] = vtop
+                        top_r[:k_total] = global_cand_r[order]
+                        top_h[:k_total] = global_cand_h[order]
+                        top_t[:k_total] = global_cand_t[order]
+                        filled = k_total
+                    else:
+                        top_vals[:global_cand_vals.numel()] = global_cand_vals
+                        top_r[:global_cand_vals.numel()] = global_cand_r
+                        top_h[:global_cand_vals.numel()] = global_cand_h
+                        top_t[:global_cand_vals.numel()] = global_cand_t
+                        filled = global_cand_vals.numel()
+                
+                # Clear the batch
+                batch_vals.clear()
+                batch_r.clear()
+                batch_h.clear()
+                batch_t.clear()
+                batch_size = max(batch_size // 2, 16)
+        
+        # All chunks should be processed in batches; raise error if any remaining
+        if batch_vals:
+            raise ValueError(f"Some chunks ({len(batch_vals)}) were not processed in batches. Batch size was {batch_size}, total chunks {len(chunks)}. This should not happen.")
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
@@ -879,44 +900,65 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
 
         worker_function = partial(CandidateGeneratorGlobalWithTail._process_chunk, log_p_head_2d=log_p_head_2d, log_p_tail_2d=log_p_tail_2d, log_p_t_given_h_2d=log_p_t_given_h_2d, alpha=self.alpha, beta=self.beta, k=k_total, E=E, R=R, head_block_size=head_block_size)
         results_iterator = self.pool.imap_unordered(worker_function, chunks)
-        # Collect all results first
-        all_vals_chunks = []
-        all_r_chunks = []
-        all_h_chunks = []
-        all_t_chunks = []
-        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Collecting parallel chunks", unit="chunk", leave=False, total=len(chunks)):
-            all_vals_chunks.append(vals_chunk)
-            all_r_chunks.append(r_idx)
-            all_h_chunks.append(h_idx)
-            all_t_chunks.append(t_idx)
-
-        # Concatenate all chunks at once
-        if all_vals_chunks:
-            cand_vals = torch.cat(all_vals_chunks, dim=0)
-            del all_vals_chunks
-            cand_r = torch.cat(all_r_chunks, dim=0)
-            del all_r_chunks
-            cand_h = torch.cat(all_h_chunks, dim=0)
-            del all_h_chunks
-            cand_t = torch.cat(all_t_chunks, dim=0)
-            del all_t_chunks
-
-            # Single global top-k
-            if cand_vals.numel() > k_total:
-                vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
-                top_vals[:k_total] = vtop
-                top_r[:k_total] = cand_r[order]
-                top_h[:k_total] = cand_h[order]
-                top_t[:k_total] = cand_t[order]
-                filled = k_total
-            else:
-                top_vals[:cand_vals.numel()] = cand_vals
-                top_r[:cand_vals.numel()] = cand_r
-                top_h[:cand_vals.numel()] = cand_h
-                top_t[:cand_vals.numel()] = cand_t
-                filled = cand_vals.numel()
-        else:
-            filled = 0
+        # Process results in batches to control memory usage
+        batch_size = max(16, len(chunks) // 2)  # Concatenate when half of chunks are collected efficient for cpu with high core count
+        collected_chunks = 0
+        batch_vals = []
+        batch_r = []
+        batch_h = []
+        batch_t = []
+        
+        for vals_chunk, r_idx, h_idx, t_idx in tqdm(results_iterator, desc="Processing parallel chunks in batches", unit="chunk", leave=False, total=len(chunks)):
+            batch_vals.append(vals_chunk)
+            batch_r.append(r_idx)
+            batch_h.append(h_idx)
+            batch_t.append(t_idx)
+            collected_chunks += 1
+            
+            if len(batch_vals) >= batch_size or collected_chunks == len(chunks):
+                # Concatenate the current batch
+                cand_vals = torch.cat(batch_vals, dim=0)
+                cand_r = torch.cat(batch_r, dim=0)
+                cand_h = torch.cat(batch_h, dim=0)
+                cand_t = torch.cat(batch_t, dim=0)
+                
+                # Merge batch into global top-k
+                if filled == 0:
+                    take = min(k_total, cand_vals.numel())
+                    top_vals[:take] = cand_vals[:take]
+                    top_r[:take] = cand_r[:take]
+                    top_h[:take] = cand_h[:take]
+                    top_t[:take] = cand_t[:take]
+                    filled = take
+                else:
+                    global_cand_vals = torch.cat([top_vals[:filled], cand_vals], dim=0)
+                    global_cand_r = torch.cat([top_r[:filled], cand_r], dim=0)
+                    global_cand_h = torch.cat([top_h[:filled], cand_h], dim=0)
+                    global_cand_t = torch.cat([top_t[:filled], cand_t], dim=0)
+                    if global_cand_vals.numel() > k_total:
+                        vtop, order = torch.topk(global_cand_vals, k=k_total, largest=True)
+                        top_vals[:k_total] = vtop
+                        top_r[:k_total] = global_cand_r[order]
+                        top_h[:k_total] = global_cand_h[order]
+                        top_t[:k_total] = global_cand_t[order]
+                        filled = k_total
+                    else:
+                        top_vals[:global_cand_vals.numel()] = global_cand_vals
+                        top_r[:global_cand_vals.numel()] = global_cand_r
+                        top_h[:global_cand_vals.numel()] = global_cand_h
+                        top_t[:global_cand_vals.numel()] = global_cand_t
+                        filled = global_cand_vals.numel()
+                
+                # Clear the batch
+                batch_vals.clear()
+                batch_r.clear()
+                batch_h.clear()
+                batch_t.clear()
+                batch_size = max(batch_size // 2, 16)
+        
+        # All chunks should be processed in batches; raise error if any remaining
+        if batch_vals:
+            raise ValueError(f"Some chunks ({len(batch_vals)}) were not processed in batches. Batch size was {batch_size}, total chunks {len(chunks)}. This should not happen.")
 
         return top_vals[:filled], top_r[:filled], top_h[:filled], top_t[:filled]
 
