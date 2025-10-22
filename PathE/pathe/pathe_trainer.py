@@ -20,7 +20,7 @@ import gc
 
 from .candidates import *
 
-from . import triple_lib
+from .pathe_ranking_metrics import get_metric_mode
 from .pather_models import PathEModelTriples, PathEModelTuples
 from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset, UniqueHeadEntityMultiPathDataset, create_vocabulary_from_relations
 from .data_utils import collate_multipaths, load_triple_tensors, \
@@ -278,7 +278,7 @@ def create_and_run_training_exp_tuples(args):
         tb_logger.log_hyperparams(args)
 
     # Creating callbacks for checkpointing and early stopping
-    mode = "min" if args.tuple_monitor.endswith("loss") else "max"
+    mode = get_metric_mode(pl_model, args.tuple_monitor)
     checkpoint_callbk = ModelCheckpoint(
         monitor=args.tuple_monitor, dirpath=args.checkpoint_dir, mode=mode,
         filename=model_name + f"-tuple-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
@@ -546,7 +546,7 @@ def create_and_run_training_exp_triples(args):
         tb_logger.log_hyperparams(args)
 
     # Creating callbacks for checkpointing and early stopping
-    mode = "min" if args.triple_monitor.endswith("loss") else "max"
+    mode = get_metric_mode(pl_model, args.triple_monitor)
     checkpoint_callbk = ModelCheckpoint(
         monitor=args.triple_monitor, dirpath=args.checkpoint_dir, mode=mode,
         filename=model_name + f"-triple-{{epoch}}-{{{args.triple_monitor}:.2f}}",
@@ -755,7 +755,7 @@ def create_and_run_training_exp_two_phases(args):
         tb_logger_t.log_hyperparams(args)
 
     # Creating callbacks for checkpointing and early stopping
-    mode = "min" if args.tuple_monitor.endswith("loss") else "max"
+    mode = get_metric_mode(pl_model_t, args.tuple_monitor)
     checkpoint_callbk_t = ModelCheckpoint(
         monitor=args.tuple_monitor, dirpath=args.checkpoint_dir, mode=mode,
         filename=model_name + f"-tuple-{{epoch}}-{{{args.tuple_monitor}:.2f}}",
@@ -1013,7 +1013,7 @@ def create_and_run_training_exp_two_phases(args):
         wb_logger_tri = None
         tb_logger_tri.log_hyperparams(args_phase3)
 
-    mode = "min" if args_phase3.triple_monitor.endswith("loss") else "max"
+    mode = get_metric_mode(pl_model_tri, args_phase3.triple_monitor)
     checkpoint_callbk_tri = ModelCheckpoint(
         monitor=args_phase3.triple_monitor, dirpath=args_phase3.checkpoint_dir, mode=mode,
         filename=model_name + f"-triple-{{epoch}}-{{{args_phase3.triple_monitor}:.2f}}",

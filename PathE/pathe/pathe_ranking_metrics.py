@@ -105,6 +105,7 @@ class RelationMRRTuples(RelationMRRTriples):
     """
     A torchmetric implementation of the Mean Reciprocal Rank for relation prediction with tuples (head, relation).
     """
+    higher_is_better = True
     def __init__(self, filter_dict: Dict):
         """
         The constructor
@@ -419,6 +420,7 @@ class RelationHitsAtKTuples(RelationHitsAtKTriples):
     """
     A torchmetric implementation of Hits@K for relation prediction with tuples (head, relation).
     """
+    higher_is_better = True
     def __init__(self, filter_dict: Dict, k: int):
         super().__init__(filter_dict, k)
 
@@ -632,6 +634,7 @@ class EntityMRRTuples(EntityMRRTriples):
     """
     A torchmetric implementation of the Mean Reciprocal Rank for entity prediction with tuples.
     """
+    higher_is_better = True
     def __init__(self):
         raise NotImplementedError("EntityMRRTuples was not tested yet. And is perhaps not even needed.")
         super().__init__()
@@ -823,6 +826,8 @@ class EntityHitsAtKTuples(EntityHitsAtKTriples):
     """
     A torchmetric implementation of Hits@K for entity prediction with tuples.
     """
+    higher_is_better = True
+
     def __init__(self, k: int):
         raise NotImplementedError("EntityHitsAtKTuples was not tested yet. And is perhaps not even needed.")
         super().__init__(k)
@@ -1754,3 +1759,32 @@ class CountRMSE(Metric):
         Compute the Root Mean Squared Error.
         """
         return torch.sqrt(self.squared_error / self.total.clamp_min(1))
+
+def get_metric_mode(model, monitor):
+    """
+    Determine the optimization mode ('min' or 'max') based on the monitor name and model's metric attributes.
+    """
+    metric_map = {
+        "valid_mrr": getattr(model, 'val_relationMRR', None),
+        "valid_link_mrr": getattr(model, 'val_linkMRR', None),
+        "valid_tail_mrr": getattr(model, 'val_tailMRR', None),
+        "valid_relation_rmse": getattr(model, 'val_relationRMSE', None),
+        "valid_tail_rmse": getattr(model, 'val_tailRMSE', None),
+        "valid_link_hits@1": getattr(model, 'val_linkHitsAt1', None),
+        "valid_link_hits@3": getattr(model, 'val_linkHitsAt3', None),
+        "valid_link_hits@5": getattr(model, 'val_linkHitsAt5', None),
+        "valid_link_hits@10": getattr(model, 'val_linkHitsAt10', None),
+        "valid_rp_loss": getattr(model, 'val_rp_loss', None),
+        "valid_tp_loss": getattr(model, 'val_tp_loss', None),
+        "valid_total_loss": getattr(model, 'val_total_loss', None),
+        "valid_lp_loss": getattr(model, 'val_lp_loss', None),
+        "valid_link_recall@5_perGroup": getattr(model, 'val_linkRecallAt5PerGroup', None),
+        "valid_link_recall@10_perGroup": getattr(model, 'val_linkRecallAt10PerGroup', None),
+        # Add more monitors as needed
+    }
+    metric = metric_map.get(monitor)
+    if metric:
+        return "max" if metric.higher_is_better else "min"
+    else:
+        # Fallback for loss metrics or unknown monitors
+        return "min" if monitor.endswith("loss") else "max"
