@@ -15,7 +15,7 @@ import torch_scatter
 
 from .pathe_ranking_metrics import (RelationHitsAtKUniqueHeads, RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples, CandidateMRRPerSampleFiltered, 
-                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, RelationMRRUniqueHeads, TailHitsAtKTuples, TailMRRTuples)
+                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, RelationMRRUniqueHeads, TailHitsAtKTuples, TailMRRTuples, CountRMSE)
 
 from .pather_models import PathEModelTuples
 
@@ -1317,6 +1317,12 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.test_relationHitsAt3 = RelationHitsAtKUniqueHeads(k=3, filter_global_relation_count_matrix=self.global_relation_count_matrix)
         self.test_relationHitsAt5 = RelationHitsAtKUniqueHeads(k=5, filter_global_relation_count_matrix=self.global_relation_count_matrix)
         self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        
+        # RMSE metrics for count prediction (only used when phase1_loss_fn is a counting function)
+        self.val_relationRMSE = CountRMSE(is_log_output=True)
+        self.val_tailRMSE = CountRMSE(is_log_output=True)
+        self.test_relationRMSE = CountRMSE(is_log_output=True)
+        self.test_tailRMSE = CountRMSE(is_log_output=True)
     
     def compute_rp_bce_loss(self, logits, relation_count_matrix: torch.Tensor):
         """
@@ -1619,33 +1625,45 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
 
         # Update metrics
         scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
-        self.val_relationMRR.update(heads, scores_rp, relation_count_matrix)
-        self.val_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
-        self.val_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
-        self.val_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
-        self.val_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
+        # Update RMSE metrics for counting functions
+        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
+            self.val_relationRMSE.update(scores_rp, relation_count_matrix)
+            self.val_tailRMSE.update(scores_tp, entity_count_matrix)
+        else:
+            self.val_relationMRR.update(heads, scores_rp, relation_count_matrix)
+            self.val_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
+            self.val_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
+            self.val_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
+            self.val_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
-        self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
-        self.val_tailHitsAt1.update(heads, scores_tp, entity_count_matrix)
-        self.val_tailHitsAt3.update(heads, scores_tp, entity_count_matrix)
-        self.val_tailHitsAt5.update(heads, scores_tp, entity_count_matrix)
-        self.val_tailHitsAt10.update(heads, scores_tp, entity_count_matrix)
+            self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
+            self.val_tailHitsAt1.update(heads, scores_tp, entity_count_matrix)
+            self.val_tailHitsAt3.update(heads, scores_tp, entity_count_matrix)
+            self.val_tailHitsAt5.update(heads, scores_tp, entity_count_matrix)
+            self.val_tailHitsAt10.update(heads, scores_tp, entity_count_matrix)
+
 
     @torch.no_grad()
     def validation_epoch_end(self, outputs):
         # Log relation metrics (torchmetrics computes and resets them automatically)
-        self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
-        self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
-        self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
-        self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
+        # Log RMSE metrics for counting functions
+        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
+            self.log("valid_relation_rmse", self.val_relationRMSE, on_step=False, on_epoch=True, prog_bar=True)
+            self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=True)
+        else:
+            self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
+            self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
+            self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
+            self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
+            self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
+            
+            # Log tail metrics
+            self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
+            self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
+            self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
+            self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
+            self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
         
-        # Log tail metrics
-        self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
-        self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
-        self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
-        self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
         print()
 
         # Step schedulers if in manual optimization mode
@@ -1673,34 +1691,44 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
 
         # Update metrics
         scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
-        self.test_relationMRR.update(heads, scores_rp, relation_count_matrix)
-        self.test_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
-        self.test_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
-        self.test_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
-        self.test_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
+        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
+            self.test_relationRMSE.update(logits_rp2, relation_count_matrix)
+            self.test_tailRMSE.update(logits_tail2, entity_count_matrix)
+        else:
+            self.test_relationMRR.update(heads, scores_rp, relation_count_matrix)
+            self.test_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
+            self.test_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
+            self.test_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
+            self.test_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
-        true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
-        self.test_tailMRR.update(heads, scores_tp, true_tails)
-        self.test_tailHitsAt1.update(heads, scores_tp, true_tails)
-        self.test_tailHitsAt3.update(heads, scores_tp, true_tails)
-        self.test_tailHitsAt5.update(heads, scores_tp, true_tails)
-        self.test_tailHitsAt10.update(heads, scores_tp, true_tails)
+            true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
+            self.test_tailMRR.update(heads, scores_tp, true_tails)
+            self.test_tailHitsAt1.update(heads, scores_tp, true_tails)
+            self.test_tailHitsAt3.update(heads, scores_tp, true_tails)
+            self.test_tailHitsAt5.update(heads, scores_tp, true_tails)
+            self.test_tailHitsAt10.update(heads, scores_tp, true_tails)
 
     @torch.no_grad()
     def on_test_epoch_end(self):
         # Log relation metrics
-        self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
-        self.log("test_hits1", self.test_relationHitsAt1, on_step=False, on_epoch=True)
-        self.log("test_hits3", self.test_relationHitsAt3, on_step=False, on_epoch=True)
-        self.log("test_hits5", self.test_relationHitsAt5, on_step=False, on_epoch=True)
-        self.log("test_hits10", self.test_relationHitsAt10, on_step=False, on_epoch=True)
-        
-        # Log tail metrics
-        self.log("test_tail_mrr", self.test_tailMRR, on_step=False, on_epoch=True)
-        self.log("test_tail_hits1", self.test_tailHitsAt1, on_step=False, on_epoch=True)
-        self.log("test_tail_hits3", self.test_tailHitsAt3, on_step=False, on_epoch=True)
-        self.log("test_tail_hits5", self.test_tailHitsAt5, on_step=False, on_epoch=True)
-        self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
+        # Log RMSE metrics for counting functions
+        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
+            self.log("test_relation_rmse", self.test_relationRMSE, on_step=False, on_epoch=True)
+            self.log("test_tail_rmse", self.test_tailRMSE, on_step=False, on_epoch=True)
+        else:
+            self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
+            self.log("test_hits1", self.test_relationHitsAt1, on_step=False, on_epoch=True)
+            self.log("test_hits3", self.test_relationHitsAt3, on_step=False, on_epoch=True)
+            self.log("test_hits5", self.test_relationHitsAt5, on_step=False, on_epoch=True)
+            self.log("test_hits10", self.test_relationHitsAt10, on_step=False, on_epoch=True)
+            
+            # Log tail metrics
+            self.log("test_tail_mrr", self.test_tailMRR, on_step=False, on_epoch=True)
+            self.log("test_tail_hits1", self.test_tailHitsAt1, on_step=False, on_epoch=True)
+            self.log("test_tail_hits3", self.test_tailHitsAt3, on_step=False, on_epoch=True)
+            self.log("test_tail_hits5", self.test_tailHitsAt5, on_step=False, on_epoch=True)
+            self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
+
 
     def generate_scores(self, logits1_rp, logits2_rp, logits1_tp, logits2_tp):
         if self.phase1_loss_fn == 'bce':

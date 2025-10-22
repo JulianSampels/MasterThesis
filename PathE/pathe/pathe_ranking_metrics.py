@@ -1710,3 +1710,47 @@ class TailAllEntityMRR(Metric):
 
     def compute(self):
         return self.reciprocal_ranks / self.total
+
+class CountRMSE(Metric):
+    """
+    Root Mean Squared Error for count prediction tasks.
+    """
+    higher_is_better = False
+
+    def __init__(self, is_log_output: bool = True):
+        """
+        The constructor.
+        Parameters
+        ----------
+        is_log_output : bool
+            Whether the model's predictions are log-transformed (e.g., log-rates from a Poisson model).
+            If True, an exponential transformation is applied before calculating the error.
+        """
+        super().__init__()
+        self.is_log_output = is_log_output
+        self.add_state("squared_error", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor):
+        """
+        Update the state with new predictions and targets.
+
+        Parameters
+        ----------
+        preds : torch.Tensor
+            Predicted counts, shape can be (batch_size, num_classes).
+        target : torch.Tensor
+            Ground truth counts, same shape as preds.
+        """
+        if self.is_log_output:
+            preds = torch.exp(preds)
+
+        squared_error = torch.pow(preds - target, 2).sum()
+        self.squared_error += squared_error
+        self.total += target.numel()
+
+    def compute(self):
+        """
+        Compute the Root Mean Squared Error.
+        """
+        return torch.sqrt(self.squared_error / self.total.clamp_min(1))
