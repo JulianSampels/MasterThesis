@@ -1625,12 +1625,15 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.val_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
         self.val_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
-        true_tails = self.val_head_tail_adjacency[heads.to(self.val_head_tail_adjacency.device)].to(torch.float32)
-        self.val_tailMRR.update(heads, scores_tp, true_tails)
-        self.val_tailHitsAt1.update(heads, scores_tp, true_tails)
-        self.val_tailHitsAt3.update(heads, scores_tp, true_tails)
-        self.val_tailHitsAt5.update(heads, scores_tp, true_tails)
-        self.val_tailHitsAt10.update(heads, scores_tp, true_tails)
+        # compute tail metrics on cpu for speed as not vectorized because of memory constraints
+        heads = heads.cpu()
+        scores_tp = scores_tp.cpu()
+        entity_count_matrix = entity_count_matrix.cpu()
+        self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
+        self.val_tailHitsAt1.update(heads, scores_tp, entity_count_matrix)
+        self.val_tailHitsAt3.update(heads, scores_tp, entity_count_matrix)
+        self.val_tailHitsAt5.update(heads, scores_tp, entity_count_matrix)
+        self.val_tailHitsAt10.update(heads, scores_tp, entity_count_matrix)
 
     @torch.no_grad()
     def validation_epoch_end(self, outputs):
