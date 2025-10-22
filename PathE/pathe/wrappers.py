@@ -883,7 +883,6 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
     def __init__(self, 
                 pathe_model: PathEModelTuples, filtration_dict, 
-                global_head_tail_adjacency: torch.Tensor = None, 
                 train_head_tail_adjacency: torch.Tensor = None,
                 val_head_tail_adjacency: torch.Tensor = None,
                 test_head_tail_adjacency: torch.Tensor = None,
@@ -914,11 +913,27 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         # Set automatic optimization based on parameter
         self.automatic_optimization = not self.use_manual_optimization
 
-        # Store head-tail adjacency matrices
-        self.global_head_tail_adjacency = global_head_tail_adjacency.to(self.device) if global_head_tail_adjacency is not None else None
-        self.train_head_tail_adjacency = train_head_tail_adjacency.to(self.device) if train_head_tail_adjacency is not None else None
-        self.val_head_tail_adjacency = val_head_tail_adjacency.to(self.device) if val_head_tail_adjacency is not None else None
-        self.test_head_tail_adjacency = test_head_tail_adjacency.to(self.device) if test_head_tail_adjacency is not None else None
+        # Store head-tail adjacency matrices as buffers
+        if train_head_tail_adjacency is not None:
+            self.register_buffer('train_head_tail_adjacency', train_head_tail_adjacency)
+        else:
+            self.train_head_tail_adjacency = None
+
+        if val_head_tail_adjacency is not None:
+            self.register_buffer('val_head_tail_adjacency', val_head_tail_adjacency)
+        else:
+            self.val_head_tail_adjacency = None
+
+        if test_head_tail_adjacency is not None:
+            self.register_buffer('test_head_tail_adjacency', test_head_tail_adjacency)
+        else:
+            self.test_head_tail_adjacency = None
+
+        # Compute global after registration (buffers are on device now)
+        if self.train_head_tail_adjacency is not None and self.val_head_tail_adjacency is not None and self.test_head_tail_adjacency is not None:
+            self.global_head_tail_adjacency = self.train_head_tail_adjacency | self.val_head_tail_adjacency | self.test_head_tail_adjacency
+        else:
+            self.global_head_tail_adjacency = None
 
         # unnecessary as done in super but for clarity
         self.model = pathe_model
@@ -1238,29 +1253,77 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         return logits_rp, logits_tp, logits_rcount, logits_tcount
 
 class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.phase1_loss_fn = kwargs.get('phase1_loss_fn', 'bce')
-        filter_dict = kwargs.get("filtration_dict", {})
-        # Override relation metrics for unique heads
-        self.val_relationMRR = RelationMRRUniqueHeads(filter_dict)
-        self.val_relationHitsAt1 = RelationHitsAtKUniqueHeads(k=1, filter_dict=filter_dict)
-        self.val_relationHitsAt3 = RelationHitsAtKUniqueHeads(k=3, filter_dict=filter_dict)
-        self.val_relationHitsAt5 = RelationHitsAtKUniqueHeads(k=5, filter_dict=filter_dict)
-        self.val_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_dict=filter_dict)
+    def __init__(self, 
+                pathe_model, filtration_dict,
+                train_head_tail_adjacency=None,
+                val_head_tail_adjacency=None,
+                test_head_tail_adjacency=None,
+                num_negatives=0,
+                optimiser="adam", scheduler="none", lrate=1e-3, momentum=0,
+                weight_decay=0, class_weights=None, label_smoothing=0.0,
+                train_sub_batch=None, val_sub_batch=None, test_sub_batch=None,
+                val_num_negatives=0, full_test=False, max_ppt=None, accumulate_gradient=1.0, 
+                margin=10, nssa_alpha=1, lp_loss_fn="nssa", link_head_detached=True, use_manual_optimization=False,
+                loss_weight=0.5,
+                train_relation_count_matrix=None,
+                val_relation_count_matrix=None,
+                test_relation_count_matrix=None,
+                phase1_loss_fn='bce',
+                **kwargs):
+        super().__init__(pathe_model, filtration_dict, train_head_tail_adjacency, val_head_tail_adjacency, test_head_tail_adjacency, num_negatives,
+                         optimiser, scheduler, lrate, momentum, weight_decay,
+                         class_weights, label_smoothing,
+                         train_sub_batch=train_sub_batch,
+                         val_sub_batch=val_sub_batch,
+                         test_sub_batch=test_sub_batch,
+                         val_num_negatives=val_num_negatives,
+                         full_test=full_test, max_ppt=max_ppt,
+                         accumulate_gradient=accumulate_gradient, margin=margin, nssa_alpha=nssa_alpha,
+                         lp_loss_fn=lp_loss_fn, link_head_detached=link_head_detached, use_manual_optimization=use_manual_optimization,
+                         loss_weight=loss_weight, **kwargs)
+        self.phase1_loss_fn = phase1_loss_fn
         
-        self.test_relationMRR = RelationMRRUniqueHeads(filter_dict)
-        self.test_relationHitsAt1 = RelationHitsAtKUniqueHeads(k=1, filter_dict=filter_dict)
-        self.test_relationHitsAt3 = RelationHitsAtKUniqueHeads(k=3, filter_dict=filter_dict)
-        self.test_relationHitsAt5 = RelationHitsAtKUniqueHeads(k=5, filter_dict=filter_dict)
-        self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_dict=filter_dict)
-    
+        # Store relation count matrices as buffers
+        if train_relation_count_matrix is not None:
+            self.register_buffer('train_relation_count_matrix', train_relation_count_matrix)
+        else:
+            self.train_relation_count_matrix = None
 
+        if val_relation_count_matrix is not None:
+            self.register_buffer('val_relation_count_matrix', val_relation_count_matrix)
+        else:
+            self.val_relation_count_matrix = None
+
+        if test_relation_count_matrix is not None:
+            self.register_buffer('test_relation_count_matrix', test_relation_count_matrix)
+        else:
+            self.test_relation_count_matrix = None
+
+        # Compute global after registration
+        if self.train_relation_count_matrix is not None and self.val_relation_count_matrix is not None and self.test_relation_count_matrix is not None:
+            self.global_relation_count_matrix = self.train_relation_count_matrix | self.val_relation_count_matrix | self.test_relation_count_matrix
+        else:
+            self.global_relation_count_matrix = None
+        
+        
+        # Override relation metrics for unique heads
+        self.val_relationMRR = RelationMRRUniqueHeads(self.global_relation_count_matrix)
+        self.val_relationHitsAt1 = RelationHitsAtKUniqueHeads(k=1, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        self.val_relationHitsAt3 = RelationHitsAtKUniqueHeads(k=3, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        self.val_relationHitsAt5 = RelationHitsAtKUniqueHeads(k=5, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        self.val_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        
+        self.test_relationMRR = RelationMRRUniqueHeads(self.global_relation_count_matrix)
+        self.test_relationHitsAt1 = RelationHitsAtKUniqueHeads(k=1, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        self.test_relationHitsAt3 = RelationHitsAtKUniqueHeads(k=3, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        self.test_relationHitsAt5 = RelationHitsAtKUniqueHeads(k=5, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+        self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_global_relation_count_matrix=self.global_relation_count_matrix)
+    
     def compute_rp_bce_loss(self, logits, relation_count_matrix: torch.Tensor):
         """
         Compute multi-label BCE loss for relation prediction.
         logits: (batch_size, num_relations)
-        relation_count_matrix: (batch_size, num_relations) - counts of how often each relation is used for each head
+        relation_count_matrix: (batch_size, num_relations) indexed matrix
         """
         batch_size, num_relations = logits.shape
         
@@ -1293,12 +1356,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         loss /= weights.sum().clamp_min(1.0)
         return loss
 
-    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, entity_count_matrix: torch.Tensor):
+    def compute_tail_bce_loss(self, logits_tail: torch.Tensor, entity_count_matrix: torch.Tensor):
         if entity_count_matrix is None:
             raise ValueError("An adjacency matrix must be provided for on-the-fly loss calculation.")
         
         # Generate labels and weights on the fly using the provided adjacency matrix
-        entity_count_matrix = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
         # Create binary labels: 1 if used (count > 0), 0 otherwise
         targets = (entity_count_matrix > 0).float()
 
@@ -1334,15 +1396,13 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         loss /= relation_count_matrix.numel()
         return loss
 
-    def compute_tail_poisson_loss(self, logits_tail: torch.Tensor, heads: torch.Tensor, entity_count_matrix: torch.Tensor):
+    def compute_tail_poisson_loss(self, logits_tail: torch.Tensor, entity_count_matrix: torch.Tensor):
         """
         Compute weighted Poisson NLL loss for tail prediction.
         Weights are automatically set based on zero vs. non-zero counts for balance.
         """
         if entity_count_matrix is None:
             raise ValueError("An entity count matrix must be provided for Poisson loss calculation.")
-        
-        entity_count_matrix = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
         
         # Compute per-element Poisson NLL (reduction='none')
         # loss_per_element = torch.nn.functional.poisson_nll_loss(predictions, entity_count_matrix, log_input=True, reduction='none')
@@ -1368,14 +1428,13 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         loss /= entity_count_matrix.numel()
         return loss
 
-    def compute_tail_hurdle_loss(self, logits1, logits2, heads, entity_count_matrix):
-        hurdle_loss = self.compute_tail_bce_loss(logits1, heads, entity_count_matrix)
-        entity_count_matrix2 = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
-        poisson_mask = (entity_count_matrix2 > 0).float()
+    def compute_tail_hurdle_loss(self, logits1, logits2, entity_count_matrix):
+        hurdle_loss = self.compute_tail_bce_loss(logits1, entity_count_matrix)
+        poisson_mask = (entity_count_matrix > 0).float()
         if poisson_mask.sum() > 0:
             # Compute per-element Poisson NLL loss on the full tensors
             loss_per_element = torch.nn.functional.poisson_nll_loss(
-                logits2, entity_count_matrix2, log_input=True, full=True, reduction='none'
+                logits2, entity_count_matrix, log_input=True, full=True, reduction='none'
             )
             # Mask out losses for non-positive tails (where mask == 0)
             masked_loss = loss_per_element * poisson_mask
@@ -1430,18 +1489,16 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # Return negative log-likelihood, averaged over batch
         return -log_likelihood.mean()
 
-    def compute_tail_negative_binomial_loss(self, log_mu_tail, log_alpha_tail, heads, entity_count_matrix):
+    def compute_tail_negative_binomial_loss(self, log_mu_tail, log_alpha_tail, entity_count_matrix):
         """
         Compute Negative Binomial NLL loss for tail prediction.
         log_mu_tail: log of the predicted mean (μ) for tails
         log_alpha_tail: log of the predicted dispersion (α) for tails
-        heads: head indices
         entity_count_matrix: target counts (k) for tails
         """
         if entity_count_matrix is None:
             raise ValueError("An entity count matrix must be provided for Negative Binomial loss calculation.")
         
-        entity_count_matrix = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
         mu = torch.exp(log_mu_tail)
         alpha = torch.exp(log_alpha_tail)
         k = entity_count_matrix
@@ -1458,7 +1515,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # Return negative log-likelihood, averaged over batch
         return -log_likelihood.mean()
 
-    def compute_phase1_losses(self, logits_rp_bce, logits_rp_poisson, logits_tail_bce, logits_tail_poisson, heads, relation_count_matrix, entity_count_matrix, phase1_loss_fn):
+    def compute_phase1_losses(self, logits_rp_bce, logits_rp_poisson, logits_tail_bce, logits_tail_poisson, relation_count_matrix, entity_count_matrix, phase1_loss_fn):
         """
         Centralized function to compute phase 1 losses (relation and tail prediction) based on the loss function type.
         For negative_binomial, reuse logits_rp_bce as log_mu_rp, logits_rp_poisson as log_alpha_rp,
@@ -1466,22 +1523,22 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         """
         if phase1_loss_fn == 'bce':
             rp_loss = self.compute_rp_bce_loss(logits_rp_bce, relation_count_matrix)
-            tp_loss = self.compute_tail_bce_loss(logits_tail_bce, heads, entity_count_matrix)
+            tp_loss = self.compute_tail_bce_loss(logits_tail_bce, entity_count_matrix)
         elif phase1_loss_fn == 'poisson':
             rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, heads, entity_count_matrix)
+            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, entity_count_matrix)
         elif phase1_loss_fn == 'negative_binomial':
             rp_loss = self.compute_rp_negative_binomial_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_negative_binomial_loss(logits_tail_bce, logits_tail_poisson, heads, entity_count_matrix)
+            tp_loss = self.compute_tail_negative_binomial_loss(logits_tail_bce, logits_tail_poisson, entity_count_matrix)
         elif phase1_loss_fn == 'hurdletail':
             rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, heads, entity_count_matrix)
+            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, entity_count_matrix)
         elif phase1_loss_fn == 'hurdlerelation':
             rp_loss = self.compute_rp_hurdle_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, heads, entity_count_matrix)
+            tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, entity_count_matrix)
         elif phase1_loss_fn == 'hurdleboth':
             rp_loss = self.compute_rp_hurdle_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
-            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, heads, entity_count_matrix)
+            tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, entity_count_matrix)
         else:
             raise ValueError(f"Invalid phase1_loss_fn: {phase1_loss_fn}. Must be 'bce', 'poisson', 'hurdle', 'hurdlerelation', or 'hurdleboth'.")
         return rp_loss, tp_loss
@@ -1489,10 +1546,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def training_step(self, batch, batch_idx):
         logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
-        relation_count_matrix = batch["relation_count_matrix"]
-        
+        relation_count_matrix = self.train_relation_count_matrix[heads.to(self.train_relation_count_matrix.device)]
+        entity_count_matrix = self.train_head_tail_adjacency[heads.to(self.train_head_tail_adjacency.device)]
+
         # Losses
-        rp_loss_unscaled, tp_loss_unscaled = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, heads, relation_count_matrix, self.train_head_tail_adjacency, self.phase1_loss_fn)
+        rp_loss_unscaled, tp_loss_unscaled = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_loss_fn)
 
         if not self.use_manual_optimization:
             total_loss = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tp_loss_unscaled
@@ -1548,10 +1606,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def validation_step(self, batch, batch_idx):
         logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
-        relation_count_matrix = batch["relation_count_matrix"]
+        entity_count_matrix = self.val_head_tail_adjacency[heads.to(self.val_head_tail_adjacency.device)]
+        relation_count_matrix = self.val_relation_count_matrix[heads.to(self.val_relation_count_matrix.device)]
 
         # Losses
-        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, heads, relation_count_matrix, self.val_head_tail_adjacency, self.phase1_loss_fn)
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_loss_fn)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
         self.log("valid_rp_loss", rp_loss)
@@ -1599,10 +1658,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     def test_step(self, batch, batch_idx):
         logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
         heads = batch["heads"]
-        relation_count_matrix = batch["relation_count_matrix"]
+        relation_count_matrix = self.test_relation_count_matrix[heads.to(self.test_relation_count_matrix.device)]
+        entity_count_matrix = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)]
 
         # Losses
-        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, heads, relation_count_matrix, self.test_head_tail_adjacency, self.phase1_loss_fn)
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_loss_fn)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
         self.log("test_rp_loss", rp_loss)

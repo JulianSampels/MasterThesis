@@ -101,8 +101,6 @@ def create_and_run_training_exp_tuples(args):
     train_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(train_triples, num_entities)
     val_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(val_triples, num_entities)
     test_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(test_triples, num_entities)
-    # Create global adjacency for filtering
-    global_head_tail_adjacency = train_head_tail_adjacency | val_head_tail_adjacency | test_head_tail_adjacency
 
     # Creating the triple corruptors for head, tail, or both (merged) and
     # preserving the number of positive triples in case of H/T corruption
@@ -251,7 +249,6 @@ def create_and_run_training_exp_tuples(args):
     pl_model = PathEModelWrapperTuples(
         pathe_model=model,
         filtration_dict=map_head_to_relationsets_tuples,
-        global_head_tail_adjacency=global_head_tail_adjacency,
         train_head_tail_adjacency=train_head_tail_adjacency,
         val_head_tail_adjacency=val_head_tail_adjacency,
         test_head_tail_adjacency=test_head_tail_adjacency,
@@ -650,8 +647,12 @@ def create_and_run_training_exp_two_phases(args):
     train_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(train_triples, num_entities)
     val_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(val_triples, num_entities)
     test_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(test_triples, num_entities)
-    # Create global adjacency for filtering
-    global_head_tail_adjacency = train_head_tail_adjacency | val_head_tail_adjacency | test_head_tail_adjacency
+
+    # Compute relation count matrices for each split
+    num_relations = len(tokens_to_idxs) - 2  # exclude PAD and MSK
+    train_relation_count_matrix = triple_lib.get_relation_count_matrix(train_triples, num_entities, num_relations)
+    val_relation_count_matrix = triple_lib.get_relation_count_matrix(val_triples, num_entities, num_relations)
+    test_relation_count_matrix = triple_lib.get_relation_count_matrix(test_triples, num_entities, num_relations)
 
     assert(args.num_negatives == 0), "This two-phase training only works with num_negatives=0"
     assert(args.val_num_negatives == 0), "This two-phase training only works with val_num_negatives=0"
@@ -733,10 +734,12 @@ def create_and_run_training_exp_two_phases(args):
     pl_model_t = PathEModelWrapperUniqueHeads(
         pathe_model=model_t,
         filtration_dict=map_head_to_relsets,
-        global_head_tail_adjacency=global_head_tail_adjacency,
         train_head_tail_adjacency=train_head_tail_adjacency,
         val_head_tail_adjacency=val_head_tail_adjacency,
         test_head_tail_adjacency=test_head_tail_adjacency,
+        train_relation_count_matrix=train_relation_count_matrix,
+        val_relation_count_matrix=val_relation_count_matrix,
+        test_relation_count_matrix=test_relation_count_matrix,
         class_weights=class_weights,
         **namespace_to_dict(args),
     )

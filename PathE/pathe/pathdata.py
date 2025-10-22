@@ -1493,11 +1493,6 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
                          neg_tuple_store=None, head_tail_adjacency=head_tail_adjacency)
         
         # Group triples by unique heads
-        self.head_incidence_matrix = torch.zeros((self.num_entities, len(self.tokens_to_idxs)-2), dtype=torch.int32)  # Exclude PAD and MSK
-        for triple in self.triplestore:
-            head = triple[0].item()
-            relation = triple[1].item()
-            self.head_incidence_matrix[head, relation] += 1
         self.unique_heads: torch.Tensor = tuple_store[:,0].unique()
         self.augmentation_factor = augmentation_factor
 
@@ -1518,7 +1513,6 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
             "ent_paths": ent_paths,
             "rel_paths": rel_paths,
             "head_indexes": head_indexes,
-            "relation_count_matrix": self.head_incidence_matrix[head.item()],
             "path_origins": path_origins,
         }
 

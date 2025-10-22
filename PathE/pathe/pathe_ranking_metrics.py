@@ -179,11 +179,11 @@ class RelationMRRUniqueHeads(Metric):
     """
     higher_is_better = True
 
-    def __init__(self, filter_dict: Dict):
+    def __init__(self, filter_global_relation_count_matrix: torch.Tensor):
         super().__init__()
         self.add_state("reciprocal_ranks", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
-        self.all_relations = filter_dict  # {head: set of all true relations for head across splits}
+        self.filter_global_relation_count_matrix = filter_global_relation_count_matrix  # [num_entities, num_relations] with counts
 
     @torch.no_grad()
     def update(self, heads: torch.Tensor, scores: torch.Tensor, relation_count_matrix: torch.Tensor):
@@ -194,6 +194,8 @@ class RelationMRRUniqueHeads(Metric):
           - a dense tensor of shape (num_heads, num_relations) with counts for true relations, or
           - a list of 1D tensors containing true relation indices per head.
         """
+        # Ensure filter matrix is on the same device as inputs
+        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(heads.device)
         for i in range(heads.size(0)):
             logits = scores[i]  # (num_relations,)
             # Extract indices of true relations from dense multi-hot row
@@ -202,7 +204,7 @@ class RelationMRRUniqueHeads(Metric):
                 continue
 
             head_id = heads[i].item()
-            all_true_for_head = self.all_relations.get(head_id, set())  # all true r for head across splits
+            all_true_for_head = torch.where(self.filter_global_relation_count_matrix[head_id] > 0.5)[0]  # all true r for head
 
             # --- Vectorized rank computation using slicing ---
 
@@ -210,7 +212,7 @@ class RelationMRRUniqueHeads(Metric):
             true_rel_scores = logits[true_rels]  # Shape: (num_true_rels,)
 
             # Identify negative relations by excluding all known true relations for this head
-            all_true_indices = torch.tensor(list(all_true_for_head), device=logits.device, dtype=torch.long)
+            all_true_indices = all_true_for_head
 
             # Create a mask for all relations, setting true only for negatives
             is_negative_mask = torch.ones_like(logits, dtype=torch.bool)
@@ -440,12 +442,12 @@ class RelationHitsAtKUniqueHeads(Metric):
     """
     higher_is_better = True
 
-    def __init__(self, k: int, filter_dict: Dict):
+    def __init__(self, k: int, filter_global_relation_count_matrix: torch.Tensor):
         super().__init__()
         self.k = k
         self.add_state("hits", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
-        self.all_relations = filter_dict  # {head: set of all true relations for head across splits}
+        self.filter_global_relation_count_matrix = filter_global_relation_count_matrix  # [num_entities, num_relations] with counts
 
     @torch.no_grad()
     def update(self, heads: torch.Tensor, scores: torch.Tensor, relation_count_matrix: torch.Tensor):
@@ -454,6 +456,8 @@ class RelationHitsAtKUniqueHeads(Metric):
         scores: (num_heads, num_relations)
         relation_count_matrix: either dense (num_heads, num_relations) multi-hot tensor or list of index tensors.
         """
+        # Ensure filter matrix is on the same device as inputs
+        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(heads.device)
         for i in range(heads.size(0)):
             logits = scores[i]
             true_rels = torch.where(relation_count_matrix[i] > 0.5)[0]
@@ -461,7 +465,7 @@ class RelationHitsAtKUniqueHeads(Metric):
                 continue
 
             head_id = heads[i].item()
-            all_true_for_head = self.all_relations.get(head_id, set())
+            all_true_for_head = torch.where(self.filter_global_relation_count_matrix[head_id] > 0.5)[0]
 
             # --- Vectorized rank computation using slicing ---
 
@@ -469,7 +473,7 @@ class RelationHitsAtKUniqueHeads(Metric):
             true_rel_scores = logits[true_rels]  # Shape: (num_true_rels,)
 
             # Identify negative relations by excluding all known true relations for this head
-            all_true_indices = torch.tensor(list(all_true_for_head), device=logits.device, dtype=torch.long)
+            all_true_indices = all_true_for_head
 
             # Create a mask for all relations, setting true only for negatives
             is_negative_mask = torch.ones_like(logits, dtype=torch.bool)
@@ -868,8 +872,9 @@ class TailMRRTuples(Metric):
 
         # Get all known true tails from global adjacency if available, otherwise use eval labels
         if self.filter_global_adjacency is not None:
-            # Note: ensure filter_global_adjacency is on the correct device or move it
-            filter_labels = self.filter_global_adjacency[heads.cpu()].to(scores.device, non_blocking=True)
+            # Ensure filter matrix is on the same device as inputs
+            self.filter_global_adjacency = self.filter_global_adjacency.to(heads.device)
+            filter_labels = self.filter_global_adjacency[heads]
         else:
             filter_labels = eval_labels  # Fallback to eval labels for filtering
 
@@ -930,8 +935,9 @@ class TailHitsAtKTuples(Metric):
 
         # Get all known true tails from global adjacency if available, otherwise use eval labels
         if self.filter_global_adjacency is not None:
-            # Note: ensure filter_global_adjacency is on the correct device or move it
-            filter_labels = self.filter_global_adjacency[heads.cpu()].to(scores.device, non_blocking=True)
+            # Ensure filter matrix is on the same device as inputs
+            self.filter_global_adjacency = self.filter_global_adjacency.to(heads.device)
+            filter_labels = self.filter_global_adjacency[heads]
         else:
             filter_labels = eval_labels  # Fallback to eval labels for filtering
 
