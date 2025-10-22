@@ -1691,44 +1691,43 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
 
         # Update metrics
         scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
-        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
-            self.test_relationRMSE.update(logits_rp2, relation_count_matrix)
-            self.test_tailRMSE.update(logits_tail2, entity_count_matrix)
-        else:
-            self.test_relationMRR.update(heads, scores_rp, relation_count_matrix)
-            self.test_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
-            self.test_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
-            self.test_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
-            self.test_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
+            
+        self.test_relationMRR.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
+        self.test_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
-            true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
-            self.test_tailMRR.update(heads, scores_tp, true_tails)
-            self.test_tailHitsAt1.update(heads, scores_tp, true_tails)
-            self.test_tailHitsAt3.update(heads, scores_tp, true_tails)
-            self.test_tailHitsAt5.update(heads, scores_tp, true_tails)
-            self.test_tailHitsAt10.update(heads, scores_tp, true_tails)
+        true_tails = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)].to(torch.float32)
+        self.test_tailMRR.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt1.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt3.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt5.update(heads, scores_tp, true_tails)
+        self.test_tailHitsAt10.update(heads, scores_tp, true_tails)
+    
+        self.test_relationRMSE.update(scores_rp, relation_count_matrix)
+        self.test_tailRMSE.update(scores_tp, entity_count_matrix)
 
     @torch.no_grad()
     def on_test_epoch_end(self):
         # Log relation metrics
         # Log RMSE metrics for counting functions
-        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
-            self.log("test_relation_rmse", self.test_relationRMSE, on_step=False, on_epoch=True)
-            self.log("test_tail_rmse", self.test_tailRMSE, on_step=False, on_epoch=True)
-        else:
-            self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
-            self.log("test_hits1", self.test_relationHitsAt1, on_step=False, on_epoch=True)
-            self.log("test_hits3", self.test_relationHitsAt3, on_step=False, on_epoch=True)
-            self.log("test_hits5", self.test_relationHitsAt5, on_step=False, on_epoch=True)
-            self.log("test_hits10", self.test_relationHitsAt10, on_step=False, on_epoch=True)
             
-            # Log tail metrics
-            self.log("test_tail_mrr", self.test_tailMRR, on_step=False, on_epoch=True)
-            self.log("test_tail_hits1", self.test_tailHitsAt1, on_step=False, on_epoch=True)
-            self.log("test_tail_hits3", self.test_tailHitsAt3, on_step=False, on_epoch=True)
-            self.log("test_tail_hits5", self.test_tailHitsAt5, on_step=False, on_epoch=True)
-            self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
+        self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
+        self.log("test_hits1", self.test_relationHitsAt1, on_step=False, on_epoch=True)
+        self.log("test_hits3", self.test_relationHitsAt3, on_step=False, on_epoch=True)
+        self.log("test_hits5", self.test_relationHitsAt5, on_step=False, on_epoch=True)
+        self.log("test_hits10", self.test_relationHitsAt10, on_step=False, on_epoch=True)
+        
+        # Log tail metrics
+        self.log("test_tail_mrr", self.test_tailMRR, on_step=False, on_epoch=True)
+        self.log("test_tail_hits1", self.test_tailHitsAt1, on_step=False, on_epoch=True)
+        self.log("test_tail_hits3", self.test_tailHitsAt3, on_step=False, on_epoch=True)
+        self.log("test_tail_hits5", self.test_tailHitsAt5, on_step=False, on_epoch=True)
+        self.log("test_tail_hits10", self.test_tailHitsAt10, on_step=False, on_epoch=True)
 
+        self.log("test_relation_rmse", self.test_relationRMSE, on_step=False, on_epoch=True)
+        self.log("test_tail_rmse", self.test_tailRMSE, on_step=False, on_epoch=True)
 
     def generate_scores(self, logits1_rp, logits2_rp, logits1_tp, logits2_tp):
         if self.phase1_loss_fn == 'bce':
@@ -1762,9 +1761,9 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         return scores_rp, scores_tp
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        logits_rp_bce, logits_tp_bce, logits_rp_poisson, logits_tp_poisson = self.model_forward(batch)
+        logits1_rp, logits1_tp, logits2_rp, logits2_tp = self.model_forward(batch)
         heads = batch["heads"]
-        scores_rp, scores_tp = self.generate_scores(logits_rp_bce, logits_rp_poisson, logits_tp_bce, logits_tp_poisson)
+        scores_rp, scores_tp = self.generate_scores(logits1_rp, logits2_rp, logits1_tp, logits2_tp)
         return {
             "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
             "scores_rp": scores_rp.detach().cpu(),

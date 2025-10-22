@@ -1098,7 +1098,7 @@ from . import triple_lib
 import itertools
 from .figures import create_coverage_vs_size_plot, create_heatmaps
 
-def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_scores_tp_all, va_tuples_all, va_logits_all, va_scores_tp_all, te_tuples_all, te_logits_all, te_scores_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
+def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr_tuples_all, tr_logits_all, tr_scores_tp_all, va_tuples_all, va_logits_all, va_scores_tp_all, te_tuples_all, te_scores_rp_all, te_scores_tp_all, train_triples, val_triples, test_triples, train_set_t, valid_set_t, test_set_t):
     """
     Perform grid search over alpha, beta, temperature for CandidateGeneratorGlobalWithTail
     to maximize total coverage and average recall per group on the test set.
@@ -1143,7 +1143,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
         candidate_generator.temperature = temp
         
         # Generate candidates only for test set
-        candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_logits_all, test_set_t.relation_maps, num_groups_test, scores_tp=te_scores_tp_all)
+        candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_scores_rp_all, test_set_t.relation_maps, num_groups_test, scores_tp=te_scores_tp_all)
         
         # Compute total coverage on test
         total_cov, _ = BaseCandidateGenerator.analyze_total_coverage(candidates_test, test_triples, name=f"alpha={alpha}_beta={beta}_temp={temp}", print_results=False)
