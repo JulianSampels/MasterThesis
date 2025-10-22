@@ -5,28 +5,19 @@ Scalable routines for training and finetuning a PathER model.
 
 import logging
 from functools import partial
-import math
-from typing import Optional
 
 import torch
 from torch import nn
-import pandas as pd
 from pytorch_lightning import LightningModule
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
-from pytorch_lightning import Trainer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch_scatter
-from tqdm import tqdm
 
-from PathE.pathe.pathdata import RelationMaps
 
 from .pathe_ranking_metrics import (RelationHitsAtKUniqueHeads, RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples, CandidateMRRPerSampleFiltered, 
                                    CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, RelationMRRUniqueHeads, TailHitsAtKTuples, TailMRRTuples)
 
-from .pather_models import PathEModelTriples, PathEModelTuples
+from .pather_models import PathEModelTuples
 
 
 logger = logging.getLogger(__name__)
