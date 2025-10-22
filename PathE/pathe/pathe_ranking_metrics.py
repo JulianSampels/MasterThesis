@@ -187,51 +187,64 @@ class RelationMRRUniqueHeads(Metric):
 
     def update(self, heads: torch.Tensor, scores: torch.Tensor, relation_count_matrix: torch.Tensor):
         """
+        Vectorized update for multi-label MRR.
+
         heads: (num_heads,)
         scores: (num_heads, num_relations)
-        relation_count_matrix: either
-          - a dense tensor of shape (num_heads, num_relations) with counts for true relations, or
-          - a list of 1D tensors containing true relation indices per head.
+        relation_count_matrix: a dense tensor of shape (num_heads, num_relations) with counts for true relations.
         """
         # Ensure filter matrix is on the same device as inputs
-        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(heads.device)
-        for i in range(heads.size(0)):
-            logits = scores[i]  # (num_relations,)
-            # Extract indices of true relations from dense multi-hot row
-            true_rels = torch.where(relation_count_matrix[i] > 0.5)[0]
-            if true_rels.numel() == 0:
-                continue
+        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(scores.device)
 
-            head_id = heads[i].item()
-            all_true_for_head = torch.where(self.filter_global_relation_count_matrix[head_id] > 0.5)[0]  # all true r for head
+        # 1. Identify true relations for evaluation in the current batch
+        eval_rels_mask = relation_count_matrix > 0.5
+        
+        # Filter out heads that have no true relations in this batch
+        valid_heads_mask = eval_rels_mask.any(dim=1)
+        if not valid_heads_mask.any():
+            return
 
-            # --- Vectorized rank computation using slicing ---
+        scores = scores[valid_heads_mask]
+        eval_rels_mask = eval_rels_mask[valid_heads_mask]
+        heads = heads[valid_heads_mask]
 
-            # Get scores of the true relations we are evaluating
-            true_rel_scores = logits[true_rels]  # Shape: (num_true_rels,)
+        # 2. Create a filter mask for all known true relations (from any split)
+        all_true_mask = self.filter_global_relation_count_matrix[heads] > 0.5
 
-            # Identify negative relations by excluding all known true relations for this head
-            all_true_indices = all_true_for_head
+        # 3. Get scores of the relations we need to evaluate, masking out others
+        true_rel_scores = torch.where(eval_rels_mask, scores, -torch.finfo(scores.dtype).max)
 
-            # Create a mask for all relations, setting true only for negatives
-            is_negative_mask = torch.ones_like(logits, dtype=torch.bool)
-            if all_true_indices.numel() > 0:
-                is_negative_mask[all_true_indices] = False
+        # 4. Mask out all known true relations to get a tensor of only negative scores
+        negative_scores = torch.where(all_true_mask, -torch.finfo(scores.dtype).max, scores)
 
-            # Slice to get only the scores of negative relations
-            negative_scores = logits[is_negative_mask]
+        # 5. Calculate ranks via broadcasting
+        # Shapes: true_rel_scores.unsqueeze(2): (num_valid_heads, num_relations, 1)
+        #         negative_scores.unsqueeze(1): (num_valid_heads, 1, num_relations)
+        optimistic_rank = (negative_scores.unsqueeze(1) > true_rel_scores.unsqueeze(2)).sum(dim=2) + 1
+        pessimistic_rank = (negative_scores.unsqueeze(1) >= true_rel_scores.unsqueeze(2)).sum(dim=2) + 1
+        
+        # We only care about the ranks of the relations we are evaluating
+        optimistic_rank = optimistic_rank[eval_rels_mask]
+        pessimistic_rank = pessimistic_rank[eval_rels_mask]
 
-            # Compare each true score against all negative scores via broadcasting.
-            # The rank is the count of negative scores better than the true score, plus one for the true score itself.
-            optimistic_rank = (negative_scores.unsqueeze(0) > true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
-            pessimistic_rank = (negative_scores.unsqueeze(0) >= true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
-            
-            ranks = (optimistic_rank + pessimistic_rank).float() * 0.5
+        ranks = (optimistic_rank + pessimistic_rank).float() * 0.5
+        reciprocal_ranks = 1.0 / ranks
 
-            # Average reciprocal ranks for this head
-            avg_recip = (1.0 / ranks).mean()
-            self.reciprocal_ranks += avg_recip
-            self.total += 1
+        # 6. Average reciprocal ranks for each head and update state
+        # Create a tensor to map reciprocal ranks back to their original heads
+        head_indices = torch.arange(heads.size(0), device=scores.device).unsqueeze(1).expand_as(eval_rels_mask)
+        true_rel_head_indices = head_indices[eval_rels_mask]
+
+        # Sum reciprocal ranks per head
+        reciprocal_ranks_per_head = torch.zeros(heads.size(0), device=scores.device, dtype=torch.float)
+        reciprocal_ranks_per_head.scatter_add_(0, true_rel_head_indices, reciprocal_ranks)
+
+        # Average reciprocal ranks per head (denominator is number of true relations per head)
+        num_true_per_head = eval_rels_mask.sum(dim=1)
+        avg_reciprocal_ranks = reciprocal_ranks_per_head / num_true_per_head.clamp_min(1)
+
+        self.reciprocal_ranks += avg_reciprocal_ranks.sum()
+        self.total += heads.size(0)
 
     def compute(self):
         return self.reciprocal_ranks / self.total.clamp_min(1)
@@ -447,7 +460,7 @@ class RelationHitsAtKUniqueHeads(Metric):
         self.add_state("hits", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
         self.filter_global_relation_count_matrix = filter_global_relation_count_matrix  # [num_entities, num_relations] with counts
-
+    
     def update(self, heads: torch.Tensor, scores: torch.Tensor, relation_count_matrix: torch.Tensor):
         """
         heads: (num_heads,)
@@ -455,43 +468,62 @@ class RelationHitsAtKUniqueHeads(Metric):
         relation_count_matrix: either dense (num_heads, num_relations) multi-hot tensor or list of index tensors.
         """
         # Ensure filter matrix is on the same device as inputs
-        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(heads.device)
-        for i in range(heads.size(0)):
-            logits = scores[i]
-            true_rels = torch.where(relation_count_matrix[i] > 0.5)[0]
-            if true_rels.numel() == 0:
-                continue
+        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(scores.device)
 
-            head_id = heads[i].item()
-            all_true_for_head = torch.where(self.filter_global_relation_count_matrix[head_id] > 0.5)[0]
+        # 1. Identify true relations for evaluation in the current batch
+        # Shape: (num_heads, num_relations)
+        eval_rels_mask = relation_count_matrix > 0.5
+        
+        # Filter out heads that have no true relations in this batch to avoid unnecessary computation
+        valid_heads_mask = eval_rels_mask.any(dim=1)
+        if not valid_heads_mask.any():
+            return
 
-            # --- Vectorized rank computation using slicing ---
+        scores = scores[valid_heads_mask]
+        eval_rels_mask = eval_rels_mask[valid_heads_mask]
+        heads = heads[valid_heads_mask]
 
-            # Get scores of the true relations we are evaluating
-            true_rel_scores = logits[true_rels]  # Shape: (num_true_rels,)
+        # 2. Create a filter mask for all known true relations (from any split)
+        # This prevents other known true relations from being counted as negatives
+        # Shape: (num_valid_heads, num_relations)
+        all_true_mask = self.filter_global_relation_count_matrix[heads] > 0.5
 
-            # Identify negative relations by excluding all known true relations for this head
-            all_true_indices = all_true_for_head
+        # 3. Get scores of the relations we need to evaluate
+        # We set scores of non-target relations to a very small number to ignore them
+        true_rel_scores = torch.where(eval_rels_mask, scores, -torch.finfo(scores.dtype).max)
 
-            # Create a mask for all relations, setting true only for negatives
-            is_negative_mask = torch.ones_like(logits, dtype=torch.bool)
-            if all_true_indices.numel() > 0:
-                is_negative_mask[all_true_indices] = False
+        # 4. Mask out all known true relations from the scores to create a tensor of only negative scores
+        # We set scores of all known true relations to a very small number
+        negative_scores = torch.where(all_true_mask, -torch.finfo(scores.dtype).max, scores)
 
-            # Slice to get only the scores of negative relations
-            negative_scores = logits[is_negative_mask]
+        # 5. Calculate ranks
+        # Compare each true score against all negative scores via broadcasting
+        # Shapes: true_rel_scores.unsqueeze(2): (num_valid_heads, num_relations, 1)
+        #         negative_scores.unsqueeze(1): (num_valid_heads, 1, num_relations)
+        optimistic_rank = (negative_scores.unsqueeze(1) > true_rel_scores.unsqueeze(2)).sum(dim=2) + 1
+        pessimistic_rank = (negative_scores.unsqueeze(1) >= true_rel_scores.unsqueeze(2)).sum(dim=2) + 1
+        
+        # We only care about the ranks of the relations we are evaluating
+        optimistic_rank = optimistic_rank[eval_rels_mask]
+        pessimistic_rank = pessimistic_rank[eval_rels_mask]
 
-            # Compare each true score against all negative scores via broadcasting.
-            # The rank is the count of negative scores better than the true score, plus one for the true score itself.
-            optimistic_rank = (negative_scores.unsqueeze(0) > true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
-            pessimistic_rank = (negative_scores.unsqueeze(0) >= true_rel_scores.unsqueeze(1)).sum(dim=1) + 1
-            
-            ranks = (optimistic_rank + pessimistic_rank).float() * 0.5
+        ranks = (optimistic_rank + pessimistic_rank).float() * 0.5
 
-            # Fraction of true relations with rank <= k
-            hits_for_head = (ranks <= self.k).float().mean()
-            self.hits += hits_for_head
-            self.total += 1
+        # 6. Calculate Hits@K for each head and update state
+        # Create a tensor to map ranks back to their original heads
+        head_indices = torch.arange(heads.size(0), device=scores.device).unsqueeze(1).expand_as(eval_rels_mask)
+        true_rel_head_indices = head_indices[eval_rels_mask]
+
+        # Calculate hits per head
+        hits_per_head = torch.zeros(heads.size(0), device=scores.device, dtype=torch.float)
+        hits_per_head.scatter_add_(0, true_rel_head_indices, (ranks <= self.k).float())
+
+        # Average hits per head (denominator is number of true relations per head)
+        num_true_per_head = eval_rels_mask.sum(dim=1)
+        avg_hits_per_head = hits_per_head / num_true_per_head.clamp_min(1)
+
+        self.hits += avg_hits_per_head.sum()
+        self.total += heads.size(0)
 
     def compute(self):
         return self.hits / self.total.clamp_min(1)
