@@ -142,7 +142,6 @@ def create_and_run_training_exp_tuples(args):
         parallel=parallel,
         num_workers=args.num_workers,
         neg_tuple_store=negatives[0],
-        head_tail_adjacency=train_head_tail_adjacency,
         tokens_to_idxs=tokens_to_idxs
     )
     # Using shared data structures for valid and test
@@ -163,7 +162,6 @@ def create_and_run_training_exp_tuples(args):
         parallel=parallel,
         num_workers=args.num_workers,
         neg_tuple_store=negatives[1],
-        head_tail_adjacency=val_head_tail_adjacency
     )
     test_set = TupleEntityMultiPathDataset(
         path_store=path_store,
@@ -178,7 +176,6 @@ def create_and_run_training_exp_tuples(args):
         parallel=parallel,
         num_workers=args.num_workers,
         neg_tuple_store=negatives[2],
-        head_tail_adjacency=test_head_tail_adjacency
     )
 
     if args.num_negatives > 0 and args.dump_negatives:

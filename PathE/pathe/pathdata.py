@@ -1329,7 +1329,6 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
                  parallel = False,
                  num_workers: int = 0,
                  neg_tuple_store = None,
-                 head_tail_adjacency: torch.Tensor = None, #[E, E] adjacency matrix of head-tail pairs
                  ):
         """
         Parameters
@@ -1371,10 +1370,6 @@ class TupleEntityMultiPathDataset(MultiPathDatasetTriples):
 
         self.relation_maps = RelationMaps(original_relation_to_inverse_relation)
         self.relation_maps.sanity_check_relation_mappings(tuple_store)
-
-        assert head_tail_adjacency.shape[0] == head_tail_adjacency.shape[1], "Adjacency matrix should be square"
-        self.head_tail_adjacency = head_tail_adjacency
-        self.num_entities = head_tail_adjacency.shape[0] if head_tail_adjacency is not None else None
 
         # xtokens = ["MSK"]  # the special tokens that will be reserved
         # relcontext_df = pd.read_csv(relcontext_store)
@@ -1490,7 +1485,7 @@ class UniqueHeadEntityMultiPathDataset(TupleEntityMultiPathDataset):
         super().__init__(path_store, relcontext_store, tuple_store, context_triple_store,
                          original_relation_to_inverse_relation, tokens_to_idxs, maximum_tuple_paths,
                          num_negatives=0, tuple_corruptor=None, seed=seed, parallel=parallel, num_workers=num_workers,
-                         neg_tuple_store=None, head_tail_adjacency=head_tail_adjacency)
+                         neg_tuple_store=None)
         
         # Group triples by unique heads
         self.unique_heads: torch.Tensor = tuple_store[:,0].unique()
