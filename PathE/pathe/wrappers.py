@@ -915,10 +915,10 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
         self.automatic_optimization = not self.use_manual_optimization
 
         # Store head-tail adjacency matrices
-        self.global_head_tail_adjacency = global_head_tail_adjacency
-        self.train_head_tail_adjacency = train_head_tail_adjacency
-        self.val_head_tail_adjacency = val_head_tail_adjacency
-        self.test_head_tail_adjacency = test_head_tail_adjacency
+        self.global_head_tail_adjacency = global_head_tail_adjacency.to(self.device) if global_head_tail_adjacency is not None else None
+        self.train_head_tail_adjacency = train_head_tail_adjacency.to(self.device) if train_head_tail_adjacency is not None else None
+        self.val_head_tail_adjacency = val_head_tail_adjacency.to(self.device) if val_head_tail_adjacency is not None else None
+        self.test_head_tail_adjacency = test_head_tail_adjacency.to(self.device) if test_head_tail_adjacency is not None else None
 
         # unnecessary as done in super but for clarity
         self.model = pathe_model
@@ -1407,9 +1407,62 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         count_loss /= count_loss.detach().clamp_min(1.0)
         return hurdle_loss + count_loss
 
+    def compute_rp_negative_binomial_loss(self, log_mu, log_alpha, relation_count_matrix):
+        """
+        Compute Negative Binomial NLL loss for relation prediction.
+        log_mu: log of the predicted mean (μ)
+        log_alpha: log of the predicted dispersion (α)
+        relation_count_matrix: target counts (k)
+        """
+        mu = torch.exp(log_mu)
+        alpha = torch.exp(log_alpha)
+        k = relation_count_matrix.to(device=self.device, dtype=torch.float32, non_blocking=True)
+
+        # Negative Binomial log-likelihood (numerical stability with lgamma)
+        log_likelihood = (
+            torch.lgamma(k + alpha)
+            - torch.lgamma(k + 1)
+            - torch.lgamma(alpha)
+            + alpha * torch.log(alpha / (alpha + mu))
+            + k * torch.log(mu / (alpha + mu))
+        )
+        
+        # Return negative log-likelihood, averaged over batch
+        return -log_likelihood.mean()
+
+    def compute_tail_negative_binomial_loss(self, log_mu_tail, log_alpha_tail, heads, entity_count_matrix):
+        """
+        Compute Negative Binomial NLL loss for tail prediction.
+        log_mu_tail: log of the predicted mean (μ) for tails
+        log_alpha_tail: log of the predicted dispersion (α) for tails
+        heads: head indices
+        entity_count_matrix: target counts (k) for tails
+        """
+        if entity_count_matrix is None:
+            raise ValueError("An entity count matrix must be provided for Negative Binomial loss calculation.")
+        
+        entity_count_matrix = entity_count_matrix[heads.to(entity_count_matrix.device)].to(device=self.device, dtype=torch.float32, non_blocking=True)
+        mu = torch.exp(log_mu_tail)
+        alpha = torch.exp(log_alpha_tail)
+        k = entity_count_matrix
+
+        # Negative Binomial log-likelihood
+        log_likelihood = (
+            torch.lgamma(k + alpha)
+            - torch.lgamma(k + 1)
+            - torch.lgamma(alpha)
+            + alpha * torch.log(alpha / (alpha + mu))
+            + k * torch.log(mu / (alpha + mu))
+        )
+        
+        # Return negative log-likelihood, averaged over batch
+        return -log_likelihood.mean()
+
     def compute_phase1_losses(self, logits_rp_bce, logits_rp_poisson, logits_tail_bce, logits_tail_poisson, heads, relation_count_matrix, entity_count_matrix, phase1_loss_fn):
         """
         Centralized function to compute phase 1 losses (relation and tail prediction) based on the loss function type.
+        For negative_binomial, reuse logits_rp_bce as log_mu_rp, logits_rp_poisson as log_alpha_rp,
+        logits_tail_bce as log_mu_tp, logits_tail_poisson as log_alpha_tp.
         """
         if phase1_loss_fn == 'bce':
             rp_loss = self.compute_rp_bce_loss(logits_rp_bce, relation_count_matrix)
@@ -1417,6 +1470,9 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         elif phase1_loss_fn == 'poisson':
             rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
             tp_loss = self.compute_tail_poisson_loss(logits_tail_poisson, heads, entity_count_matrix)
+        elif phase1_loss_fn == 'negative_binomial':
+            rp_loss = self.compute_rp_negative_binomial_loss(logits_rp_bce, logits_rp_poisson, relation_count_matrix)
+            tp_loss = self.compute_tail_negative_binomial_loss(logits_tail_bce, logits_tail_poisson, heads, entity_count_matrix)
         elif phase1_loss_fn == 'hurdletail':
             rp_loss = self.compute_rp_poisson_loss(logits_rp_poisson, relation_count_matrix)
             tp_loss = self.compute_tail_hurdle_loss(logits_tail_bce, logits_tail_poisson, heads, entity_count_matrix)
@@ -1597,6 +1653,16 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
                 "logits_rp": logits_rp_poisson.detach().cpu(),
                 "logits_tp": logits_tp_poisson.detach().cpu(),
             }
+        elif self.phase1_loss_fn == 'negative_binomial':
+            # expected_count_rp = torch.exp(logits_rp_bce)
+            # expected_count_tp = torch.exp(logits_tp_bce)
+            expected_count_rp = logits_rp_bce
+            expected_count_tp = logits_tp_bce
+            return {
+                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+                "logits_rp": expected_count_rp.detach().cpu(),
+                "logits_tp": expected_count_tp.detach().cpu(),
+            }
         elif self.phase1_loss_fn == 'hurdletail':
             prob_non_zero = torch.sigmoid(logits_tp_bce)
             expected_count = prob_non_zero * torch.exp(logits_tp_poisson)
@@ -1623,7 +1689,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             expected_count_tp = prob_non_zero_tp * torch.exp(logits_tp_poisson)
             expected_count_tp = torch.log(expected_count_tp + 1e-10)
             return {
-                "tuples": heads.detach().cpu().unsqueeze(1),  # Use 'tuples' key for compatibility with trainer (contains heads)
+                "tuples": heads.detach().cpu().unsqueeze(1),   # Use 'tuples' key for compatibility with trainer (contains heads)
                 "logits_rp": expected_count_rp.detach().cpu(),
                 "logits_tp": expected_count_tp.detach().cpu(),
             }
