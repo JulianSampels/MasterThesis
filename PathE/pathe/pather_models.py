@@ -967,7 +967,7 @@ class PathEModelTuples(PathEModelTriples):
             )
         
         #adjust dimension because only heads and not heads and tails are used
-        self.rel_heads = LowRankMultiHead(d_model, vocab_size - 2)
+        self.relation_head = nn.Linear(d_model, vocab_size - 2)
         self.link_predict_head1 = nn.Linear(d_model * 2, d_model)
         self.link_predict_head2 = nn.Linear(d_model, 1)
 
@@ -979,7 +979,7 @@ class PathEModelTuples(PathEModelTriples):
             # Fallback in case the provided relcontext_graph has unexpected structure
             num_entities = vocab_size - 2  # safe fallback; will be corrected by trainer usage
         self.num_entities = num_entities
-        self.tail_heads = LowRankMultiHead(d_model, self.num_entities)
+        self.tail_head = nn.Linear(d_model, self.num_entities)
     
     def select_separated_head_embeddings(self, memory, head_idxs, entity_origin):
         """
@@ -1077,7 +1077,7 @@ class PathEModelTuples(PathEModelTriples):
         return logits_rp1, logits_tail1, logits_rp2, logits_tail2
 
     def predict_relation_from_h(self, head_emb):
-        return self.rel_heads(head_emb)
+        return self.relation_head(head_emb), None
 
     def link_predict_from_h(self, head_emb, targets):
         # Get relation embeddings for the target relations
@@ -1091,7 +1091,7 @@ class PathEModelTuples(PathEModelTriples):
         return predictions
     
     def tail_predict_from_h(self, head_emb: torch.Tensor):
-        return self.tail_heads(head_emb)
+        return self.tail_head(head_emb), None
 
     # ---------------------------
     # DIFFERENCE TO TRIPLES PREDICTION:
@@ -1100,3 +1100,40 @@ class PathEModelTuples(PathEModelTriples):
     # - The prediction heads (linear layers) are adjusted to accept only the concatenated head and relation embeddings (dimension d_model*2 instead of d_model*3).
     # - All aggregation and selection logic is simplified to ignore tails.
     # - This setup is suitable for tasks like predicting if a (head, relation) tuple is valid or for relation classification given only the head.
+
+
+class PathEModelTuplesMultiHead(PathEModelTuples):
+    def __init__(self,
+                 vocab_size: int,
+                 relcontext_graph: tuple,
+                 padding_idx: int,
+                 d_model: int = 512,
+                 nhead: int = 8,
+                 num_encoder_layers: int = 6,
+                 dim_feedforward: int = 2048,
+                 dropout: float = 0.1,
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 layer_norm_eps: float = 1e-5,
+                 ent_aggregation : str = "avg",
+                 num_agg_heads : int = 1,
+                 num_agg_layers : int = 1,
+                 laf_units : int = 1,
+                 context_heads : int = 1,
+                 batch_first: bool = True,
+                 norm_first: bool = False,
+                 node_projector: str = "GCN",
+                 max_seqlen: int = None,
+                ) -> None:
+        
+        super().__init__(vocab_size, relcontext_graph, padding_idx, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, activation, layer_norm_eps, 
+                         ent_aggregation, num_agg_heads, num_agg_layers, laf_units, context_heads, batch_first, norm_first, node_projector, max_seqlen,
+                )
+        # override the heads to be LowRankMultiHead
+        self.rel_heads = LowRankMultiHead(d_model, vocab_size - 2)
+        self.tail_heads = LowRankMultiHead(d_model, self.num_entities)
+    
+    def predict_relation_from_h(self, head_emb):
+        return self.rel_heads(head_emb)
+    
+    def tail_predict_from_h(self, head_emb: torch.Tensor):
+        return self.tail_heads(head_emb)

@@ -21,7 +21,7 @@ import gc
 from .candidates import *
 
 from .pathe_ranking_metrics import get_metric_mode
-from .pather_models import PathEModelTriples, PathEModelTuples
+from .pather_models import PathEModelTriples, PathEModelTuples, PathEModelTuplesMultiHead
 from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset, UniqueHeadEntityMultiPathDataset, create_vocabulary_from_relations
 from .data_utils import collate_multipaths, load_triple_tensors, \
     load_unrolled_setup, load_corrupted_triples_from_dir, \
@@ -719,11 +719,14 @@ def create_and_run_training_exp_two_phases(args):
         relcontext=relcon, num_entities=num_entities,
         num_relations=train_set_t.vocab_size - 2, offset=2)
     bundle = partial(bundle_arguments, exclude=["vocab_size"], args=namespace_to_dict(args))
-    model_t = PathEModelTuples(
+    # Choose model based on loss function: use MultiHead if loss requires two logits
+    multi_head_losses = ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']
+    model_class = PathEModelTuplesMultiHead if args.phase1_loss_fn in multi_head_losses else PathEModelTuples
+    model_t = model_class(
         vocab_size=train_set_t.vocab_size,
         relcontext_graph=relcontext_graph,
         padding_idx=tokens_to_idxs["PAD"],
-        **bundle(target_class=PathEModelTuples),
+        **bundle(target_class=model_class),
     )
     # tuple-specific filters for metrics
     map_head_to_relsets = triple_lib.make_relation_filter_dict_no_sp_tokens_tuples(train_tuples, val_tuples, test_tuples)
