@@ -461,7 +461,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk and returns partial results, which are merged globally
         num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
-        if k_total > 500 * 14000:
+        if k_total > 500 * 14000 and num_workers > 100:
             num_workers = min(num_workers, self.max_num_workers // 3) # Limit workers for very large k_total to avoid OOM
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
@@ -530,7 +530,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
                 batch_r.clear()
                 batch_h.clear()
                 batch_t.clear()
-                batch_size = max(batch_size // 1.5, 16)
+                batch_size = max(batch_size // 1.5, 64)
         
         # All chunks should be processed in batches; raise error if any remaining
         if batch_vals:
@@ -901,7 +901,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
         num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
-        if k_total > 500 * 14000:
+        if k_total > 500 * 14000 and num_workers > 100:
             num_workers = min(num_workers, self.max_num_workers // 3) # Limit workers for very large k_total to avoid OOM
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
@@ -970,7 +970,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
                 batch_r.clear()
                 batch_h.clear()
                 batch_t.clear()
-                batch_size = max(batch_size // 1.5, 16)
+                batch_size = max(batch_size // 1.5, 64)
         
         # All chunks should be processed in batches; raise error if any remaining
         if batch_vals:
