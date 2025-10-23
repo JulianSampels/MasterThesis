@@ -828,6 +828,14 @@ def create_and_run_training_exp_two_phases(args):
     valid_tuples_all, valid_scores_rp_all, valid_scores_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
     test_tuples_all, test_scores_rp_all, test_scores_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
+    # Free Phase 1a resources to save memory
+    del tr_loader_t, va_loader_t, te_loader_t
+    del trainer_t, pl_model_t, model_t
+    del checkpoint_callbk_t, estopping_callbk_t, dataset_callbk_t
+    gc.collect()
+    if args.device == "cuda":
+        torch.cuda.empty_cache()
+
     # Instantiate candidate generator based on args.candidate_generator
     if args.candidate_generator == 'global':
         candidate_generator = CandidateGeneratorGlobal(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers)
@@ -897,8 +905,7 @@ def create_and_run_training_exp_two_phases(args):
     # Create candidate figures
     create_figures(candidates_test, test_triples, test_set_t.relation_maps, train_triples, args.figure_dir)
 
-    # Cleanup Phase 1 resources to stop workers and free memory
-    del tr_loader_t, va_loader_t, te_loader_t
+    # Cleanup Phase 1b and parts of a resources to stop workers and free memory
     del train_set_t, valid_set_t, test_set_t
     del candidate_generator
     if args.device == "cuda":

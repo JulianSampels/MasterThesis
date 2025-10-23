@@ -322,15 +322,13 @@ class BaseCandidateGenerator(ABC):
         # Remaining memory for score calculation blocks
         score_calc_memory_budget = memory_budget_bytes - buffer_memory_bytes
         # assert score_calc_memory_budget > 0, "Not enough memory budget for score calculation blocks."
+        max_head_block_size = 1024**10  # Cap to avoid too large batches
+        # The dominant memory usage in a block is multiple (B, E) tensors (e.g., V, v_top, vals_flat).
+        # Estimate peak as 4 * (B, E) for safety.
+        head_block_size_calc = int(score_calc_memory_budget // (4 * E * bytes_per_float)) if E > 0 else 1
+        head_block_size = min(max_head_block_size, max(100, head_block_size_calc))
         if score_calc_memory_budget <= 0:
-            head_block_size = input(f"Warning: Not enough memory budget (missing {abs(score_calc_memory_budget)} bytes) for score calculation blocks. Please enter a fixed head_block_size (int) to use (e.g., 1, 10, 100): ")
-            head_block_size = int(head_block_size)
-        else: 
-            max_head_block_size = 1024**10  # Cap to avoid too large batches
-            # The dominant memory usage in a block is multiple (B, E) tensors (e.g., V, v_top, vals_flat).
-            # Estimate peak as 4 * (B, E) for safety.
-            head_block_size_calc = int(score_calc_memory_budget // (4 * E * bytes_per_float)) if E > 0 else 1
-            head_block_size = min(max_head_block_size, max(100, head_block_size_calc))
+            logger.warning(f"Not enough memory budget for adaptive head_block_size, defaulting to {head_block_size}. Buffer memory: {buffer_memory_bytes / 1e6:.2f} MB exceeds budget of {memory_budget_bytes / 1e6:.2f} MB.")
 
         estimated_block_memory = 4 * head_block_size * E * bytes_per_float
         total_estimated_memory_per_worker = buffer_memory_bytes + estimated_block_memory
@@ -463,6 +461,8 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk and returns partial results, which are merged globally
         num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
+        if k_total > 500:
+            num_workers = min(num_workers, 120)
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
         self.pool = self._get_or_create_pool(num_workers)
@@ -901,6 +901,8 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Multiprocessing: distribute relation chunks across processes to leverage multi-core CPUs
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
         num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
+        if k_total > 500:
+            num_workers = min(num_workers, 120)
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
         self.pool = self._get_or_create_pool(num_workers)
