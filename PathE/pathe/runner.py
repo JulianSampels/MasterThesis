@@ -98,7 +98,7 @@ def main():
                         help='Type of candidate generator to use: global (threshold/quantile-based), global_with_tail (includes tail logits), per_head (top-k per head).')
     parser.add_argument('--group_strategy', type=int, nargs='+', default=[0],
                         help='Columns to group by for candidate generation (e.g., [0] for head entities).')
-    parser.add_argument('--figure_dir', action='store', default="./figures",
+    parser.add_argument('--figure_dir', action='store', default=None,
                         help='Directory where figures will be saved.')
 
     # Logging and checkpointing
@@ -227,7 +227,6 @@ def main():
 
     args = parser.parse_args()
     args.log_dir = os.path.join(args.log_dir, args.model)
-    args.figure_dir = os.path.join(args.figure_dir, args.model, args.expname, args.candidate_generator, args.candidates_normalize_mode)
     # Filling missing/optional values if not provided ...
     # args.dtype = torch.double if args.dtype == 'd' else torch.float FIXME
     if not (0 <= args.loss_weight <= 1):
@@ -248,7 +247,6 @@ def main():
 
     # create_dir(args.log_dir)  # root folder for the experiment
     os.makedirs(args.log_dir, exist_ok=True)
-    os.makedirs(args.figure_dir, exist_ok=True)
 
     print(f"Model: {args.model} to train on {args.path_type} paths")
     print(f"Using {args.device} (tensor type: {args.dtype}) with random"
@@ -270,6 +268,10 @@ def main():
         run_full_eval(args)
         return
 
+    # Set figure_dir after logging setup when exp_dir is available
+    if args.figure_dir is None:
+        args.figure_dir = os.path.join(args.exp_dir, "figures")
+    os.makedirs(args.figure_dir, exist_ok=True)
 
     # print(args)
     if args.model == "pathe":
