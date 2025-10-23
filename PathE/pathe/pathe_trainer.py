@@ -640,16 +640,16 @@ def create_and_run_training_exp_two_phases(args):
     val_triples   = val_triples[torch.isin(val_triples[:, 1], torch.tensor(list(val_rel2inv.keys()), dtype=torch.long, device=val_triples.device))]
     test_triples  = test_triples[torch.isin(test_triples[:, 1], torch.tensor(list(test_rel2inv.keys()), dtype=torch.long, device=test_triples.device))]
 
-    # Get head-tail adjacency matrices for all splits
+    # Get head-tail adjacency matrices for all splits they should not include reverse relations as we want to learn directional adjacencies
     train_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(train_triples, num_entities)
     val_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(val_triples, num_entities)
     test_head_tail_adjacency = triple_lib.get_full_adjacency_matrix(test_triples, num_entities)
 
-    # Compute relation count matrices for each split
+    # Compute relation count matrices for each split they must include inverse relations as we want the model to learn them
     num_relations = len(tokens_to_idxs) - 2  # exclude PAD and MSK
-    train_relation_count_matrix = triple_lib.get_relation_count_matrix(train_triples, num_entities, num_relations)
-    val_relation_count_matrix = triple_lib.get_relation_count_matrix(val_triples, num_entities, num_relations)
-    test_relation_count_matrix = triple_lib.get_relation_count_matrix(test_triples, num_entities, num_relations)
+    train_relation_count_matrix = triple_lib.get_relation_count_matrix(train_tuples, num_entities, num_relations)
+    val_relation_count_matrix = triple_lib.get_relation_count_matrix(val_tuples, num_entities, num_relations)
+    test_relation_count_matrix = triple_lib.get_relation_count_matrix(test_tuples, num_entities, num_relations)
 
     assert(args.num_negatives == 0), "This two-phase training only works with num_negatives=0"
     assert(args.val_num_negatives == 0), "This two-phase training only works with val_num_negatives=0"

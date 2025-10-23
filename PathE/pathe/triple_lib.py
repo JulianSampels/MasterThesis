@@ -157,22 +157,22 @@ def get_full_adjacency_matrix(triples: torch.Tensor, num_entities: int) -> torch
     return adj
 
 
-def get_relation_count_matrix(triples: torch.Tensor, num_entities: int, num_relations: int) -> torch.Tensor:
+def get_relation_count_matrix(tuples: torch.Tensor, num_entities: int, num_relations: int) -> torch.Tensor:
     """
     Get the relation count matrix (num_entities x num_relations) of a KG based on the triples
     Parameters
     ----------
-    triples : A torch tensor of the triples with shape (num triples, 3)
+    triples : A torch tensor of the tuples with shape (num triples, 2)
     num_entities : The total number of entities in the KG
     num_relations : The total number of relations in the KG
     Returns
     -------
     The relation count matrix of shape (num_entities, num_relations)
     """
-    assert triples[:, 0].unique().max() < num_entities, "Entity index in triples head exceeds num_entities"
-    assert triples[:, 1].unique().max() < num_relations, "Relation index in triples exceeds num_relations"
+    assert tuples[:, 0].unique().max() < num_entities, "Entity index in triples head exceeds num_entities"
+    assert tuples[:, 1].unique().max() < num_relations, "Relation index in triples exceeds num_relations"
     rel_count = torch.zeros((num_entities, num_relations), dtype=torch.int32, device="cpu")
-    for h, r, t in triples.tolist():
+    for h, r in tuples.tolist():
         rel_count[h, r] += 1
     return rel_count
 
