@@ -151,15 +151,16 @@ def main():
     parser.add_argument('--patience', action='store', type=int, default=10,
                         help='Number of validation epochs with no improvement.')
     parser.add_argument('--tuple_monitor', action='store', default="valid_mrr",
-                        choices=["valid_rp_loss", "valid_tp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr",
+                        choices=["valid_rp_loss", "valid_tp_loss", "valid_total_loss", "valid_mrr", "valid_tail_mrr",
                                  "valid_tail_mrr", "valid_relation_rmse", "valid_tail_rmse",
-                                 "valid_link_hits@1", "valid_link_hits@3", "valid_link_hits@5", "valid_link_hits@10"],
+                                 "valid_hits1", "valid_hits3", "valid_hits5", "valid_hits10",
+                                 "valid_tail_hits1", "valid_tail_hits3", "valid_tail_hits5", "valid_tail_hits10"],
                         help='Monitored metric for early stopping and ckpt for tuples. '
                              'For counting loss functions (poisson, negative_binomial, etc.), use rmse metrics.')
     parser.add_argument('--triple_monitor', action='store', default="valid_link_mrr",
                         choices=["valid_rp_loss", "valid_lp_loss", "valid_total_loss", "valid_mrr", "valid_link_mrr", 
-                                 "valid_link_hits@1", "valid_link_hits@3", "valid_link_hits@5", "valid_link_hits@10", 
-                                 "valid_link_recall@5_perGroup", "valid_link_recall@10_perGroup"],
+                                 "valid_link_hits1", "valid_link_hits3", "valid_link_hits5", "valid_link_hits10", 
+                                 "valid_link_recall5_perGroup", "valid_link_recall10_perGroup"],
                         help='Monitored metric for early stopping and ckpt for triples.')
     parser.add_argument('--class_weigths', action='store_true', default=False,
                         help='Whether to weight the loss with class frequencies.')
