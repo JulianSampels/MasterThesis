@@ -8,8 +8,8 @@ from PathE.pathe import data_utils as du
 train_path = './data/path_datasets/wn18rr/train/'
 filename_end = "codex-small" 
 filename_end = "fb15k237" 
-filename_end = "fb15k" 
 filename_end = "wn18rr" 
+filename_end = "fb15k" 
 train_path = f'./data/path_datasets/{filename_end}/train/'
 
 triples = torch.load(f'{train_path}/triples.pt')
@@ -21,7 +21,7 @@ triples = triples[torch.isin(triples[:, 1], torch.tensor(list(train_rel2inv.keys
 
 
 # Generate the figures
-# create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filename=f"tail_occurrence_per_head_{filename_end}.svg")
-# create_relation_occurrence_figure(triples, save_dir="./figures", filename=f"relation_occurrence_{filename_end}.svg")
+create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filename=f"tail_occurrence_per_head_{filename_end}.svg")
+create_relation_occurrence_figure(triples, save_dir="./figures", filename=f"relation_occurrence_{filename_end}.svg")
 plot_relation_count_dispersion(triples, save_dir="./figures", filename=f"relation_dispersion_{filename_end}.svg")
 plot_tail_count_dispersion(triples, save_dir="./figures", filename=f"tail_dispersion_{filename_end}.svg")

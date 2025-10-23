@@ -647,7 +647,7 @@ def create_test_set_statistics_figure(context_triple_store, train_triples, save_
     
     print(f"Figure saved to {save_dir}/{filename}")
 
-def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filename="tail_occurrence_per_head.svg"):
+def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filename="tail_occurrence_per_head.svg", max_samples=1000000):
     """
     Create a histogram showing the distribution of the total number of tail occurrences per head entity (out-degree).
     This provides statistics on the occurrence count of tails for heads in the knowledge graph.
@@ -656,67 +656,74 @@ def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filena
         triples: (N, 3) tensor of triples (head, relation, tail)
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
+        max_samples: Max samples for histogram to avoid OOM (samples if data > max_samples)
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     
-    # Compute total tail occurrences per head (out-degree)
+    # Move to CPU if needed
+    triples = triples.cpu()
+    
+    # Compute total tail occurrences per head (out-degree) - vectorized
     head_to_tail_count = defaultdict(int)
     for triple in triples:
-        head = triple[0].item()
-        head_to_tail_count[head] += 1
+        head_to_tail_count[triple[0].item()] += 1
     
-    # Get all unique tails
-    all_tails = set()
-    for triple in triples:
-        all_tails.add(triple[2].item())
+    # Get all unique tails - vectorized
+    all_tails = torch.unique(triples[:, 2]).tolist()
     
-    # Compute per-head per-tail counts
-    head_to_tail_count_per_tail = defaultdict(lambda: defaultdict(int))
-    for triple in triples:
-        head = triple[0].item()
-        tail = triple[2].item()
-        head_to_tail_count_per_tail[head][tail] += 1
+    # Compute per-head per-tail counts - optimize: only compute averages, not full dict
+    head_to_avg_tail = {}
+    for head in head_to_tail_count.keys():
+        head_triples = triples[triples[:, 0] == head]
+        if head_triples.size(0) > 0:
+            tail_counts = torch.bincount(head_triples[:, 2], minlength=len(all_tails))
+            avg = tail_counts.float().mean().item()
+            head_to_avg_tail[head] = avg
     
-    # Add 0 for missing tails per head
-    for head in head_to_tail_count_per_tail:
-        for tail in all_tails:
-            if tail not in head_to_tail_count_per_tail[head]:
-                head_to_tail_count_per_tail[head][tail] = 0
-    
-    # Compute average tail count per head
-    avg_tail_per_head_list = []
-    for head, tail_dict in head_to_tail_count_per_tail.items():
-        counts = list(tail_dict.values())
-        if counts:
-            avg = sum(counts) / len(counts)
-            avg_tail_per_head_list.append(avg)
-    
+    # Compute averages
+    avg_tail_per_head_list = list(head_to_avg_tail.values())
     avg_tail = sum(avg_tail_per_head_list) / len(avg_tail_per_head_list) if avg_tail_per_head_list else 0
     
     # For excluding zero: average of averages where counts > 0
     nonzero_avg_tail_per_head_list = []
-    for head, tail_dict in head_to_tail_count_per_tail.items():
-        counts = [c for c in tail_dict.values() if c > 0]
-        if counts:
-            avg = sum(counts) / len(counts)
-            nonzero_avg_tail_per_head_list.append(avg)
+    for head in head_to_avg_tail.keys():
+        head_triples = triples[triples[:, 0] == head]
+        tail_counts = torch.bincount(head_triples[:, 2], minlength=len(all_tails))
+        nonzero_counts = tail_counts[tail_counts > 0].float()
+        if nonzero_counts.numel() > 0:
+            nonzero_avg_tail_per_head_list.append(nonzero_counts.mean().item())
     
     avg_tail_nonzero = sum(nonzero_avg_tail_per_head_list) / len(nonzero_avg_tail_per_head_list) if nonzero_avg_tail_per_head_list else 0
     
     print(f"Average tail occurrences per head: {avg_tail:.2f}")
     print(f"Average tail occurrences per head (excluding 0): {avg_tail_nonzero:.2f}")
     
-    # Get the count of tail occurrences per head
-    tail_counts = list(head_to_tail_count.values())
+    # Get tail_counts for histogram - sample if too large
+    tail_counts = []
+    for head in head_to_tail_count.keys():
+        head_triples = triples[triples[:, 0] == head]
+        tail_counts.extend(torch.bincount(head_triples[:, 2], minlength=len(all_tails)).tolist())
+    
+    if len(tail_counts) > max_samples:
+        import random
+        tail_counts = random.sample(tail_counts, max_samples)
+        print(f"Sampled {max_samples} tail counts for histogram to avoid OOM.")
+    
+    print(f"Total number of tail occurrence counts collected: {len(tail_counts)}, max: {max(tail_counts)}, min: {min(tail_counts)}")
     
     # Create histogram
     plt.figure(figsize=(10, 6))
-    plt.hist(tail_counts, bins=range(min(tail_counts), max(tail_counts) + 2), alpha=0.7, color='purple', edgecolor='black')
+    min_count = min(tail_counts)
+    max_count = max(tail_counts)
+    bins = np.arange(min_count - 0.5, max_count + 1.5, 1)
+    plt.hist(tail_counts, bins=bins, alpha=0.7, color='purple', edgecolor='black')
     plt.xlabel('Number of Tail Occurrences per Head')
     plt.ylabel('Number of Heads')
     plt.title('Distribution of Tail Occurrence Counts per Head')
     plt.grid(True, alpha=0.3)
+    plt.yscale('log')
+    plt.xticks(np.arange(min_count, max_count + 1, 1))
     
     # Add text with averages
     plt.text(0.7, 0.9, f'Avg tails/head: {avg_tail:.2f}\nAvg tails/head (non-zero): {avg_tail_nonzero:.2f}', 
@@ -729,7 +736,7 @@ def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filena
     
     print(f"Figure saved to {save_dir}/{filename}")
 
-def create_relation_occurrence_figure(triples, save_dir="./figures", filename="relation_occurrence.svg"):
+def create_relation_occurrence_figure(triples, save_dir="./figures", filename="relation_occurrence.svg", max_samples=100000):
     """
     Create a histogram showing the distribution of the occurrence count of each relation.
     This provides statistics on how frequently each relation appears in the knowledge graph.
@@ -738,65 +745,74 @@ def create_relation_occurrence_figure(triples, save_dir="./figures", filename="r
         triples: (N, 3) tensor of triples (head, relation, tail)
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
+        max_samples: Max samples for histogram to avoid OOM (samples if data > max_samples)
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
     
-    # Compute occurrence count per relation
+    # Move to CPU if needed
+    triples = triples.cpu()
+    
+    # Compute occurrence count per relation - vectorized
     relation_counts = defaultdict(int)
     for triple in triples:
-        rel = triple[1].item()
-        relation_counts[rel] += 1
+        relation_counts[triple[1].item()] += 1
     
-    # Get all unique relations
-    all_relations = set(relation_counts.keys())
+    # Get all unique relations - vectorized
+    all_relations = torch.unique(triples[:, 1]).tolist()
     
-    # Compute per-head relation counts
-    head_to_rel_count = defaultdict(lambda: defaultdict(int))
-    for triple in triples:
-        head = triple[0].item()
-        rel = triple[1].item()
-        head_to_rel_count[head][rel] += 1
+    # Compute per-head relation counts - optimize: only compute averages
+    head_to_avg_rel = {}
+    for head in torch.unique(triples[:, 0]).tolist():
+        head_triples = triples[triples[:, 0] == head]
+        if head_triples.size(0) > 0:
+            rel_counts = torch.bincount(head_triples[:, 1], minlength=len(all_relations))
+            avg = rel_counts.float().mean().item()
+            head_to_avg_rel[head] = avg
     
-    # Add 0 for missing relations per head
-    for head in head_to_rel_count:
-        for rel in all_relations:
-            if rel not in head_to_rel_count[head]:
-                head_to_rel_count[head][rel] = 0
-    
-    # Compute average relation count per head
-    avg_rel_per_head_list = []
-    for head, rel_dict in head_to_rel_count.items():
-        counts = list(rel_dict.values())
-        if counts:
-            avg = sum(counts) / len(counts)
-            avg_rel_per_head_list.append(avg)
-    
+    # Compute averages
+    avg_rel_per_head_list = list(head_to_avg_rel.values())
     avg_rel = sum(avg_rel_per_head_list) / len(avg_rel_per_head_list) if avg_rel_per_head_list else 0
     
     # For excluding zero: average of averages where counts > 0
     nonzero_avg_rel_per_head_list = []
-    for head, rel_dict in head_to_rel_count.items():
-        counts = [c for c in rel_dict.values() if c > 0]
-        if counts:
-            avg = sum(counts) / len(counts)
-            nonzero_avg_rel_per_head_list.append(avg)
+    for head in head_to_avg_rel.keys():
+        head_triples = triples[triples[:, 0] == head]
+        rel_counts = torch.bincount(head_triples[:, 1], minlength=len(all_relations))
+        nonzero_counts = rel_counts[rel_counts > 0].float()
+        if nonzero_counts.numel() > 0:
+            nonzero_avg_rel_per_head_list.append(nonzero_counts.mean().item())
     
     avg_rel_nonzero = sum(nonzero_avg_rel_per_head_list) / len(nonzero_avg_rel_per_head_list) if nonzero_avg_rel_per_head_list else 0
     
     print(f"Average relation occurrences per head: {avg_rel:.2f}")
     print(f"Average relation occurrences per head (excluding 0): {avg_rel_nonzero:.2f}")
     
-    # Get the counts
-    counts = list(relation_counts.values())
+    # Get counts for histogram - sample if too large
+    counts = []
+    for head in head_to_avg_rel.keys():
+        head_triples = triples[triples[:, 0] == head]
+        counts.extend(torch.bincount(head_triples[:, 1], minlength=len(all_relations)).tolist())
+    # counts = [c for c in counts if c > 0]  # Only consider non-zero counts
+    if len(counts) > max_samples:
+        import random
+        counts = random.sample(counts, max_samples)
+        print(f"Sampled {max_samples} relation counts for histogram to avoid OOM.")
+    
+    print(f"Total number of relation occurrence counts collected: {len(counts)}, max: {max(counts)}, min: {min(counts)}")
     
     # Create histogram
     plt.figure(figsize=(10, 6))
-    plt.hist(counts, bins=range(min(counts), max(counts) + 2), alpha=0.7, color='orange', edgecolor='black')
-    plt.xlabel('Number of Occurrences per Relation')
+    min_count = min(counts)
+    max_count = max(counts)
+    bins = np.arange(min_count - 0.5, max_count + 1.5, 1)
+    plt.hist(counts, bins=bins, alpha=0.7, color='orange', edgecolor='black')
+    plt.xlabel('Number of Occurrences per Relation per Head')
     plt.ylabel('Number of Relations')
     plt.title('Distribution of Relation Occurrence Counts')
+    plt.yscale('log')
     plt.grid(True, alpha=0.3)
+    # plt.xticks(np.arange(min_count, max_count + 1, 1))
     
     # Add text with averages for relations per head
     plt.text(0.7, 0.9, f'Avg rels/head: {avg_rel:.2f}\nAvg rels/head (non-zero): {avg_rel_nonzero:.2f}', 
