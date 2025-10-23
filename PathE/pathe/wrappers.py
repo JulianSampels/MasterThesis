@@ -926,7 +926,7 @@ class PathEModelWrapperTuples(PathEModelWrapperTriples):
 
         # Compute global after registration (buffers are on device now)
         if self.train_head_tail_adjacency is not None and self.val_head_tail_adjacency is not None and self.test_head_tail_adjacency is not None:
-            self.global_head_tail_adjacency = self.train_head_tail_adjacency | self.val_head_tail_adjacency | self.test_head_tail_adjacency
+            self.global_head_tail_adjacency = self.train_head_tail_adjacency + self.val_head_tail_adjacency + self.test_head_tail_adjacency
         else:
             self.global_head_tail_adjacency = None
 
@@ -1300,7 +1300,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
 
         # Compute global after registration
         if self.train_relation_count_matrix is not None and self.val_relation_count_matrix is not None and self.test_relation_count_matrix is not None:
-            self.global_relation_count_matrix = self.train_relation_count_matrix | self.val_relation_count_matrix | self.test_relation_count_matrix
+            self.global_relation_count_matrix = self.train_relation_count_matrix + self.val_relation_count_matrix + self.test_relation_count_matrix
         else:
             self.global_relation_count_matrix = None
         
