@@ -493,12 +493,19 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
                 
                 # Merge batch into global top-k
                 if filled == 0:
-                    take = min(k_total, cand_vals.numel())
-                    top_vals[:take] = cand_vals[:take]
-                    top_r[:take] = cand_r[:take]
-                    top_h[:take] = cand_h[:take]
-                    top_t[:take] = cand_t[:take]
-                    filled = take
+                    if cand_vals.numel() > k_total:
+                        vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
+                        top_vals[:k_total] = vtop
+                        top_r[:k_total] = cand_r[order]
+                        top_h[:k_total] = cand_h[order]
+                        top_t[:k_total] = cand_t[order]
+                        filled = k_total
+                    else:
+                        top_vals[:cand_vals.numel()] = cand_vals
+                        top_r[:cand_vals.numel()] = cand_r
+                        top_h[:cand_vals.numel()] = cand_h
+                        top_t[:cand_vals.numel()] = cand_t
+                        filled = cand_vals.numel()
                 else:
                     global_cand_vals = torch.cat([top_vals[:filled], cand_vals], dim=0)
                     global_cand_r = torch.cat([top_r[:filled], cand_r], dim=0)
@@ -924,12 +931,19 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
                 
                 # Merge batch into global top-k
                 if filled == 0:
-                    take = min(k_total, cand_vals.numel())
-                    top_vals[:take] = cand_vals[:take]
-                    top_r[:take] = cand_r[:take]
-                    top_h[:take] = cand_h[:take]
-                    top_t[:take] = cand_t[:take]
-                    filled = take
+                    if cand_vals.numel() > k_total:
+                        vtop, order = torch.topk(cand_vals, k=k_total, largest=True)
+                        top_vals[:k_total] = vtop
+                        top_r[:k_total] = cand_r[order]
+                        top_h[:k_total] = cand_h[order]
+                        top_t[:k_total] = cand_t[order]
+                        filled = k_total
+                    else:
+                        top_vals[:cand_vals.numel()] = cand_vals
+                        top_r[:cand_vals.numel()] = cand_r
+                        top_h[:cand_vals.numel()] = cand_h
+                        top_t[:cand_vals.numel()] = cand_t
+                        filled = cand_vals.numel()
                 else:
                     global_cand_vals = torch.cat([top_vals[:filled], cand_vals], dim=0)
                     global_cand_r = torch.cat([top_r[:filled], cand_r], dim=0)
