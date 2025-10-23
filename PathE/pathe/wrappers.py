@@ -201,6 +201,42 @@ class PathEModelWrapperTriples(LightningModule):
 
         # self.save_hyperparameters(ignore=['pathe_model', 'global_head_tail_adjacency', 'train_head_tail_adjacency', 'val_head_tail_adjacency', 'test_head_tail_adjacency', 'filtration_dict'])
 
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        """
+        Override state_dict to exclude large matrices and filtration_dict from checkpoints.
+        These can be recomputed or reloaded during model initialization to save space.
+        """
+        state_dict = super().state_dict(destination, prefix, keep_vars)
+        
+        # List of buffer keys to exclude
+        keys_to_exclude = [
+            'train_relation_count_matrix',
+            'val_relation_count_matrix',
+            'test_relation_count_matrix',
+            'global_relation_count_matrix',
+            'train_head_tail_adjacency',
+            'val_head_tail_adjacency',
+            'test_head_tail_adjacency',
+            'global_head_tail_adjacency',
+            'filtration_dict'
+        ]
+        
+        # Remove the keys if they exist in the state dict
+        for key in keys_to_exclude:
+            full_key = prefix + key
+            if full_key in state_dict:
+                del state_dict[full_key]
+        
+        return state_dict
+    
+    def load_state_dict(self, state_dict, strict: bool = True):
+        """
+        Override load_state_dict to handle missing buffers excluded from checkpoints.
+        Loads with strict=False to ignore keys like 'filtration_dict' that are recomputed.
+        """
+        super().load_state_dict(state_dict, strict=False)
+
+
     def calculate_lp_bce(self, logits, num_negatives = None, labels: torch.Tensor = None, sample_weights: torch.Tensor = None):
         """
         Calculates the weighted BCE loss for link prediction.
