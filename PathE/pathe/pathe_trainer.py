@@ -720,12 +720,14 @@ def create_and_run_training_exp_two_phases(args):
         num_relations=train_set_t.vocab_size - 2, offset=2)
     bundle = partial(bundle_arguments, exclude=["vocab_size"], args=namespace_to_dict(args))
     # Choose model based on loss function: use MultiHead if loss requires two logits
-    multi_head_losses = ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']
-    model_class = PathEModelTuplesMultiHead if args.phase1_loss_fn in multi_head_losses else PathEModelTuples
+    multi_head_losses = ['poisson', 'hurdle', 'negative_binomial']
+    model_class = PathEModelTuplesMultiHead
     model_t = model_class(
         vocab_size=train_set_t.vocab_size,
         relcontext_graph=relcontext_graph,
         padding_idx=tokens_to_idxs["PAD"],
+        relation_multi_head=(args.phase1_rp_loss_fn in multi_head_losses),
+        tail_multi_head=(args.phase1_tp_loss_fn in multi_head_losses),
         **bundle(target_class=model_class),
     )
     # tuple-specific filters for metrics
@@ -840,7 +842,7 @@ def create_and_run_training_exp_two_phases(args):
     if args.candidate_generator == 'global':
         candidate_generator = CandidateGeneratorGlobal(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers)
     elif args.candidate_generator == 'global_with_tail':
-        candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers, phase1_loss_fn=args.phase1_loss_fn)
+        candidate_generator = CandidateGeneratorGlobalWithTail(p=args.candidates_threshold_p, q=args.candidates_quantile_q, temperature=args.candidates_temperature, alpha=args.candidates_alpha, beta=args.candidates_beta, per_group_cap=args.candidates_cap, normalize_mode=args.candidates_normalize_mode, max_num_workers=args.num_workers)
     elif args.candidate_generator == 'per_head':
         candidate_generator = CandidateGeneratorPerHead(per_group_cap=args.candidates_cap, alpha=args.candidates_alpha)
     else:

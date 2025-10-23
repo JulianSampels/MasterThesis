@@ -1123,17 +1123,31 @@ class PathEModelTuplesMultiHead(PathEModelTuples):
                  norm_first: bool = False,
                  node_projector: str = "GCN",
                  max_seqlen: int = None,
+                 relation_multi_head: bool = True,
+                 tail_multi_head: bool = True,
                 ) -> None:
         
         super().__init__(vocab_size, relcontext_graph, padding_idx, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, activation, layer_norm_eps, 
                          ent_aggregation, num_agg_heads, num_agg_layers, laf_units, context_heads, batch_first, norm_first, node_projector, max_seqlen,
                 )
         # override the heads to be LowRankMultiHead
-        self.rel_heads = LowRankMultiHead(d_model, vocab_size - 2)
-        self.tail_heads = LowRankMultiHead(d_model, self.num_entities)
+        if relation_multi_head:
+            self.rel_heads = LowRankMultiHead(d_model, vocab_size - 2)
+        else:
+            self.rel_heads = nn.Linear(d_model, vocab_size - 2)
+        if tail_multi_head:
+            self.tail_heads = LowRankMultiHead(d_model, self.num_entities)
+        else:
+            self.tail_heads = nn.Linear(d_model, self.num_entities)
     
     def predict_relation_from_h(self, head_emb):
-        return self.rel_heads(head_emb)
+        if isinstance(self.rel_heads, LowRankMultiHead):
+            return self.rel_heads(head_emb)
+        else:
+            return self.rel_heads(head_emb), None
     
     def tail_predict_from_h(self, head_emb: torch.Tensor):
-        return self.tail_heads(head_emb)
+        if isinstance(self.tail_heads, LowRankMultiHead):
+            return self.tail_heads(head_emb)
+        else:
+            return self.tail_heads(head_emb), None

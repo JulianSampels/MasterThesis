@@ -119,9 +119,12 @@ def main():
     parser.add_argument('--lp_loss_fn', action='store',
                         choices=['bce', 'ce', 'nssa'], default='nssa',
                         help='The name of the loss to use for link prediction.')
-    parser.add_argument('--phase1_loss_fn', action='store',
-                        choices=['bce', 'poisson', 'hurdletail', 'hurdlerelation', 'hurdleboth', 'negative_binomial'], default='bce',
-                        help='The name of the loss to use for phase 1 (tuples) training: bce or poisson.')
+    parser.add_argument('--phase1_rp_loss_fn', action='store',
+                        choices=['bce', 'poisson', 'hurdle', 'negative_binomial'], default='bce',
+                        help='The name of the loss to use for phase 1 relation prediction.')
+    parser.add_argument('--phase1_tp_loss_fn', action='store',
+                        choices=['bce', 'poisson', 'hurdle', 'negative_binomial'], default='bce',
+                        help='The name of the loss to use for phase 1 tail prediction.')
     parser.add_argument('--use_manual_optimization', action='store_true', default=False,
                         help='Whether to use manual optimization with independent heads.')
     parser.add_argument('--link_head_detached', action='store_true', default=False,

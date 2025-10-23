@@ -1303,7 +1303,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
                 train_relation_count_matrix=None,
                 val_relation_count_matrix=None,
                 test_relation_count_matrix=None,
-                phase1_loss_fn='bce',
+                phase1_rp_loss_fn='bce',
+                phase1_tp_loss_fn='bce',
                 **kwargs):
         super().__init__(pathe_model, filtration_dict, train_head_tail_adjacency, val_head_tail_adjacency, test_head_tail_adjacency, num_negatives,
                          optimiser, scheduler, lrate, momentum, weight_decay,
@@ -1316,7 +1317,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
                          accumulate_gradient=accumulate_gradient, margin=margin, nssa_alpha=nssa_alpha,
                          lp_loss_fn=lp_loss_fn, link_head_detached=link_head_detached, use_manual_optimization=use_manual_optimization,
                          loss_weight=loss_weight, **kwargs)
-        self.phase1_loss_fn = phase1_loss_fn
+        self.phase1_rp_loss_fn = phase1_rp_loss_fn
+        self.phase1_tp_loss_fn = phase1_tp_loss_fn
         
         # Store relation count matrices as buffers
         if train_relation_count_matrix is not None:
@@ -1528,7 +1530,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         )
         
         # Return negative log-likelihood, averaged over batch
-        return -log_likelihood.mean()
+        loss = -log_likelihood.mean()
+        return loss
 
     def compute_tail_negative_binomial_loss(self, log_mu_tail, log_alpha_tail, entity_count_matrix):
         """
@@ -1554,35 +1557,40 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         )
         
         # Return negative log-likelihood, averaged over batch
-        return -log_likelihood.mean()
+        loss = -log_likelihood.mean()
+        return loss
 
-    def compute_phase1_losses(self, logits1_rp, logits2_rp, logits1_tail, logits2_tail, relation_count_matrix, entity_count_matrix, phase1_loss_fn):
+    def compute_phase1_losses(self, logits1_rp, logits2_rp, logits1_tail, logits2_tail, relation_count_matrix, entity_count_matrix, phase1_rp_loss_fn, phase1_tp_loss_fn):
         """
         Centralized function to compute phase 1 losses (relation and tail prediction) based on the loss function type.
         For negative_binomial, reuse logits_rp_bce as log_mu_rp, logits_rp_poisson as log_alpha_rp,
         logits_tail_bce as log_mu_tp, logits_tail_poisson as log_alpha_tp.
         """
-        if phase1_loss_fn == 'bce':
+        # Compute RP loss
+        if phase1_rp_loss_fn == 'bce':
             rp_loss = self.compute_rp_bce_loss(logits1_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_bce_loss(logits1_tail, entity_count_matrix)
-        elif phase1_loss_fn == 'poisson':
-            rp_loss = self.compute_rp_poisson_loss(logits2_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_poisson_loss(logits2_tail, entity_count_matrix)
-        elif phase1_loss_fn == 'negative_binomial':
+        elif phase1_rp_loss_fn == 'poisson':
+            rp_loss = self.compute_rp_poisson_loss(logits1_rp, relation_count_matrix)
+        elif phase1_rp_loss_fn == 'hurdle':
+            rp_loss = self.compute_rp_hurdle_loss(logits1_rp, logits2_rp, relation_count_matrix)
+        elif phase1_rp_loss_fn == 'negative_binomial':
             rp_loss = self.compute_rp_negative_binomial_loss(logits1_rp, logits2_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_negative_binomial_loss(logits1_tail, logits2_tail, entity_count_matrix)
-        elif phase1_loss_fn == 'hurdletail':
-            rp_loss = self.compute_rp_poisson_loss(logits2_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_hurdle_loss(logits1_tail, logits2_tail, entity_count_matrix)
-        elif phase1_loss_fn == 'hurdlerelation':
-            rp_loss = self.compute_rp_hurdle_loss(logits1_rp, logits2_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_poisson_loss(logits2_tail, entity_count_matrix)
-        elif phase1_loss_fn == 'hurdleboth':
-            rp_loss = self.compute_rp_hurdle_loss(logits1_rp, logits2_rp, relation_count_matrix)
-            tp_loss = self.compute_tail_hurdle_loss(logits1_tail, logits2_tail, entity_count_matrix)
         else:
-            raise ValueError(f"Invalid phase1_loss_fn: {phase1_loss_fn}. Must be 'bce', 'poisson', 'hurdle', 'hurdlerelation', or 'hurdleboth'.")
-        return rp_loss, tp_loss
+            raise ValueError(f"Invalid phase1_rp_loss_fn: {phase1_rp_loss_fn}. Must be 'bce', 'poisson', 'hurdle', or 'negative_binomial'.")
+        
+        # Compute TP loss
+        if phase1_tp_loss_fn == 'bce':
+            tp_loss = self.compute_tail_bce_loss(logits1_tail, entity_count_matrix)
+        elif phase1_tp_loss_fn == 'poisson':
+            tp_loss = self.compute_tail_poisson_loss(logits1_tail, entity_count_matrix)
+        elif phase1_tp_loss_fn == 'hurdle':
+            tp_loss = self.compute_tail_hurdle_loss(logits1_tail, logits2_tail, entity_count_matrix)
+        elif phase1_tp_loss_fn == 'negative_binomial':
+            tp_loss = self.compute_tail_negative_binomial_loss(logits1_tail, logits2_tail, entity_count_matrix)
+        else:
+            raise ValueError(f"Invalid phase1_tp_loss_fn: {phase1_tp_loss_fn}. Must be 'bce', 'poisson', 'hurdle', or 'negative_binomial'.")
+        
+        return (1.0 - self.loss_weight) * rp_loss, self.loss_weight * tp_loss
     
     def training_step(self, batch, batch_idx):
         logits_rp1, logits_tail1, logits_rp2, logits_tail2 = self.model_forward(batch)
@@ -1591,7 +1599,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         entity_count_matrix = self.train_head_tail_adjacency[heads.to(self.train_head_tail_adjacency.device)]
 
         # Losses
-        rp_loss_unscaled, tp_loss_unscaled = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_loss_fn)
+        rp_loss_unscaled, tp_loss_unscaled = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_rp_loss_fn, self.phase1_tp_loss_fn)
 
         if not self.use_manual_optimization:
             total_loss = (1.0 - self.loss_weight) * rp_loss_unscaled + self.loss_weight * tp_loss_unscaled
@@ -1652,8 +1660,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         relation_count_matrix = self.val_relation_count_matrix[heads.to(self.val_relation_count_matrix.device)]
 
         # Losses
-        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_loss_fn)
-        total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_rp_loss_fn, self.phase1_tp_loss_fn)
+        total_loss = rp_loss + tp_loss # weighted inside compute_phase1_losses
         
         self.log("valid_rp_loss", rp_loss)
         self.log("valid_tp_loss", tp_loss)
@@ -1662,9 +1670,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # Update metrics
         scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
         # Update RMSE metrics for counting functions
-        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
+        if self.phase1_rp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
             self.val_relationRMSE.update(scores_rp, relation_count_matrix)
-            self.val_tailRMSE.update(scores_tp, entity_count_matrix)
         else:
             self.val_relationMRR.update(heads, scores_rp, relation_count_matrix)
             self.val_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
@@ -1672,6 +1679,9 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             self.val_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
             self.val_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
+        if self.phase1_tp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
+            self.val_tailRMSE.update(scores_tp, entity_count_matrix)
+        else:
             self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
             self.val_tailHitsAt1.update(heads, scores_tp, entity_count_matrix)
             self.val_tailHitsAt3.update(heads, scores_tp, entity_count_matrix)
@@ -1682,10 +1692,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     @torch.no_grad()
     def validation_epoch_end(self, outputs):
         # Log relation metrics (torchmetrics computes and resets them automatically)
-        # Log RMSE metrics for counting functions
-        if self.phase1_loss_fn in ['poisson', 'negative_binomial', 'hurdletail', 'hurdlerelation', 'hurdleboth']:
+        if self.phase1_rp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
             self.log("valid_relation_rmse", self.val_relationRMSE, on_step=False, on_epoch=True, prog_bar=True)
-            self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=True)
         else:
             self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
             self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
@@ -1693,6 +1701,9 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
             self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
             
+        if self.phase1_tp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
+            self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=True)
+        else:
             # Log tail metrics
             self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
             self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
@@ -1718,14 +1729,14 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         entity_count_matrix = self.test_head_tail_adjacency[heads.to(self.test_head_tail_adjacency.device)]
 
         # Losses
-        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_loss_fn)
+        rp_loss, tp_loss = self.compute_phase1_losses(logits_rp1, logits_rp2, logits_tail1, logits_tail2, relation_count_matrix, entity_count_matrix, self.phase1_rp_loss_fn, self.phase1_tp_loss_fn)
         total_loss = (1.0 - self.loss_weight) * rp_loss + self.loss_weight * tp_loss
         
         self.log("test_rp_loss", rp_loss)
         self.log("test_tp_loss", tp_loss)
         self.log("test_total_loss", total_loss)
 
-        # Update metrics
+        # Update all metrics for test set
         scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
             
         self.test_relationMRR.update(heads, scores_rp, relation_count_matrix)
@@ -1766,34 +1777,34 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.log("test_tail_rmse", self.test_tailRMSE, on_step=False, on_epoch=True)
 
     def generate_scores(self, logits1_rp, logits2_rp, logits1_tp, logits2_tp):
-        if self.phase1_loss_fn == 'bce':
+        # Compute RP scores based on phase1_rp_loss_fn
+        if self.phase1_rp_loss_fn == 'bce':
             scores_rp = logits1_rp
-            scores_tp = logits1_tp
-        elif self.phase1_loss_fn == 'poisson':
-            scores_rp = logits2_rp
-            scores_tp = logits2_tp
-        elif self.phase1_loss_fn == 'negative_binomial':
+        elif self.phase1_rp_loss_fn == 'poisson':
             scores_rp = logits1_rp
-            scores_tp = logits1_tp
-        elif self.phase1_loss_fn == 'hurdletail':
-            prob_non_zero = torch.sigmoid(logits1_tp)
-            expected_count = prob_non_zero * torch.exp(logits2_tp)
-            scores_rp = logits2_rp
-            scores_tp = torch.log(expected_count + 1e-10)
-        elif self.phase1_loss_fn == 'hurdlerelation':
+        elif self.phase1_rp_loss_fn == 'hurdle':
             prob_non_zero_rp = torch.sigmoid(logits1_rp)
             expected_count_rp = prob_non_zero_rp * torch.exp(logits2_rp)
             scores_rp = torch.log(expected_count_rp + 1e-10)
-            scores_tp = logits2_tp
-        elif self.phase1_loss_fn == 'hurdleboth':
-            prob_non_zero_rp = torch.sigmoid(logits1_rp)
-            expected_count_rp = prob_non_zero_rp * torch.exp(logits2_rp)
-            scores_rp = torch.log(expected_count_rp + 1e-10)
+        elif self.phase1_rp_loss_fn == 'negative_binomial':
+            scores_rp = logits1_rp  # log_mu
+        else:
+            raise ValueError(f"Unknown phase1_rp_loss_fn: {self.phase1_rp_loss_fn}")
+        
+        # Compute TP scores based on phase1_tp_loss_fn
+        if self.phase1_tp_loss_fn == 'bce':
+            scores_tp = logits1_tp
+        elif self.phase1_tp_loss_fn == 'poisson':
+            scores_tp = logits1_tp
+        elif self.phase1_tp_loss_fn == 'hurdle':
             prob_non_zero_tp = torch.sigmoid(logits1_tp)
             expected_count_tp = prob_non_zero_tp * torch.exp(logits2_tp)
             scores_tp = torch.log(expected_count_tp + 1e-10)
+        elif self.phase1_tp_loss_fn == 'negative_binomial':
+            scores_tp = logits1_tp  # log_mu
         else:
-            raise ValueError(f"Unknown phase1_loss_fn: {self.phase1_loss_fn}")
+            raise ValueError(f"Unknown phase1_tp_loss_fn: {self.phase1_tp_loss_fn}")
+        
         return scores_rp, scores_tp
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
