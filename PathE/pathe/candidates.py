@@ -530,7 +530,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
                 batch_r.clear()
                 batch_h.clear()
                 batch_t.clear()
-                batch_size = max(batch_size // 2, 16)
+                batch_size = max(batch_size // 1.5, 16)
         
         # All chunks should be processed in batches; raise error if any remaining
         if batch_vals:
@@ -970,7 +970,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
                 batch_r.clear()
                 batch_h.clear()
                 batch_t.clear()
-                batch_size = max(batch_size // 2, 16)
+                batch_size = max(batch_size // 1.5, 16)
         
         # All chunks should be processed in batches; raise error if any remaining
         if batch_vals:
