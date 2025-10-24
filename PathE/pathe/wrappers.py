@@ -1693,15 +1693,15 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     @torch.no_grad()
     def validation_epoch_end(self, outputs):
         # Log relation metrics (torchmetrics computes and resets them automatically)
-        self.log("valid_relation_rmse", self.val_relationRMSE, on_step=False, on_epoch=True, prog_bar=(self.rp_loss_fn != "bce"))
+        self.log("valid_relation_rmse", self.val_relationRMSE, on_step=False, on_epoch=True, prog_bar=(self.phase1_rp_loss_fn != "bce"))
         self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
         self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
         self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
         self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
         self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
             
-        self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=self.tp_loss_fn != "bce")
         # Log tail metrics
+        self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=self.phase1_tp_loss_fn != "bce")
         if self.tuple_monitor == "valid_tail_mrr": self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
         if self.tuple_monitor == "valid_tail_hits1": self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
         if self.tuple_monitor == "valid_tail_hits3": self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
