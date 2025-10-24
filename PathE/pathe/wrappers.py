@@ -1359,10 +1359,10 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         self.test_relationHitsAt10 = RelationHitsAtKUniqueHeads(k=10, filter_global_relation_count_matrix=self.global_relation_count_matrix)
         
         # RMSE metrics for count prediction (only used when phase1_loss_fn is a counting function)
-        self.val_relationRMSE = CountRMSE(is_log_output=True)
-        self.val_tailRMSE = CountRMSE(is_log_output=True)
-        self.test_relationRMSE = CountRMSE(is_log_output=True)
-        self.test_tailRMSE = CountRMSE(is_log_output=True)
+        self.val_relationRMSE = CountRMSE(is_log_output=True, p=1)
+        self.val_tailRMSE = CountRMSE(is_log_output=True, p=1)
+        self.test_relationRMSE = CountRMSE(is_log_output=True, p=1)
+        self.test_tailRMSE = CountRMSE(is_log_output=True, p=1)
     
     def compute_rp_bce_loss(self, logits, relation_count_matrix: torch.Tensor):
         """
@@ -1667,7 +1667,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         
         self.log("valid_rp_loss", rp_loss)
         self.log("valid_tp_loss", tp_loss)
-        self.log("valid_total_loss", total_loss, prog_bar=True)
+        self.log("valid_total_loss", total_loss, prog_bar=self.tuple_monitor == "valid_total_loss")
 
         # Update metrics
         scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
@@ -1683,7 +1683,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # Update tail metrics
         self.val_tailRMSE.update(scores_tp, entity_count_matrix)
         # (slower since not fully vectorized)
-        if self.tuple_monitor == "valid_tail_mrr": self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
+        if True or self.tuple_monitor == "valid_tail_mrr": self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
         if self.tuple_monitor == "valid_tail_hits1": self.val_tailHitsAt1.update(heads, scores_tp, entity_count_matrix)
         if self.tuple_monitor == "valid_tail_hits3": self.val_tailHitsAt3.update(heads, scores_tp, entity_count_matrix)
         if self.tuple_monitor == "valid_tail_hits5": self.val_tailHitsAt5.update(heads, scores_tp, entity_count_matrix)
@@ -1702,7 +1702,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             
         # Log tail metrics
         self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=self.phase1_tp_loss_fn != "bce")
-        if self.tuple_monitor == "valid_tail_mrr": self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
+        if True or self.tuple_monitor == "valid_tail_mrr": self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
         if self.tuple_monitor == "valid_tail_hits1": self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
         if self.tuple_monitor == "valid_tail_hits3": self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
         if self.tuple_monitor == "valid_tail_hits5": self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
