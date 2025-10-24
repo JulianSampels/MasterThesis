@@ -1718,11 +1718,11 @@ class TailAllEntityMRR(Metric):
 
 class CountRMSE(Metric):
     """
-    Root Mean Squared Error for count prediction tasks.
+    Generalized Error Metric for count prediction tasks (e.g., RMSE when p=2).
     """
     higher_is_better = False
 
-    def __init__(self, is_log_output: bool = True):
+    def __init__(self, is_log_output: bool = True, p: float = 2.0):
         """
         The constructor.
         Parameters
@@ -1730,10 +1730,13 @@ class CountRMSE(Metric):
         is_log_output : bool
             Whether the model's predictions are log-transformed (e.g., log-rates from a Poisson model).
             If True, an exponential transformation is applied before calculating the error.
+        p : float
+            The power for the error calculation (e.g., p=2 for RMSE, p=1 for MAE approximation).
         """
         super().__init__()
         self.is_log_output = is_log_output
-        self.add_state("squared_error", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.p = p
+        self.add_state("error_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
     def update(self, preds: torch.Tensor, target: torch.Tensor):
@@ -1750,15 +1753,15 @@ class CountRMSE(Metric):
         if self.is_log_output:
             preds = torch.exp(preds)
 
-        squared_error = torch.pow(preds - target, 2).sum()
-        self.squared_error += squared_error
+        error_sum = torch.pow(preds - target, self.p).sum()
+        self.error_sum += error_sum
         self.total += target.numel()
 
     def compute(self):
         """
-        Compute the Root Mean Squared Error.
+        Compute the generalized error metric.
         """
-        return torch.sqrt(self.squared_error / self.total.clamp_min(1))
+        return torch.pow(self.error_sum / self.total.clamp_min(1), 1/self.p)
 
 def get_metric_mode(model, monitor):
     """
