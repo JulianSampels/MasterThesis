@@ -925,7 +925,24 @@ class PathEModelTriples(nn.Module):
         tail_emb = tail_emb.unsqueeze(0) if tail_emb.ndim < 2 else tail_emb
 
         logits_rp = self.predict_relation_from_ht(head_emb, tail_emb)
-        logits_link = self.link_predict_from_ht(head_emb, tail_emb, targets)
+
+        if head_emb.size(0) != targets.size(0):
+            # Fix for strange behaviour on untrained model
+            print(f"Head emb size {head_emb.size(0)}, targets size {targets.size(0)} mismatch. Assuming missing head/tail paths. ")
+            logger.warning("Head/tail embeddings size does not match targets size. Assuming missing head/tail paths. If this is unexpected, please check this part of the code.")
+            # Candidate mode: map aggregated embeddings back to full candidate list
+            # Assuming entity_origin or another batch key maps candidates to embeddings
+            # This needs the original triple indices before aggregation
+            
+            # TEMPORARY FIX: Use head_idxs/tail_idxs to reconstruct per-candidate embeddings
+            head_emb_full = head_emb[entity_origin[entity_origin == 0].size(0)]
+            tail_emb_full = tail_emb[entity_origin[entity_origin == 1].size(0)]
+
+            print(f"Head emb full {head_emb_full.shape}, Tail emb full {tail_emb_full.shape}")
+            
+            logits_link = self.link_predict_from_ht(head_emb_full, tail_emb_full, targets)
+        else:
+            logits_link = self.link_predict_from_ht(head_emb, tail_emb, targets)
 
         return logits_rp, logits_link
 
