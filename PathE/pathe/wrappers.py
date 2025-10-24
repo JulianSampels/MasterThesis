@@ -1518,8 +1518,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         log_alpha: log of the predicted dispersion (α)
         relation_count_matrix: target counts (k)
         """
-        mu = torch.exp(log_mu)
-        alpha = torch.exp(log_alpha)
+        mu = torch.exp(log_mu).clamp_min(1e-10)
+        alpha = torch.exp(log_alpha).clamp_min(1e-10)
         k = relation_count_matrix.to(device=self.device, dtype=torch.float32, non_blocking=True)
 
         # Negative Binomial log-likelihood (numerical stability with lgamma)
@@ -1527,8 +1527,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             torch.lgamma(k + alpha)
             - torch.lgamma(k + 1)
             - torch.lgamma(alpha)
-            + alpha * torch.log(alpha / (alpha + mu))
-            + k * torch.log(mu / (alpha + mu))
+            + alpha * torch.log(alpha / (alpha + mu) + 1e-10)
+            + k * torch.log(mu / (alpha + mu) + 1e-10)
         )
         
         # Return negative log-likelihood, averaged over batch
@@ -1544,9 +1544,9 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         """
         if entity_count_matrix is None:
             raise ValueError("An entity count matrix must be provided for Negative Binomial loss calculation.")
-        
-        mu = torch.exp(log_mu_tail)
-        alpha = torch.exp(log_alpha_tail)
+
+        mu = torch.exp(log_mu_tail).clamp_min(1e-10)
+        alpha = torch.exp(log_alpha_tail).clamp_min(1e-10)
         k = entity_count_matrix
 
         # Negative Binomial log-likelihood
@@ -1554,8 +1554,8 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             torch.lgamma(k + alpha)
             - torch.lgamma(k + 1)
             - torch.lgamma(alpha)
-            + alpha * torch.log(alpha / (alpha + mu))
-            + k * torch.log(mu / (alpha + mu))
+            + alpha * torch.log(alpha / (alpha + mu) + 1e-10)
+            + k * torch.log(mu / (alpha + mu) + 1e-10)
         )
         
         # Return negative log-likelihood, averaged over batch
