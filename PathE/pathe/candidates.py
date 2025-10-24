@@ -460,7 +460,7 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         # Each process computes top-k for its chunk and returns partial results, which are merged globally
         num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
         if k_total > 500 * 14000 and num_workers > 100:
-            num_workers = min(num_workers, self.max_num_workers // 3) # Limit workers for very large k_total to avoid OOM
+            num_workers = min(num_workers, self.max_num_workers // 4) # Limit workers for very large k_total to avoid OOM
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
         self.pool = self._get_or_create_pool(num_workers)
@@ -886,7 +886,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         # Each process computes top-k for its chunk (with batched head processing to control memory) and returns partial results, which are merged globally
         num_workers = min(self.max_num_workers, math.ceil(R / self.rel_block_size if self.rel_block_size is not None else R))
         if k_total > 500 * 14000 and num_workers > 100:
-            num_workers = min(num_workers, self.max_num_workers // 3) # Limit workers for very large k_total to avoid OOM
+            num_workers = min(num_workers, self.max_num_workers // 4) # Limit workers for very large k_total to avoid OOM
         chunks = np.array_split(np.arange(R), num_workers)
         chunks = [torch.tensor(chunk, dtype=torch.long) for chunk in chunks]
         self.pool = self._get_or_create_pool(num_workers)
