@@ -61,6 +61,19 @@ def predict_all(trainer, model, loader, ckpt_path=None):
     del outs, pred_loader
     return tuples_all, scores_rp_all, scores_tp_all
 
+def shutdown_dataloader(loader):
+    """Aggressively stop persistent DataLoader workers."""
+    if loader is None:
+        return
+    try:
+        it = getattr(loader, "_iterator", None)
+        if it is not None:
+            it._shutdown_workers()
+        print("Successfully shutdown dataloader workers.")
+    except Exception as e:
+        print(f"Could not shutdown dataloader workers: {e}")
+        logger.debug(f"Could not shutdown dataloader workers: {e}")
+
 def create_and_run_training_exp_tuples(args):
     """
     Main entry point for the experimental setup, execution, and evaluation.
@@ -830,7 +843,14 @@ def create_and_run_training_exp_two_phases(args):
     valid_tuples_all, valid_scores_rp_all, valid_scores_tp_all = predict_all(trainer_t, pl_model_t, va_loader_t, ckpt_path=tuple_ckpt)
     test_tuples_all, test_scores_rp_all, test_scores_tp_all = predict_all(trainer_t, pl_model_t, te_loader_t, ckpt_path=tuple_ckpt)
 
-    # Free Phase 1a resources to save memory
+    # Free Phase 1a resources to save memory for candidate generation
+    del train_head_tail_adjacency, val_head_tail_adjacency, test_head_tail_adjacency
+    del train_relation_count_matrix, val_relation_count_matrix, test_relation_count_matrix
+    # Stop worker processes
+    shutdown_dataloader(tr_loader_t)
+    shutdown_dataloader(va_loader_t)
+    shutdown_dataloader(te_loader_t)
+
     del tr_loader_t, va_loader_t, te_loader_t
     del trainer_t, pl_model_t, model_t
     del checkpoint_callbk_t, estopping_callbk_t, dataset_callbk_t
@@ -907,7 +927,7 @@ def create_and_run_training_exp_two_phases(args):
     # Create candidate figures
     create_figures(candidates_test, test_triples, test_set_t.relation_maps, train_triples, args.figure_dir)
 
-    # Cleanup Phase 1b and parts of a resources to stop workers and free memory
+    # Cleanup Phase 1b and parts of a resources and free memory
     del train_set_t, valid_set_t, test_set_t
     del candidate_generator
     if args.device == "cuda":
