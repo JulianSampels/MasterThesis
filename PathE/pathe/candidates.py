@@ -1131,7 +1131,8 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
     candidate_generator._get_or_create_pool(args.num_workers)
     test_triples_group_ids = triple_lib.generate_group_id_function(test_triples, args.group_strategy)(test_triples)
     
-    for temp, beta, alpha in tqdm(param_combinations, desc="Grid Search", unit="config", leave=False):
+    pbar = tqdm(param_combinations, desc="Grid Search", unit="config", leave=False)
+    for temp, beta, alpha in pbar:
         # Manually change the parameters
         candidate_generator.alpha = alpha
         candidate_generator.beta = beta
@@ -1164,6 +1165,9 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
         if avg_cov_per_group > best_per_group:
             best_per_group = avg_cov_per_group
             best_params_per_group = (alpha, beta, temp)
+        
+        # Update progress bar with current best total coverage
+        pbar.set_description(f"Grid Search (best total cov: {best_total_cov:.4f}, best avg cov: {best_per_group:.4f})")
         # tqdm.write(f"Params: alpha={alpha}\tbeta={beta}\ttemp={temp}\t=> total_cov={total_cov:<4.4f}\tavg_recall_per_group={avg_recall_per_group:<4.4f}")
 
     print(f"Best params for total coverage: alpha={best_params_total[0]}, beta={best_params_total[1]}, temperature={best_params_total[2]}, total_cov={best_total_cov:<.4f}")
@@ -1231,7 +1235,8 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
         current_candidates = all_candidates.clone()
         current_scores = all_scores.clone()
 
-        for size in tqdm(candidate_sizes, desc="Grid Search Sizes (iterative slicing)", unit="size", leave=False):
+        pbar = tqdm(candidate_sizes, desc="Grid Search Sizes (iterative slicing)", unit="size", leave=False)
+        for size in pbar:
             # Compute effective cap for this size
             effective_cap = num_groups_test * size
             assert effective_cap <= current_candidates.size(0), "Effective cap should be less than or equal to available candidates."
@@ -1255,8 +1260,11 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
             avg_cov_per_group, avg_group_density, avg_group_count = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
             
             results.append({'candidate_size': candidates.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'avg_group_density': avg_group_density, 'pos_density': pos_density})
+            # Update progress bar with current total coverage
+            pbar.set_description(f"Grid Search Sizes (iterative slicing) (current total cov: {total_cov:.4f}, avg cov: {avg_cov_per_group:.4f} with size {size})")
     else:  # Original iterative approach for other generators like CandidateGeneratorPerHead
-        for size in tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False):
+        pbar = tqdm(candidate_sizes, desc="Grid Search Sizes", unit="size", leave=False)
+        for size in pbar:
             # Manually set per_group_cap
             candidate_generator.per_group_cap = size
             
@@ -1278,6 +1286,8 @@ def grid_search_candidate_sizes(candidate_generator: BaseCandidateGenerator, arg
             avg_cov_per_group, avg_group_density, avg_group_count = candidate_generator.analyze_coverage_per_group(candidates, candidates_group_ids, test_triples, test_triples_group_ids, test_set_t.relation_maps, name=f"size={size}", print_results=False)
             
             results.append({'candidate_size': candidates.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'avg_group_density': avg_group_density, 'pos_density': pos_density})
+            # Update progress bar with current total coverage
+            pbar.set_description(f"Grid Search Sizes (current total cov: {total_cov:.4f}, avg cov: {avg_cov_per_group:.4f} with size {size})")
             # tqdm.write(f"Size {size}: total_cov={total_cov:.4f}, avg_coverage_per_group={per_group_cov:.4f}")
             
             if total_cov >= 0.95:
