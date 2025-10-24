@@ -198,7 +198,9 @@ class PathEModelWrapperTriples(LightningModule):
                 self.calculate_lp_nssa, alpha=nssa_alpha, gamma=margin)
         else:
             raise ValueError(f"Unknown lp_loss_fn: {lp_loss_fn}")
-
+        # Set the tuple monitor from hparams for conditional metric computation
+        self.tuple_monitor = hparams.get('tuple_monitor', 'valid_mrr')
+        self.triple_monitor = hparams.get('triple_monitor', 'valid_mrr')
         # self.save_hyperparameters(ignore=['pathe_model', 'global_head_tail_adjacency', 'train_head_tail_adjacency', 'val_head_tail_adjacency', 'test_head_tail_adjacency', 'filtration_dict'])
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
@@ -1669,47 +1671,42 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
 
         # Update metrics
         scores_rp, scores_tp = self.generate_scores(logits_rp1, logits_rp2, logits_tail1, logits_tail2)
-        # Update RMSE metrics for counting functions
-        if self.phase1_rp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
-            self.val_relationRMSE.update(scores_rp, relation_count_matrix)
-        else:
-            self.val_relationMRR.update(heads, scores_rp, relation_count_matrix)
-            self.val_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
-            self.val_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
-            self.val_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
-            self.val_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
 
-        if self.phase1_tp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
-            self.val_tailRMSE.update(scores_tp, entity_count_matrix)
-        else:
-            self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
-            self.val_tailHitsAt1.update(heads, scores_tp, entity_count_matrix)
-            self.val_tailHitsAt3.update(heads, scores_tp, entity_count_matrix)
-            self.val_tailHitsAt5.update(heads, scores_tp, entity_count_matrix)
-            self.val_tailHitsAt10.update(heads, scores_tp, entity_count_matrix)
+        # Update relation metrics (fast since vectorized)
+        self.val_relationRMSE.update(scores_rp, relation_count_matrix)
+        self.val_relationMRR.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt1.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt3.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt5.update(heads, scores_rp, relation_count_matrix)
+        self.val_relationHitsAt10.update(heads, scores_rp, relation_count_matrix)
+
+        # Update tail metrics
+        self.val_tailRMSE.update(scores_tp, entity_count_matrix)
+        # (slower since not fully vectorized)
+        if self.tuple_monitor == "valid_tail_mrr": self.val_tailMRR.update(heads, scores_tp, entity_count_matrix)
+        if self.tuple_monitor == "valid_tail_hits1": self.val_tailHitsAt1.update(heads, scores_tp, entity_count_matrix)
+        if self.tuple_monitor == "valid_tail_hits3": self.val_tailHitsAt3.update(heads, scores_tp, entity_count_matrix)
+        if self.tuple_monitor == "valid_tail_hits5": self.val_tailHitsAt5.update(heads, scores_tp, entity_count_matrix)
+        if True or self.tuple_monitor == "valid_tail_hits10": self.val_tailHitsAt10.update(heads, scores_tp, entity_count_matrix)
 
 
     @torch.no_grad()
     def validation_epoch_end(self, outputs):
         # Log relation metrics (torchmetrics computes and resets them automatically)
-        if self.phase1_rp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
-            self.log("valid_relation_rmse", self.val_relationRMSE, on_step=False, on_epoch=True, prog_bar=True)
-        else:
-            self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
-            self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
-            self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
-            self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
-            self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("valid_relation_rmse", self.val_relationRMSE, on_step=False, on_epoch=True, prog_bar=(self.rp_loss_fn != "bce"))
+        self.log("valid_mrr", self.val_relationMRR, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("valid_hits1", self.val_relationHitsAt1, on_step=False, on_epoch=True)
+        self.log("valid_hits3", self.val_relationHitsAt3, on_step=False, on_epoch=True)
+        self.log("valid_hits5", self.val_relationHitsAt5, on_step=False, on_epoch=True)
+        self.log("valid_hits10", self.val_relationHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
             
-        if self.phase1_tp_loss_fn in ['poisson', 'hurdle', 'negative_binomial']:
-            self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=True)
-        else:
-            # Log tail metrics
-            self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
-            self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
-            self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
-            self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
-            self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("valid_tail_rmse", self.val_tailRMSE, on_step=False, on_epoch=True, prog_bar=self.tp_loss_fn != "bce")
+        # Log tail metrics
+        if self.tuple_monitor == "valid_tail_mrr": self.log("valid_tail_mrr", self.val_tailMRR, on_step=False, on_epoch=True, prog_bar=True)
+        if self.tuple_monitor == "valid_tail_hits1": self.log("valid_tail_hits1", self.val_tailHitsAt1, on_step=False, on_epoch=True)
+        if self.tuple_monitor == "valid_tail_hits3": self.log("valid_tail_hits3", self.val_tailHitsAt3, on_step=False, on_epoch=True)
+        if self.tuple_monitor == "valid_tail_hits5": self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
+        if True or self.tuple_monitor == "valid_tail_hits10": self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
         
         print()
 
