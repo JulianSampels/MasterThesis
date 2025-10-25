@@ -15,7 +15,7 @@ import torch_scatter
 
 from .pathe_ranking_metrics import (RelationHitsAtKUniqueHeads, RelationMRRTriples, RelationMRRTuples, RelationHitsAtKTriples, RelationHitsAtKTuples,
                                    EntityMRRTriples, EntityHitsAtKTriples, CandidateMRRPerSampleFiltered, 
-                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, RelationMRRUniqueHeads, TailHitsAtKTuples, TailMRRTuples, CountRMSE)
+                                   CandidateHitsAtKPerSampleFiltered, CandidateRecallAtKPerGroup, CandidateRecallAtKTotal, RelationMRRUniqueHeads, TailHitsAtKTuples, TailMRRTuples, CountRMSE, CandidateNDCGPerSampleFiltered, CandidateMAPPerSampleFiltered)
 
 from .pather_models import PathEModelTuples
 
@@ -475,6 +475,8 @@ class PathEModelWrapperTriples(LightningModule):
           - {split}_link_hits@{k}
           - {split}_link_recall@{k}_perGroup
           - {split}_link_recall@{k}_total
+          - {split}_link_ndcg
+          - {split}_link_map
         """
         # select the metrics dict
         if split == "valid":
