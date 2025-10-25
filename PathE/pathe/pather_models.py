@@ -960,7 +960,7 @@ class PathEModelTriples(nn.Module):
         # The following logic reconstructs full-size embedding tensors, padding with zeros for entities
         # that had no paths.
         if head_emb.size(0) != targets.size(0) or tail_emb.size(0) != targets.size(0):
-            logger.warning(f"Head/tail embeddings size mismatch with targets size ({head_emb.size(0)}, {tail_emb.size(0)} vs {targets.size(0)}). Reconstructing full-size tensors with zeros for missing paths.")
+            # logger.warning(f"Head/tail embeddings size mismatch with targets size ({head_emb.size(0)}, {tail_emb.size(0)} vs {targets.size(0)}). Reconstructing full-size tensors with zeros for missing paths.")
             # Determine which triples in the batch actually have head and tail paths
             has_head_paths = ppe_head > 0
             has_tail_paths = ppe_tail > 0
