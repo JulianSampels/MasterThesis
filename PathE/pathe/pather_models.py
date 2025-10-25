@@ -687,26 +687,47 @@ class PathEModelTriples(nn.Module):
     def split_and_pad_embeddings_with_ppt(self, embeddings, ppt):
         """
         Splits and pads entity embeddings according to the number of paths per tuple or triple.
-
-        Given a tensor of entity embeddings and a tensor specifying the number of paths per tuple/triple (ppt),
-        this function splits the embeddings accordingly and pads them to create a uniform batch.
+        This is a fully GPU-parallelized implementation that avoids loops and CPU transfers.
 
         embeddings : torch.Tensor
-            Tensor of shape (num_entities, dim) containing the entity embeddings.
+            Tensor of shape (N, D) containing the entity embeddings. N is the total number of paths.
         ppt : torch.Tensor
-            1D tensor of shape (num_tuples_or_triples,) specifying the number of paths per tuple/triple.
+            1D tensor of shape (B,) specifying the number of paths per tuple/triple. B is the batch size.
 
         Returns
         -------
         torch.Tensor
-            A padded tensor of shape (num_tuples_or_triples, max_num_paths, dim), where max_num_paths is the maximum
-            in ppt. Shorter sequences are padded with zeros.
+            A padded tensor of shape (B, max_num_paths, D).
         """
+        # vectorized implementation of
         # split the embeddings based on the existing number of paths per tuple
-        entity_embeds = torch.split(embeddings, ppt.tolist(), dim=0)
-        # convert list tp tensor by padding
-        padded_embs = nn.utils.rnn.pad_sequence(entity_embeds, batch_first=True)
-        return padded_embs
+        # entity_embeds = torch.split(embeddings, ppt.tolist(), dim=0)
+        # # convert list tp tensor by padding
+        # padded_embs = nn.utils.rnn.pad_sequence(entity_embeds, batch_first=True)
+
+        device = embeddings.device
+        ppt = ppt.to(device)
+
+        batch_size = ppt.shape[0]
+        dim = embeddings.shape[1]
+        max_ppt = ppt.max()
+
+        # Compute indices per embedding row -> which tuple it belongs to
+        ids = torch.arange(len(ppt), device=device)
+        tuple_ids = torch.repeat_interleave(ids, ppt)
+
+        # Create path indices within each triple/tuple.
+        # This creates a sequence like [0, 1, 0, 1, 2] for ppt=[2,3]
+        local_idx = torch.arange(len(embeddings), device=device) - torch.repeat_interleave(
+            ppt.cumsum(0) - ppt, ppt
+        )
+
+        padded = embeddings.new_zeros((batch_size, max_ppt, dim))
+
+        # Scatter embeddings into the padded tensor
+        padded[tuple_ids, local_idx] = embeddings
+
+        return padded
 
     def sum_embeddings_with_origin(self, embeddings, origin, target):
         """
@@ -909,10 +930,19 @@ class PathEModelTriples(nn.Module):
                                                            tail_idxs=tail_idxs,
                                                            entity_origin=entity_origin))
         if self.ent_aggregation != "avg":
-            head_padded = self.split_and_pad_embeddings_with_origin(
-                head_embed, origin=entity_origin, target=0)
-            tail_padded = self.split_and_pad_embeddings_with_origin(
-                tail_embed, origin=entity_origin, target=1)
+            # Vectorized path counting: Deconstruct ppt into paths per head (ppe_head) and paths per tail (ppe_tail)
+            # This is necessary because head_embed and tail_embed have different sizes when heads and tails have different numbers of paths.
+            num_triples = ppt.size(0)
+            triple_ids = torch.arange(num_triples, device=self.device()).repeat_interleave(ppt)
+            combined_ids = triple_ids * 2 + entity_origin
+            counts = torch.bincount(combined_ids, minlength=num_triples * 2)
+            counts_per_triple = counts.view(num_triples, 2)
+            ppe_head = counts_per_triple[:, 0]
+            ppe_tail = counts_per_triple[:, 1]
+
+            head_padded = self.split_and_pad_embeddings_with_ppt(head_embed, ppe_head[ppe_head > 0])
+            tail_padded = self.split_and_pad_embeddings_with_ppt(tail_embed, ppe_tail[ppe_tail > 0])
+
             head_emb, tail_emb = self.aggregator(
                 head_padded, tail_padded)
         else:  # use the average pooling otherwise
@@ -924,8 +954,6 @@ class PathEModelTriples(nn.Module):
         head_emb = head_emb.unsqueeze(0) if head_emb.ndim < 2 else head_emb
         tail_emb = tail_emb.unsqueeze(0) if tail_emb.ndim < 2 else tail_emb
 
-        logits_rp = self.predict_relation_from_ht(head_emb, tail_emb)
-
         # When entities from validation/test splits are not in the training set, they may have no paths.
         # This causes the aggregated embedding tensors (head_emb, tail_emb) to be smaller than the
         # batch size (targets.size(0)), leading to size mismatches.
@@ -933,11 +961,9 @@ class PathEModelTriples(nn.Module):
         # that had no paths.
         if head_emb.size(0) != targets.size(0) or tail_emb.size(0) != targets.size(0):
             logger.warning(f"Head/tail embeddings size mismatch with targets size ({head_emb.size(0)}, {tail_emb.size(0)} vs {targets.size(0)}). Reconstructing full-size tensors with zeros for missing paths.")
-            
             # Determine which triples in the batch actually have head and tail paths
-            split_origins = torch.split(entity_origin, ppt.tolist())
-            has_head_paths = torch.tensor([torch.any(o == 0) for o in split_origins], device=self.device())
-            has_tail_paths = torch.tensor([torch.any(o == 1) for o in split_origins], device=self.device())
+            has_head_paths = ppe_head > 0
+            has_tail_paths = ppe_tail > 0
 
             # Create full-size tensors padded with zeros
             head_emb_full = torch.zeros(targets.size(0), self.d_model, device=self.device(), dtype=head_emb.dtype)
@@ -951,6 +977,7 @@ class PathEModelTriples(nn.Module):
             head_emb = head_emb_full
             tail_emb = tail_emb_full
 
+        logits_rp = self.predict_relation_from_ht(head_emb, tail_emb)
         logits_link = self.link_predict_from_ht(head_emb, tail_emb, targets)
 
         return logits_rp, logits_link
