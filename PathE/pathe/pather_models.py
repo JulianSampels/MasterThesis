@@ -684,9 +684,9 @@ class PathEModelTriples(nn.Module):
         padded_embs = nn.utils.rnn.pad_sequence(entity_embeds, batch_first=True)
         return padded_embs
     
-    def split_and_pad_embeddings_with_ppt(self, embeddings, ppt):
+    def split_and_pad_embeddings_with_ppe(self, embeddings, ppt):
         """
-        Splits and pads entity embeddings according to the number of paths per tuple or triple.
+        Splits and pads entity embeddings according to the number of paths per tuple or triple. Please pass the paths per entity tensor (ppt) for triples mode.
         This is a fully GPU-parallelized implementation that avoids loops and CPU transfers.
 
         embeddings : torch.Tensor
@@ -940,8 +940,8 @@ class PathEModelTriples(nn.Module):
             ppe_head = counts_per_triple[:, 0]
             ppe_tail = counts_per_triple[:, 1]
 
-            head_padded = self.split_and_pad_embeddings_with_ppt(head_embed, ppe_head[ppe_head > 0])
-            tail_padded = self.split_and_pad_embeddings_with_ppt(tail_embed, ppe_tail[ppe_tail > 0])
+            head_padded = self.split_and_pad_embeddings_with_ppe(head_embed, ppe_head[ppe_head > 0])
+            tail_padded = self.split_and_pad_embeddings_with_ppe(tail_embed, ppe_tail[ppe_tail > 0])
 
             head_emb, tail_emb = self.aggregator(
                 head_padded, tail_padded)
@@ -1107,7 +1107,7 @@ class PathEModelTuples(PathEModelTriples):
         # Aggregate head embeddings (no tails in tuple mode)
         if self.ent_aggregation != "avg":
             # print(f"head_idxs {head_idxs.shape} {head_idxs[:5]} \nent_paths {ent_paths.shape} {ent_paths[:15]}\n pos {pos.shape} {pos[:5]}\n entity_origin {entity_origin.shape} {entity_origin[:5]}")
-            head_padded = self.split_and_pad_embeddings_with_ppt(head_embed, ppt)
+            head_padded = self.split_and_pad_embeddings_with_ppe(head_embed, ppt)
             head_emb = self.aggregator(head_padded)
         else:  # use the average pooling otherwise
             raise NotImplementedError(
