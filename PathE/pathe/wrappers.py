@@ -173,12 +173,16 @@ class PathEModelWrapperTriples(LightningModule):
             **{f"hits@{k}": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
             **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
             **{f"recall@{k}_total": CandidateRecallAtKTotal(k) for k in self.cand_topk},
+            "ndcg": CandidateNDCGPerSampleFiltered(),
+            "map": CandidateMAPPerSampleFiltered(),
         })
         self.cand_metrics_test = nn.ModuleDict({
             "mrr": CandidateMRRPerSampleFiltered(),
             **{f"hits@{k}": CandidateHitsAtKPerSampleFiltered(k) for k in self.cand_topk},
             **{f"recall@{k}_perGroup": CandidateRecallAtKPerGroup(k) for k in self.cand_topk},
             **{f"recall@{k}_total": CandidateRecallAtKTotal(k) for k in self.cand_topk},
+            "ndcg": CandidateNDCGPerSampleFiltered(),
+            "map": CandidateMAPPerSampleFiltered(),
         })
 
         # Losses

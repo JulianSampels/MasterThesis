@@ -721,6 +721,133 @@ class CandidateMRRPerSampleFiltered(Metric):
     def compute(self):
         return self.reciprocal_ranks / self.total.clamp_min(1)
 
+class CandidateNDCGPerSampleFiltered(Metric):
+    """
+    NDCG for ranking candidate triples per sample/group, using binary labels for relevance.
+    Computes NDCG@k (or full if k=None) per group and averages across groups.
+    
+    Higher is better.
+    """
+    higher_is_better = True
+
+    def __init__(self, k: int = None):
+        super().__init__()
+        self.k = k
+        self.add_state("ndcg_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
+        """
+        Parameters
+        ----------
+        scores : torch.Tensor of shape (num_candidates,)
+            Predicted scores for candidates.
+        labels : torch.Tensor of shape (num_candidates,)
+            Binary labels (1 for relevant, 0 otherwise).
+        group_ids : torch.Tensor of shape (num_candidates,)
+            Group IDs for per-group computation.
+        """
+        unique_groups = torch.unique(group_ids)
+        for group in unique_groups:
+            mask = group_ids == group
+            group_scores = scores[mask]
+            group_labels = labels[mask]
+            
+            if group_scores.numel() == 0:
+                continue
+            
+            # Rank by descending score
+            _, sorted_indices = torch.sort(group_scores, descending=True, stable=True)
+            # Use top-k if specified, else all
+            if self.k is not None:
+                sorted_labels = group_labels[sorted_indices][:self.k]
+            else:
+                sorted_labels = group_labels[sorted_indices]
+            
+            # Compute DCG
+            dcg = 0.0
+            for rank, rel in enumerate(sorted_labels, start=1):
+                dcg += rel.item() / torch.log2(torch.tensor(rank + 1.0, dtype=torch.float32)).item()
+            
+            # Compute IDCG (ideal: relevant items first, up to k or all)
+            num_relevant = sorted_labels.sum().item()
+            if self.k is not None:
+                idcg_cutoff = min(self.k, int(num_relevant))
+            else:
+                idcg_cutoff = int(num_relevant)
+            idcg = sum(1.0 / torch.log2(torch.tensor(r + 1.0)).item() for r in range(1, idcg_cutoff + 1))
+            
+            if idcg > 0:
+                ndcg = dcg / idcg
+                self.ndcg_sum += ndcg
+            # Else, NDCG = 0 (not added)
+            self.total += 1
+
+    def compute(self):
+        return self.ndcg_sum / self.total
+
+class CandidateMAPPerSampleFiltered(Metric):
+    """
+    MAP (Mean Average Precision) for ranking candidate triples per sample/group, using binary labels for relevance.
+    Computes MAP@k (or full if k=None) per group and averages across groups.
+    
+    Higher is better.
+    """
+    higher_is_better = True
+
+    def __init__(self, k: int = None):
+        super().__init__()
+        self.k = k
+        self.add_state("ap_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    def update(self, scores: torch.Tensor, labels: torch.Tensor, group_ids: torch.Tensor):
+        """
+        Parameters
+        ----------
+        scores : torch.Tensor of shape (num_candidates,)
+            Predicted scores for candidates.
+        labels : torch.Tensor of shape (num_candidates,)
+            Binary labels (1 for relevant, 0 otherwise).
+        group_ids : torch.Tensor of shape (num_candidates,)
+            Group IDs for per-group computation.
+        """
+        unique_groups = torch.unique(group_ids)
+        for group in unique_groups:
+            mask = group_ids == group
+            group_scores = scores[mask]
+            group_labels = labels[mask]
+            
+            if group_scores.numel() == 0:
+                continue
+            
+            # Rank by descending score
+            _, sorted_indices = torch.sort(group_scores, descending=True, stable=True)
+            # Use top-k if specified, else all
+            if self.k is not None:
+                sorted_labels = group_labels[sorted_indices][:self.k]
+            else:
+                sorted_labels = group_labels[sorted_indices]
+            
+            # Compute Average Precision (AP)
+            num_relevant = sorted_labels.sum().item()
+            if num_relevant == 0:
+                ap = 0.0
+            else:
+                precision_sum = 0.0
+                relevant_found = 0
+                for rank, rel in enumerate(sorted_labels, start=1):
+                    if rel.item() == 1:
+                        relevant_found += 1
+                        precision_at_rank = relevant_found / rank
+                        precision_sum += precision_at_rank
+                ap = precision_sum / num_relevant
+            
+            self.ap_sum += ap
+            self.total += 1
+
+    def compute(self):
+        return self.ap_sum / self.total
 
 class EntityHitsAtKTriples(Metric):
     """
