@@ -20,7 +20,7 @@ import gc
 
 from .candidates import *
 
-from .pathe_ranking_metrics import get_metric_mode
+from .pathe_ranking_metrics import get_metric_mode, evaluate_candidate_baseline_metrics
 from .pather_models import PathEModelTriples, PathEModelTuples, PathEModelTuplesMultiHead
 from .pathdata import NegativeTripleSampler, TripleEntityMultiPathDataset, TupleEntityMultiPathDataset, CandidateTripleEntityMultiPathDataset, UniqueHeadEntityMultiPathDataset, create_vocabulary_from_relations
 from .data_utils import collate_multipaths, load_triple_tensors, \
@@ -1034,6 +1034,15 @@ def create_and_run_training_exp_two_phases(args):
         pl_model_tri.cand_metrics_test[f"recall@{k}_perGroup"].set_true_counts(test_true_counts)
         pl_model_tri.cand_metrics_test[f"recall@{k}_total"].set_num_positives(len(test_triples))
 
+    # Evaluate candidates from phase 1 with their scores
+    stageprint("Evaluating candidates from phase 1 using tuple model scores...")
+    candidate_results = evaluate_candidate_baseline_metrics(_scores_test, test_labels, get_group_ids(candidates_test), len(test_triples), test_true_counts)
+    # Save results to CSV
+    df = pd.DataFrame([candidate_results])
+    df.to_csv(os.path.join(tb_logger_t.log_dir, "candidate_baseline_results.csv"), index=False)
+    print(df.T.to_string())
+    print(f"\nRaw Candidate testing metrics: {candidate_results}")
+
     # Loggers and trainer
     tb_logger_tri = TensorBoardLogger(save_dir=args_phase3.log_dir, name=args_phase3.expname, version=args_phase3.version, sub_dir="triples")
     if args_phase3.wandb_project is not None:
@@ -1064,16 +1073,6 @@ def create_and_run_training_exp_two_phases(args):
         gradient_clip_algorithm='norm', accumulate_grad_batches=args_phase3.accumulate_gradient,
         callbacks=[estopping_callbk_tri, checkpoint_callbk_tri, dataset_callbk_tri],
     )
-
-    # NEW: Evaluate triple metrics on candidate test set with untrained model (baseline/random performance)
-    stageprint("Evaluating untrained triple model on candidate test set (baseline metrics)...")
-    untrained_test_dict = trainer_tri.test(
-        model=pl_model_tri,  # Use the untrained model
-        dataloaders=te_loader_tri,  # Candidate test set
-        ckpt_path=None  # No checkpoint; use current (untrained) model state
-    )[0]
-    print("\nUntrained triple model results on candidates: {}".format(untrained_test_dict))
-
 
     if args_phase3.cmd in ["train", "resume"] and not args_phase3.skip_phase2:
         stageprint("Training-validating the model, be patient!")

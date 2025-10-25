@@ -1196,7 +1196,7 @@ class CandidateRecallAtKPerGroup(Metric):
         self.add_state("recall_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
         # Optional true positive counts
-        self.group_true_counts = None # dict[int, int] or None
+        # self.group_true_counts = None # dict[int, int] or None
     
     def set_true_counts(self, map_group_id_to_true_count: dict):
         """
@@ -1253,6 +1253,8 @@ class CandidateRecallAtKTotal(Metric):
         self.k = int(k)
         self.add_state("num_pos_in_topk", default=torch.tensor(0), dist_reduce_fx="sum")
         self.add_state("num_positives", default=torch.tensor(0), dist_reduce_fx="sum")
+        # Optional total_num_positives
+        # self.total_num_positives = None # int or None
 
     def set_num_positives(self, num_positives: int):
         self.total_num_positives = torch.tensor(num_positives, dtype=torch.long)
@@ -1918,3 +1920,63 @@ def get_metric_mode(model, monitor):
     else:
         # Fallback for loss metrics or unknown monitors
         return "min" if monitor.endswith("loss") else "max"
+
+def evaluate_candidate_baseline_metrics(scores, labels, group_ids, num_positives, num_positives_group):
+    """
+    Evaluate candidate triples using baseline metrics from tuple model scores.
+    
+    Parameters:
+    - scores: torch.Tensor, scores for candidates
+    - labels: torch.Tensor, binary labels (1 for positive, 0 for negative)
+    - group_ids: torch.Tensor, group IDs for per-group metrics
+    - num_positives: int, total number of positive triples in the test set
+    
+    Returns:
+    - dict: computed metric values
+    """
+    mrr_metric = CandidateMRRPerSampleFiltered()
+    ndcg_metric = CandidateNDCGPerSampleFiltered()
+    map_metric = CandidateMAPPerSampleFiltered()
+    recall_per_group_metric_1 = CandidateRecallAtKPerGroup(k=1)
+    recall_per_group_metric_3 = CandidateRecallAtKPerGroup(k=3)
+    recall_per_group_metric_5 = CandidateRecallAtKPerGroup(k=5)
+    recall_per_group_metric_10 = CandidateRecallAtKPerGroup(k=10)
+    recall_total_metric_1 = CandidateRecallAtKTotal(k=1)
+    recall_total_metric_3 = CandidateRecallAtKTotal(k=3)
+    recall_total_metric_5 = CandidateRecallAtKTotal(k=5)
+    recall_total_metric_10 = CandidateRecallAtKTotal(k=10)
+    recall_total_metric_1.set_num_positives(num_positives)
+    recall_total_metric_3.set_num_positives(num_positives)
+    recall_total_metric_5.set_num_positives(num_positives)
+    recall_total_metric_10.set_num_positives(num_positives)
+    recall_per_group_metric_1.set_true_counts(num_positives_group)
+    recall_per_group_metric_3.set_true_counts(num_positives_group)
+    recall_per_group_metric_5.set_true_counts(num_positives_group)
+    recall_per_group_metric_10.set_true_counts(num_positives_group)
+
+    mrr_metric.update(scores, labels, group_ids)
+    ndcg_metric.update(scores, labels, group_ids)
+    map_metric.update(scores, labels, group_ids)
+    recall_per_group_metric_1.update(scores, labels, group_ids)
+    recall_per_group_metric_3.update(scores, labels, group_ids)
+    recall_per_group_metric_5.update(scores, labels, group_ids)
+    recall_per_group_metric_10.update(scores, labels, group_ids)
+    recall_total_metric_1.update(scores, labels, group_ids)
+    recall_total_metric_3.update(scores, labels, group_ids)
+    recall_total_metric_5.update(scores, labels, group_ids)
+    recall_total_metric_10.update(scores, labels, group_ids)
+    
+    results = {
+        'candidate_mrr': mrr_metric.compute().item(),
+        'candidate_ndc': ndcg_metric.compute().item(),
+        'candidate_map': map_metric.compute().item(),
+        'candidate_recall@1_per_group': recall_per_group_metric_1.compute().item(),
+        'candidate_recall@3_per_group': recall_per_group_metric_3.compute().item(),
+        'candidate_recall@5_per_group': recall_per_group_metric_5.compute().item(),
+        'candidate_recall@10_per_group': recall_per_group_metric_10.compute().item(),
+        'candidate_recall@1_total': recall_total_metric_1.compute().item(),
+        'candidate_recall@3_total': recall_total_metric_3.compute().item(),
+        'candidate_recall@5_total': recall_total_metric_5.compute().item(),
+        'candidate_recall@10_total': recall_total_metric_10.compute().item(),
+    }
+    return results
