@@ -736,7 +736,7 @@ def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filena
     
     print(f"Figure saved to {save_dir}/{filename}")
 
-def create_relation_occurrence_figure(triples, save_dir="./figures", filename="relation_occurrence.svg", max_samples=100000):
+def create_relation_occurrence_figure(triples, save_dir="./figures", filename="relation_occurrence.svg", max_samples=1000000):
     """
     Create a histogram showing the distribution of the occurrence count of each relation.
     This provides statistics on how frequently each relation appears in the knowledge graph.
