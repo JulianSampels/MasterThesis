@@ -194,8 +194,11 @@ class RelationMRRUniqueHeads(Metric):
         scores: (num_heads, num_relations)
         relation_count_matrix: a dense tensor of shape (num_heads, num_relations) with counts for true relations.
         """
-        # Ensure filter matrix is on the same device as inputs
-        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(scores.device)
+        # Ensure inputs are on the same device
+        device = self.filter_global_relation_count_matrix.device
+        heads = heads.to(device)
+        scores = scores.to(device)
+        relation_count_matrix = relation_count_matrix.to(device)
 
         # 1. Identify true relations for evaluation in the current batch
         eval_rels_mask = relation_count_matrix > 0.5
@@ -469,8 +472,11 @@ class RelationHitsAtKUniqueHeads(Metric):
         scores: (num_heads, num_relations)
         relation_count_matrix: either dense (num_heads, num_relations) multi-hot tensor or list of index tensors.
         """
-        # Ensure filter matrix is on the same device as inputs
-        self.filter_global_relation_count_matrix = self.filter_global_relation_count_matrix.to(scores.device)
+        # Ensure inputs are on the same device
+        device = self.filter_global_relation_count_matrix.device
+        heads = heads.to(device)
+        scores = scores.to(device)
+        relation_count_matrix = relation_count_matrix.to(device)
 
         # 1. Identify true relations for evaluation in the current batch
         # Shape: (num_heads, num_relations)
@@ -1032,8 +1038,11 @@ class TailMRRTuples(Metric):
 
         # Get all known true tails from global adjacency if available, otherwise use eval labels
         if self.filter_global_adjacency is not None:
-            # Ensure filter matrix is on the same device as inputs
-            self.filter_global_adjacency = self.filter_global_adjacency.to(heads.device)
+            # Ensure inputs are on the same device
+            device = self.filter_global_adjacency.device
+            heads = heads.to(device)
+            scores = scores.to(device)
+            eval_labels = eval_labels.to(device)
             filter_labels = self.filter_global_adjacency[heads]
         else:
             filter_labels = eval_labels  # Fallback to eval labels for filtering
@@ -1094,8 +1103,11 @@ class TailHitsAtKTuples(Metric):
 
         # Get all known true tails from global adjacency if available, otherwise use eval labels
         if self.filter_global_adjacency is not None:
-            # Ensure filter matrix is on the same device as inputs
-            self.filter_global_adjacency = self.filter_global_adjacency.to(heads.device)
+            # Ensure inputs are on the same device
+            device = self.filter_global_adjacency.device
+            heads = heads.to(device)
+            scores = scores.to(device)
+            eval_labels = eval_labels.to(device)
             filter_labels = self.filter_global_adjacency[heads]
         else:
             filter_labels = eval_labels  # Fallback to eval labels for filtering
