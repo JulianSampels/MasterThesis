@@ -166,14 +166,14 @@ class BaseCandidateGenerator(ABC):
 
 
     @staticmethod
-    def _process_group_for_analyze_coverage_per_group(gids, gold_triples, gold_group_ids, candidates, candidates_group_ids, name):
+    def _process_group_for_analyze_coverage_per_group(gids_to_process, gold_triples, gold_group_ids, candidates, candidates_group_ids, name):
         torch.set_num_threads(1)  # Prevent thread oversubscription and deadlocks in worker processes
         per_group_cov = {}
         per_group_density = {}
         per_group_count = {}
         covered_total = 0.0
         total_total = 0
-        for gid in tqdm(gids, position=2, leave=False, desc="Processing groups"):
+        for gid in tqdm(gids_to_process, position=2, leave=False, desc="Processing groups"):
             gid = int(gid)
             gold_idx = (gold_group_ids == gid).nonzero(as_tuple=False).flatten()
             if gold_idx.numel() == 0:
