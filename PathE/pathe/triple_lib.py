@@ -494,7 +494,7 @@ def generate_group_id_function(all_triples: torch.Tensor, group_strategy: list) 
     get_group_ids : function
         A function that takes triples as input and returns their group ids.
     """
-    groups = all_triples[:, group_strategy].squeeze()
+    groups = all_triples[:, group_strategy]
     if groups.dim() == 1:
         unique_groups = torch.unique(groups)
         group_to_id_map = {group: group for group in unique_groups.tolist()}
@@ -503,7 +503,7 @@ def generate_group_id_function(all_triples: torch.Tensor, group_strategy: list) 
         keys = [tuple(row.tolist()) for row in unique_groups]
         group_to_id_map = {k: i for i, k in enumerate(keys)}
     def get_group_ids(triples: torch.Tensor, group_strategy: list, group_to_id_map) -> torch.Tensor:
-        groups = triples[:, group_strategy].squeeze()
+        groups = triples[:, group_strategy]
         if groups.dim() == 1:
             return groups
         else:
