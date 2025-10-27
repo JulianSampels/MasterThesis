@@ -196,6 +196,49 @@ def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filena
     
     print(f"Plot and results saved to {save_dir}/")
 
+def create_performance_vs_size_plot(results, save_dir="./figures", filename="performance_vs_size.svg"):
+    """
+    Create a line plot showing ranking metrics (Recall@10, MAP, NDCG) vs. candidate size.
+    Saves the plot as an SVG file.
+
+    Args:
+        results: List of dicts with keys 'candidate_size', 'recall_10', 'map', 'ndcg'
+        save_dir: Directory to save the SVG file
+        filename: Name of the output SVG file
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Save results to CSV
+    df = pd.DataFrame(results)
+    df.to_csv(f'{save_dir}/performance_vs_size_results.csv', index=False)
+    
+    results.sort(key=lambda x: x['candidate_size'])
+    
+    candidate_sizes = [r['candidate_size'] for r in results]
+    recall_10 = [r['test_link_recall@10_perGroup'] for r in results]
+    map_scores = [r['test_link_map'] for r in results]
+    ndcg_scores = [r['test_link_ndcg'] for r in results]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    ax.plot(candidate_sizes, recall_10, label='Recall@10', marker='o', linestyle='-')
+    ax.plot(candidate_sizes, map_scores, label='MAP', marker='s', linestyle='--')
+    ax.plot(candidate_sizes, ndcg_scores, label='NDCG', marker='^', linestyle=':')
+    
+    ax.set_xlabel('Total Candidate Size')
+    ax.set_ylabel('Metric Score')
+    ax.set_title('Model Performance vs. Candidate Set Size')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1)
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/{filename}')
+    plt.close()
+    
+    print(f"Performance vs. size plot saved to {save_dir}/{filename}")
+
+
 def create_relation_coverage_bar_chart(candidates, gold_triples, relation_maps, save_dir="./figures", filename="bar_relation_coverage.svg", num_bins=10):
     """
     Create a bar chart showing average coverage per quantile bin for relation types.

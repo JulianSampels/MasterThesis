@@ -10,6 +10,8 @@ from functools import partial
 from typing import Callable
 
 import torch
+
+from PathE.pathe.pathe_full_eval import evaluate_model_on_candidate_sizes
 torch.set_float32_matmul_precision('high') # Set high precision for matrix multiplications for fast training on tensor cores
 import pandas as pd
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
@@ -1090,7 +1092,7 @@ def create_and_run_training_exp_two_phases(args):
     if triple_ckpt:
         stageprint("Evaluating the model on the test set")
         test_dict = trainer_tri.test(
-            model=pl_model_tri if args_phase3.cmd == "test" else None,
+            model=pl_model_tri if args_phase3.cmd == "test" or args_phase3.skip_phase2 else None,
             dataloaders=te_loader_tri,
             ckpt_path=triple_ckpt
         )[0]
@@ -1098,6 +1100,29 @@ def create_and_run_training_exp_two_phases(args):
 
         results_dict = test_dict
         pd.DataFrame([results_dict]).to_csv(os.path.join(tb_logger_tri.log_dir, "results_summary.csv"), index=False)
+
+        if False:
+            # Evaluate model performance vs candidate size
+            stageprint("Evaluating model performance vs. candidate size...")
+            # if using this please uncomment the deletions of candidate_generator, test_tuples_all and other used variables above
+
+            evaluate_model_on_candidate_sizes(
+                candidate_generator=candidate_generator,
+                pl_model_tri=pl_model_tri,
+                trainer_tri=trainer_tri,
+                args=args,
+                te_tuples_all=test_tuples_all,
+                te_scores_rp_all=test_scores_rp_all,
+                te_scores_tp_all=test_scores_tp_all,
+                test_triples=test_triples,
+                train_triples=train_triples,
+                test_set_t=test_set_t,
+                paths=paths,
+                relcon=relcon,
+                tokens_to_idxs=tokens_to_idxs,
+                get_group_ids=get_group_ids,
+                triple_ckpt_path=triple_ckpt
+            )
 
     # Cleanup before exit
     print("Cleaning up resources...")

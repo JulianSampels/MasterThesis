@@ -2,14 +2,18 @@ import os
 import datetime
 from functools import partial
 
+import numpy as np
 import torch
 import pandas as pd
 from tqdm import tqdm
 
+from PathE.pathe.candidates import BaseCandidateGenerator
+from PathE.pathe.figures import create_performance_vs_size_plot
+
 from . import triple_lib
 from . import data_utils as du
 from .pather_models import PathEModelTriples
-from .pathdata import EntityMultiPathDataset
+from .pathdata import CandidateTripleEntityMultiPathDataset, EntityMultiPathDataset
 from .wrappers import PathEModelWrapperTriples
 from .path_lib import encode_relcontext_freqs
 from .data_utils import collate_multipaths, load_triple_tensors
@@ -335,3 +339,103 @@ def run_full_eval(args):
         else:
             res = pd.DataFrame([res_dict])
             res.to_csv(os.path.join(os.getcwd(), dataset + ".csv"), index=False)
+
+
+def evaluate_model_on_candidate_sizes(
+    candidate_generator: BaseCandidateGenerator,
+    pl_model_tri,
+    trainer_tri,
+    args,
+    te_tuples_all,
+    te_scores_rp_all,
+    te_scores_tp_all,
+    test_triples,
+    train_triples,
+    test_set_t,
+    paths,
+    relcon,
+    tokens_to_idxs,
+    get_group_ids,
+    triple_ckpt_path: str
+):
+    """
+    Evaluate a trained triple model's performance over different candidate set sizes.
+    """
+    min_val = 2
+    max_val = 1000
+    total_count = 15
+    p = 5
+    candidate_sizes_per_group = np.unique(np.round(np.linspace(min_val**(1/p), max_val**(1/p), num=total_count)**p).astype(int)).tolist()
+
+    print(f"Evaluating model performance over {len(candidate_sizes_per_group)} candidate sizes: {candidate_sizes_per_group[:5]}...{candidate_sizes_per_group[-5:]}.")
+    
+    results = []
+    num_groups_test = len(torch.unique(test_triples[:, args.group_strategy], dim=0))
+    
+    candidate_generator._get_or_create_pool(args.num_workers)
+
+    # Generate max candidates once
+    largest_size = max(candidate_sizes_per_group)
+    candidate_generator.per_group_cap = largest_size
+    all_candidates, all_scores = candidate_generator.generate_candidates(te_tuples_all, te_scores_rp_all, test_set_t.relation_maps, num_groups_test, te_scores_tp_all)
+    sorted_indices = torch.argsort(all_scores, descending=True)
+    all_candidates = all_candidates[sorted_indices]
+    
+    # Create dataset and dataloader once with placeholder data
+    initial_candidates = all_candidates[:min_val] # Start with a minimal set
+    initial_labels = triple_lib.build_labels_for_triples(initial_candidates, test_triples)
+
+
+    pbar = tqdm(sorted(candidate_sizes_per_group, reverse=True), desc="Evaluating Performance vs. Size", unit="size")
+    for size in pbar:
+        effective_cap = num_groups_test * size
+        if effective_cap > all_candidates.size(0):
+            print(f"Warning: effective_cap {effective_cap} for size {size} is larger than available candidates {all_candidates.size(0)}. Using all available.")
+            candidates = all_candidates
+        else:
+            candidates = all_candidates[:effective_cap]
+        print(f"Evaluating with candidate size: {candidates.size(0)}, num_groups: {num_groups_test}, size per group: {size}")
+
+
+        # Update the dataset in-place instead of recreating it
+        labels = triple_lib.build_labels_for_triples(candidates, test_triples)
+        group_ids = triple_lib.generate_group_id_function(candidates, args.group_strategy)(candidates)
+
+        # Create DataLoader for the test set
+        test_set_tri = CandidateTripleEntityMultiPathDataset(
+            path_store=paths, relcontext_store=relcon,
+            triple_store=candidates, labels=labels, group_ids=group_ids, 
+            context_triple_store=train_triples, maximum_triple_paths=args.max_ppt, 
+            tokens_to_idxs=tokens_to_idxs, parallel=True, num_workers=args.num_workers)
+        use_cuda = (args.device == "cuda")
+        use_persist = args.num_workers > 0
+        te_loader_tri = torch.utils.data.DataLoader(
+            test_set_tri, batch_size=args.val_batch_size,
+            pin_memory=use_cuda,
+            persistent_workers=use_persist,
+            collate_fn=partial(collate_multipaths, padding_idx=tokens_to_idxs["PAD"]),
+            shuffle=False, num_workers=min(args.num_workers, 16))
+
+        # Compute average size per group
+        if len(group_ids) > 0:
+            _unique_groups, counts = torch.unique(group_ids, return_counts=True)
+            avg_size_per_group = counts.float().mean().item()
+        else:
+            avg_size_per_group = 0.0
+       
+
+        test_dict = trainer_tri.test(
+            model=pl_model_tri,
+            dataloaders=te_loader_tri,
+            ckpt_path=triple_ckpt_path,
+            verbose=False
+        )[0]
+
+        test_dict.update({'candidate_size': candidates.size(0), 'avg_size_per_group': avg_size_per_group})
+        print(test_dict)
+        
+        results.append(test_dict)
+        pbar.set_postfix({'size': size})
+
+    create_performance_vs_size_plot(results, save_dir=args.figure_dir)
+    return
