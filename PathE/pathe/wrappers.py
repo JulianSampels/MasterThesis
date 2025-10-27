@@ -685,12 +685,12 @@ class PathEModelWrapperTriples(LightningModule):
                 if len(triples_rp) >= 0 and len(logits_rp) >= 0:
                     triples_rp = torch.cat(triples_rp, dim=0)
                     logits_rp = torch.cat(logits_rp, dim=0)
-                    assert(logits_rp.size(0) == triples_rp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
+                    assert(logits_rp.size(0) == triples_rp.size(0)), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().'
                     self.calculate_and_log_val_relation_metrics(triples_rp, logits_rp)
                 if len(triples_lp) > 0 and len(logits_lp) > 0:
                     triples_lp = torch.cat(triples_lp, dim=0)
                     logits_lp = torch.cat(logits_lp, dim=0)
-                    assert(logits_lp.size(0) == triples_lp.size(0), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().')
+                    assert(logits_lp.size(0) == triples_lp.size(0)), 'Incompatible batch and logits sizes, perhaps something went wrong while generating them in validation_step().'
                     self.calculate_and_log_val_links_metrics(triples_lp, logits_lp)
             del self._val_acc  # delete reference for next validation epoch
 
