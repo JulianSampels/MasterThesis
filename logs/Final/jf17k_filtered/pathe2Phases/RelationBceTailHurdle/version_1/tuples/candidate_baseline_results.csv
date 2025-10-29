@@ -1,0 +1,2 @@
+candidate_mrr,candidate_ndc,candidate_map,candidate_recall@1_per_group,candidate_recall@3_per_group,candidate_recall@5_per_group,candidate_recall@10_per_group,candidate_recall@1_total,candidate_recall@3_total,candidate_recall@5_total,candidate_recall@10_total
+0.1238214448094368,0.17732414603233337,0.0853913426399231,0.06394089013338089,0.0832512304186821,0.10945812612771988,0.14157634973526,0.0,0.0,0.0,0.0
