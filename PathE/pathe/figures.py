@@ -690,10 +690,11 @@ def create_test_set_statistics_figure(context_triple_store, train_triples, save_
     
     print(f"Figure saved to {save_dir}/{filename}")
 
-def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filename="tail_occurrence_per_head.svg", max_samples=1000000):
+def create_entity_occurrence_figure(triples, save_dir="./figures", filename="entity_occurrence.svg", max_samples=1000000):
     """
-    Create a histogram showing the distribution of the total number of tail occurrences per head entity (out-degree).
-    This provides statistics on the occurrence count of tails for heads in the knowledge graph.
+    Create histograms showing the distribution of entity occurrence counts in knowledge graph triples.
+    Generates two subplots: one for tail counts per head (out-degree distribution), and one for head counts per tail (in-degree distribution).
+    This provides statistics on the connectivity patterns of entities.
 
     Args:
         triples: (N, 3) tensor of triples (head, relation, tail)
@@ -707,82 +708,79 @@ def create_tail_occurrence_per_head_figure(triples, save_dir="./figures", filena
     # Move to CPU if needed
     triples = triples.cpu()
     
-    # Compute total tail occurrences per head (out-degree) - vectorized
-    head_to_tail_count = defaultdict(int)
-    for triple in triples:
-        head_to_tail_count[triple[0].item()] += 1
-    
-    # Get all unique tails - vectorized
+    # Get all unique entities
+    all_heads = torch.unique(triples[:, 0]).tolist()
     all_tails = torch.unique(triples[:, 2]).tolist()
     
-    # Compute per-head per-tail counts - optimize: only compute averages, not full dict
-    head_to_avg_tail = {}
-    for head in head_to_tail_count.keys():
-        head_triples = triples[triples[:, 0] == head]
-        if head_triples.size(0) > 0:
-            tail_counts = torch.bincount(head_triples[:, 2], minlength=len(all_tails))
-            avg = tail_counts.float().mean().item()
-            head_to_avg_tail[head] = avg
-    
-    # Compute averages
-    avg_tail_per_head_list = list(head_to_avg_tail.values())
-    avg_tail = sum(avg_tail_per_head_list) / len(avg_tail_per_head_list) if avg_tail_per_head_list else 0
-    
-    # For excluding zero: average of averages where counts > 0
-    nonzero_avg_tail_per_head_list = []
-    for head in head_to_avg_tail.keys():
+    # Compute tail counts per head
+    tail_counts_per_head = []
+    for head in all_heads:
         head_triples = triples[triples[:, 0] == head]
         tail_counts = torch.bincount(head_triples[:, 2], minlength=len(all_tails))
-        nonzero_counts = tail_counts[tail_counts > 0].float()
-        if nonzero_counts.numel() > 0:
-            nonzero_avg_tail_per_head_list.append(nonzero_counts.mean().item())
+        tail_counts_per_head.extend(tail_counts.tolist())
     
-    avg_tail_nonzero = sum(nonzero_avg_tail_per_head_list) / len(nonzero_avg_tail_per_head_list) if nonzero_avg_tail_per_head_list else 0
+    # Compute head counts per tail
+    head_counts_per_tail = []
+    for tail in all_tails:
+        tail_triples = triples[triples[:, 2] == tail]
+        head_counts = torch.bincount(tail_triples[:, 0], minlength=len(all_heads))
+        head_counts_per_tail.extend(head_counts.tolist())
     
-    print(f"Average tail occurrences per head: {avg_tail:.2f}")
-    print(f"Average tail occurrences per head (excluding 0): {avg_tail_nonzero:.2f}")
-    
-    # Get tail_counts for histogram - sample if too large
-    tail_counts = []
-    for head in head_to_tail_count.keys():
-        head_triples = triples[triples[:, 0] == head]
-        tail_counts.extend(torch.bincount(head_triples[:, 2], minlength=len(all_tails)).tolist())
-    
-    if len(tail_counts) > max_samples:
+    # Sample if too large
+    if len(tail_counts_per_head) > max_samples:
         import random
-        tail_counts = random.sample(tail_counts, max_samples)
-        print(f"Sampled {max_samples} tail counts for histogram to avoid OOM.")
+        tail_counts_per_head = random.sample(tail_counts_per_head, max_samples)
+        print(f"Sampled {max_samples} tail counts per head for histogram to avoid OOM.")
     
-    print(f"Total number of tail occurrence counts collected: {len(tail_counts)}, max: {max(tail_counts)}, min: {min(tail_counts)}")
+    if len(head_counts_per_tail) > max_samples:
+        import random
+        head_counts_per_tail = random.sample(head_counts_per_tail, max_samples)
+        print(f"Sampled {max_samples} head counts per tail for histogram to avoid OOM.")
     
-    # Create histogram
-    plt.figure(figsize=(10, 6))
-    min_count = min(tail_counts)
-    max_count = max(tail_counts)
-    bins = np.arange(min_count - 0.5, max_count + 1.5, 1)
-    plt.hist(tail_counts, bins=bins, alpha=0.7, color='purple', edgecolor='black')
-    plt.xlabel('Number of Tail Occurrences per Head')
-    plt.ylabel('Number of Heads')
-    plt.title('Distribution of Tail Occurrence Counts per Head')
-    plt.grid(True, alpha=0.3)
-    plt.yscale('log')
-    plt.xticks(np.arange(min_count, max_count + 1, 1))
+    # Create subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
-    # Add text with averages
-    plt.text(0.7, 0.9, f'Avg tails/head: {avg_tail:.2f}\nAvg tails/head (non-zero): {avg_tail_nonzero:.2f}', 
-             transform=plt.gca().transAxes, fontsize=10, verticalalignment='top', 
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    # First subplot: tail counts per head
+    if tail_counts_per_head:
+        min_count1 = min(tail_counts_per_head)
+        max_count1 = max(tail_counts_per_head)
+        bins1 = np.arange(min_count1 - 0.5, max_count1 + 1.5, 1)
+        ax1.hist(tail_counts_per_head, bins=bins1, alpha=0.7, color='purple', edgecolor='black')
+        ax1.set_xlabel('Number of Tails per Head')
+        ax1.set_ylabel('Frequency')
+        ax1.set_title('Distribution of Tail Counts per Head')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_yscale('log')
+        # Set xticks with reasonable spacing
+        step1 = max(1, (max_count1 - min_count1) // 10)
+        ax1.set_xticks(np.arange(min_count1, max_count1 + 1, step1))
     
-    # Save the plot
+    # Second subplot: head counts per tail
+    if head_counts_per_tail:
+        min_count2 = min(head_counts_per_tail)
+        max_count2 = max(head_counts_per_tail)
+        bins2 = np.arange(min_count2 - 0.5, max_count2 + 1.5, 1)
+        ax2.hist(head_counts_per_tail, bins=bins2, alpha=0.7, color='blue', edgecolor='black')
+        ax2.set_xlabel('Number of Heads per Tail')
+        ax2.set_ylabel('Frequency')
+        ax2.set_title('Distribution of Head Counts per Tail')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_yscale('log')
+        # Set xticks with reasonable spacing
+        step2 = max(1, (max_count2 - min_count2) // 10)
+        ax2.set_xticks(np.arange(min_count2, max_count2 + 1, step2))
+    
+    plt.tight_layout()
     plt.savefig(f'{save_dir}/{filename}')
     plt.close()
     
-    print(f"Figure saved to {save_dir}/{filename}")
+    print(f"Entity occurrence figure saved to {save_dir}/{filename}")
 
 def create_relation_occurrence_figure(triples, save_dir="./figures", filename="relation_occurrence.svg", max_samples=1000000):
     """
-    Create a histogram showing the distribution of the occurrence count of each relation.
-    This provides statistics on how frequently each relation appears in the knowledge graph.
+    Create histograms showing the distribution of relation occurrence counts in knowledge graph triples.
+    Generates two subplots: one for relation counts per head, and one for relation counts per tail.
+    This provides statistics on the relational connectivity patterns of entities.
 
     Args:
         triples: (N, 3) tensor of triples (head, relation, tail)
@@ -796,83 +794,81 @@ def create_relation_occurrence_figure(triples, save_dir="./figures", filename="r
     # Move to CPU if needed
     triples = triples.cpu()
     
-    # Compute occurrence count per relation - vectorized
-    relation_counts = defaultdict(int)
-    for triple in triples:
-        relation_counts[triple[1].item()] += 1
-    
-    # Get all unique relations - vectorized
+    # Get all unique entities and relations
+    all_heads = torch.unique(triples[:, 0]).tolist()
+    all_tails = torch.unique(triples[:, 2]).tolist()
     all_relations = torch.unique(triples[:, 1]).tolist()
     
-    # Compute per-head relation counts - optimize: only compute averages
-    head_to_avg_rel = {}
-    for head in torch.unique(triples[:, 0]).tolist():
-        head_triples = triples[triples[:, 0] == head]
-        if head_triples.size(0) > 0:
-            rel_counts = torch.bincount(head_triples[:, 1], minlength=len(all_relations))
-            avg = rel_counts.float().mean().item()
-            head_to_avg_rel[head] = avg
-    
-    # Compute averages
-    avg_rel_per_head_list = list(head_to_avg_rel.values())
-    avg_rel = sum(avg_rel_per_head_list) / len(avg_rel_per_head_list) if avg_rel_per_head_list else 0
-    
-    # For excluding zero: average of averages where counts > 0
-    nonzero_avg_rel_per_head_list = []
-    for head in head_to_avg_rel.keys():
+    # Compute relation counts per head
+    rel_counts_per_head = []
+    for head in all_heads:
         head_triples = triples[triples[:, 0] == head]
         rel_counts = torch.bincount(head_triples[:, 1], minlength=len(all_relations))
-        nonzero_counts = rel_counts[rel_counts > 0].float()
-        if nonzero_counts.numel() > 0:
-            nonzero_avg_rel_per_head_list.append(nonzero_counts.mean().item())
+        rel_counts_per_head.extend(rel_counts.tolist())
     
-    avg_rel_nonzero = sum(nonzero_avg_rel_per_head_list) / len(nonzero_avg_rel_per_head_list) if nonzero_avg_rel_per_head_list else 0
+    # Compute relation counts per tail
+    rel_counts_per_tail = []
+    for tail in all_tails:
+        tail_triples = triples[triples[:, 2] == tail]
+        rel_counts = torch.bincount(tail_triples[:, 1], minlength=len(all_relations))
+        rel_counts_per_tail.extend(rel_counts.tolist())
     
-    print(f"Average relation occurrences per head: {avg_rel:.2f}")
-    print(f"Average relation occurrences per head (excluding 0): {avg_rel_nonzero:.2f}")
-    
-    # Get counts for histogram - sample if too large
-    counts = []
-    for head in head_to_avg_rel.keys():
-        head_triples = triples[triples[:, 0] == head]
-        counts.extend(torch.bincount(head_triples[:, 1], minlength=len(all_relations)).tolist())
-    # counts = [c for c in counts if c > 0]  # Only consider non-zero counts
-    if len(counts) > max_samples:
+    # Sample if too large
+    if len(rel_counts_per_head) > max_samples:
         import random
-        counts = random.sample(counts, max_samples)
-        print(f"Sampled {max_samples} relation counts for histogram to avoid OOM.")
+        rel_counts_per_head = random.sample(rel_counts_per_head, max_samples)
+        print(f"Sampled {max_samples} relation counts per head for histogram to avoid OOM.")
     
-    print(f"Total number of relation occurrence counts collected: {len(counts)}, max: {max(counts)}, min: {min(counts)}")
+    if len(rel_counts_per_tail) > max_samples:
+        import random
+        rel_counts_per_tail = random.sample(rel_counts_per_tail, max_samples)
+        print(f"Sampled {max_samples} relation counts per tail for histogram to avoid OOM.")
     
-    # Create histogram
-    plt.figure(figsize=(10, 6))
-    min_count = min(counts)
-    max_count = max(counts)
-    bins = np.arange(min_count - 0.5, max_count + 1.5, 1)
-    plt.hist(counts, bins=bins, alpha=0.7, color='orange', edgecolor='black')
-    plt.xlabel('Number of Occurrences per Relation per Head')
-    plt.ylabel('Number of Relations')
-    plt.title('Distribution of Relation Occurrence Counts')
-    plt.yscale('log')
-    plt.grid(True, alpha=0.3)
-    # plt.xticks(np.arange(min_count, max_count + 1, 1))
+    # Create subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
-    # Add text with averages for relations per head
-    plt.text(0.7, 0.9, f'Avg rels/head: {avg_rel:.2f}\nAvg rels/head (non-zero): {avg_rel_nonzero:.2f}', 
-             transform=plt.gca().transAxes, fontsize=10, verticalalignment='top', 
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    # First subplot: relation counts per head
+    if rel_counts_per_head:
+        min_count1 = min(rel_counts_per_head)
+        max_count1 = max(rel_counts_per_head)
+        bins1 = np.arange(min_count1 - 0.5, max_count1 + 1.5, 1)
+        ax1.hist(rel_counts_per_head, bins=bins1, alpha=0.7, color='orange', edgecolor='black')
+        ax1.set_xlabel('Number of Relations per Head')
+        ax1.set_ylabel('Frequency')
+        ax1.set_title('Distribution of Relation Counts per Head')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_yscale('log')
+        # Set xticks with reasonable spacing
+        step1 = max(1, (max_count1 - min_count1) // 10)
+        ax1.set_xticks(np.arange(min_count1, max_count1 + 1, step1))
     
-    # Save the plot
+    # Second subplot: relation counts per tail
+    if rel_counts_per_tail:
+        min_count2 = min(rel_counts_per_tail)
+        max_count2 = max(rel_counts_per_tail)
+        bins2 = np.arange(min_count2 - 0.5, max_count2 + 1.5, 1)
+        ax2.hist(rel_counts_per_tail, bins=bins2, alpha=0.7, color='green', edgecolor='black')
+        ax2.set_xlabel('Number of Relations per Tail')
+        ax2.set_ylabel('Frequency')
+        ax2.set_title('Distribution of Relation Counts per Tail')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_yscale('log')
+        # Set xticks with reasonable spacing
+        step2 = max(1, (max_count2 - min_count2) // 10)
+        ax2.set_xticks(np.arange(min_count2, max_count2 + 1, step2))
+    
+    plt.tight_layout()
     plt.savefig(f'{save_dir}/{filename}')
     plt.close()
     
-    print(f"Figure saved to {save_dir}/{filename}")
+    print(f"Relation occurrence figure saved to {save_dir}/{filename}")
 
 
 def plot_relation_count_dispersion(triples, save_dir="./figures", filename="relation_dispersion.svg"):
     """
-    Analyzes if relation counts per relation type follow a Poisson distribution by plotting variance vs. mean.
-    For each relation type, computes the mean and variance of its occurrence counts across all heads (including 0 for heads without that relation).
+    Analyzes if relation type counts per relation follow a Poisson distribution by plotting variance vs. mean.
+    Creates two subplots: one for relation type counts across heads, and one for relation type counts across tails.
+    For each relation type, computes the mean and variance of its occurrence counts across all heads/tails (including 0 for heads/tails without that relation).
 
     Args:
         triples (torch.Tensor): (N, 3) tensor of (head, relation, tail).
@@ -881,76 +877,143 @@ def plot_relation_count_dispersion(triples, save_dir="./figures", filename="rela
     """
     os.makedirs(save_dir, exist_ok=True)
 
+    # Initialize data structures
     rel_to_head_counts = defaultdict(lambda: defaultdict(int))
+    rel_to_tail_counts = defaultdict(lambda: defaultdict(int))
     all_relations = set()
     all_heads = set()
+    all_tails = set()
 
     for h, r, t in triples:
-        h, r = h.item(), r.item()
+        h, r, t = h.item(), r.item(), t.item()
         rel_to_head_counts[r][h] += 1
+        rel_to_tail_counts[r][t] += 1
         all_relations.add(r)
         all_heads.add(h)
+        all_tails.add(t)
 
-    means, variances = [], []
-    means_nonzero, variances_nonzero = [], []
-    num_heads = len(all_heads)
+    # Compute for heads
+    variances_h, means_h, sample_sizes_h = [], [], []
+    variances_nonzero_h, means_nonzero_h, sample_sizes_nonzero_h = [], [], []
+
+    # Compute for tails
+    variances_t, means_t, sample_sizes_t = [], [], []
+    variances_nonzero_t, means_nonzero_t, sample_sizes_nonzero_t = [], [], []
 
     for rel in all_relations:
-        # Get counts for this relation, including 0 for heads not present
-        counts = [rel_to_head_counts[rel].get(h, 0) for h in all_heads]
-        
-        if len(counts) > 1:
-            means.append(np.mean(counts))
-            variances.append(np.var(counts))
-            
-            # Non-zero counts
-            counts_nonzero = [c for c in counts if c > 0]
-            if len(counts_nonzero) > 1:
-                means_nonzero.append(np.mean(counts_nonzero))
-                variances_nonzero.append(np.var(counts_nonzero))
+        # Heads
+        counts_h = [rel_to_head_counts[rel].get(h, 0) for h in all_heads]
+        if len(counts_h) > 1:
+            means_h.append(np.mean(counts_h))
+            variances_h.append(np.var(counts_h))
+            sample_sizes_h.append(len(counts_h))
+            counts_nonzero_h = [c for c in counts_h if c > 0]
+            if len(counts_nonzero_h) > 1:
+                means_nonzero_h.append(np.mean(counts_nonzero_h))
+                variances_nonzero_h.append(np.var(counts_nonzero_h))
+                sample_sizes_nonzero_h.append(len(counts_nonzero_h))
 
-    if not means:
+        # Tails
+        counts_t = [rel_to_tail_counts[rel].get(t, 0) for t in all_tails]
+        if len(counts_t) > 1:
+            means_t.append(np.mean(counts_t))
+            variances_t.append(np.var(counts_t))
+            sample_sizes_t.append(len(counts_t))
+            counts_nonzero_t = [c for c in counts_t if c > 0]
+            if len(counts_nonzero_t) > 1:
+                means_nonzero_t.append(np.mean(counts_nonzero_t))
+                variances_nonzero_t.append(np.var(counts_nonzero_t))
+                sample_sizes_nonzero_t.append(len(counts_nonzero_t))
+
+    if not means_h or not means_t:
         print("No data to plot for dispersion.")
         return
 
-    # Create scatter plot
-    plt.figure(figsize=(8, 8))
-    plt.scatter(means, variances, alpha=0.5, color='red', label='Per-Relation Type Mean vs. Variance (including 0s)')
-    plt.scatter(means_nonzero, variances_nonzero, alpha=0.5, color='blue', label='Per-Relation Type Mean vs. Variance (excluding 0s)')
-    
-    # Add y=x line for reference
-    max_val = max(max(means + means_nonzero), max(variances + variances_nonzero))
-    plt.plot([0, max_val], [0, max_val], 'k--', label='y=x (Poisson ideal)')
-    
-    plt.xlabel('Mean of Head Counts per Relation Type')
-    plt.ylabel('Variance of Head Counts per Relation Type')
-    plt.title('Relation Count Dispersion per Relation Type')
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
-    plt.axis('equal')
-    plt.xlim(left=0)
-    plt.ylim(bottom=0)
-    # plt.xscale('log')
-    # plt.yscale('log')
-    
-    # Calculate and display overall dispersion indices
-    overall_dispersion = np.mean(variances) / np.mean(means) if np.mean(means) > 0 else float('nan')
-    overall_dispersion_nonzero = np.mean(variances_nonzero) / np.mean(means_nonzero) if np.mean(means_nonzero) > 0 else float('nan')
-    textstr = f'Including 0s: {overall_dispersion:.2f}\nExcluding 0s: {overall_dispersion_nonzero:.2f}'
-    plt.text(0.95, 0.05, textstr, transform=plt.gca().transAxes, fontsize=12,
+    # Compute pooled dispersion indices
+    if variances_h and sample_sizes_h:
+        numerator_h = np.sum([var * (n-1) for var, n in zip(variances_h, sample_sizes_h)])
+        denominator_h = np.sum([mu * (n-1) for mu, n in zip(means_h, sample_sizes_h)])
+        pooled_dispersion_h = numerator_h / denominator_h if denominator_h > 0 else float('nan')
+    else:
+        pooled_dispersion_h = float('nan')
+
+    if variances_nonzero_h and sample_sizes_nonzero_h:
+        numerator_nonzero_h = np.sum([var * (n-1) for var, n in zip(variances_nonzero_h, sample_sizes_nonzero_h)])
+        denominator_nonzero_h = np.sum([mu * (n-1) for mu, n in zip(means_nonzero_h, sample_sizes_nonzero_h)])
+        pooled_dispersion_nonzero_h = numerator_nonzero_h / denominator_nonzero_h if denominator_nonzero_h > 0 else float('nan')
+    else:
+        pooled_dispersion_nonzero_h = float('nan')
+
+    if variances_t and sample_sizes_t:
+        numerator_t = np.sum([var * (n-1) for var, n in zip(variances_t, sample_sizes_t)])
+        denominator_t = np.sum([mu * (n-1) for mu, n in zip(means_t, sample_sizes_t)])
+        pooled_dispersion_t = numerator_t / denominator_t if denominator_t > 0 else float('nan')
+    else:
+        pooled_dispersion_t = float('nan')
+
+    if variances_nonzero_t and sample_sizes_nonzero_t:
+        numerator_nonzero_t = np.sum([var * (n-1) for var, n in zip(variances_nonzero_t, sample_sizes_nonzero_t)])
+        denominator_nonzero_t = np.sum([mu * (n-1) for mu, n in zip(means_nonzero_t, sample_sizes_nonzero_t)])
+        pooled_dispersion_nonzero_t = numerator_nonzero_t / denominator_nonzero_t if denominator_nonzero_t > 0 else float('nan')
+    else:
+        pooled_dispersion_nonzero_t = float('nan')
+
+    # Create subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    # First subplot: for heads
+    ax1.scatter(means_h, variances_h, alpha=0.5, color='red', label='Including 0s')
+    ax1.scatter(means_nonzero_h, variances_nonzero_h, alpha=0.5, color='blue', label='Excluding 0s')
+    max_val_h = max(max(means_h + means_nonzero_h), max(variances_h + variances_nonzero_h))
+    ax1.plot([0, max_val_h], [0, max_val_h], 'k--', label='y=x (Poisson ideal)')
+    ax1.set_xlabel('Mean Relation Type Count per Head')
+    ax1.set_ylabel('Variance of Relation Type Count per Head')
+    ax1.set_title('Dispersion of Relation Type Counts Across Heads')
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+    # ax1.axis('equal')
+    # ax1.set_xlim(left=0)
+    # ax1.set_ylim(bottom=0)
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
+    textstr_h = f'Pooled Dispersion Index (Including 0s): {pooled_dispersion_h:.2f}\nPooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_h:.2f}'
+    ax1.text(0.95, 0.05, textstr_h, transform=ax1.transAxes, fontsize=12,
              verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
+    # Second subplot: for tails
+    ax2.scatter(means_t, variances_t, alpha=0.5, color='red', label='Including 0s')
+    ax2.scatter(means_nonzero_t, variances_nonzero_t, alpha=0.5, color='blue', label='Excluding 0s')
+    max_val_t = max(max(means_t + means_nonzero_t), max(variances_t + variances_nonzero_t))
+    ax2.plot([0, max_val_t], [0, max_val_t], 'k--', label='y=x (Poisson ideal)')
+    ax2.set_xlabel('Mean Relation Type Count per Tail')
+    ax2.set_ylabel('Variance of Relation Type Count per Tail')
+    ax2.set_title('Dispersion of Relation Type Counts Across Tails')
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+    # ax2.axis('equal')
+    # ax2.set_xlim(left=0)
+    # ax2.set_ylim(bottom=0)
+    ax2.set_xscale('log')
+    ax2.set_yscale('log')
+    textstr_t = f'Pooled Dispersion Index (Including 0s): {pooled_dispersion_t:.2f}\nPooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_t:.2f}'
+    ax2.text(0.95, 0.05, textstr_t, transform=ax2.transAxes, fontsize=12,
+             verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
     plt.savefig(os.path.join(save_dir, filename))
     plt.close()
     print(f"Dispersion plot saved to {os.path.join(save_dir, filename)}")
-    print(f"Including 0s dispersion index: {overall_dispersion:.2f}")
-    print(f"Excluding 0s dispersion index: {overall_dispersion_nonzero:.2f}")
+    print(f"Heads - Pooled Dispersion Index (Including 0s): {pooled_dispersion_h:.2f}")
+    print(f"Heads - Pooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_h:.2f}")
+    print(f"Tails - Pooled Dispersion Index (Including 0s): {pooled_dispersion_t:.2f}")
+    print(f"Tails - Pooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_t:.2f}")
 
 
-def plot_tail_count_dispersion(triples, save_dir="./figures", filename="tail_dispersion.svg"):
+def plot_entity_count_dispersion(triples, save_dir="./figures", filename="entity_dispersion.svg"):
     """
-    Analyzes if tail counts per tail follow a Poisson distribution by plotting variance vs. mean.
-    For each tail, computes the mean and variance of its occurrence counts across all heads (including 0 for heads without that tail).
+    Analyzes the dispersion of entity counts in knowledge graph triples.
+    Creates two subplots: one for head counts per tail (in-degree dispersion), and one for tail counts per head (out-degree dispersion).
+    For each entity, computes the mean and variance of its connection counts across the opposite entities (including 0 for missing connections).
 
     Args:
         triples (torch.Tensor): (N, 3) tensor of (head, relation, tail).
@@ -959,70 +1022,129 @@ def plot_tail_count_dispersion(triples, save_dir="./figures", filename="tail_dis
     """
     os.makedirs(save_dir, exist_ok=True)
 
+    # Initialize data structures
     tail_to_head_counts = defaultdict(lambda: defaultdict(int))
+    head_to_tail_counts = defaultdict(lambda: defaultdict(int))
     all_tails = set()
     all_heads = set()
 
     for h, r, t in triples:
         h, t = h.item(), t.item()
         tail_to_head_counts[t][h] += 1
+        head_to_tail_counts[h][t] += 1
         all_tails.add(t)
         all_heads.add(h)
 
-    means, variances = [], []
-    means_nonzero, variances_nonzero = [], []
-    num_heads = len(all_heads)
+    # Compute for head counts per tail
+    means_ht, variances_ht, sample_sizes_ht = [], [], []
+    means_nonzero_ht, variances_nonzero_ht, sample_sizes_nonzero_ht = [], [], []
+
+    # Compute for tail counts per head
+    means_th, variances_th, sample_sizes_th = [], [], []
+    means_nonzero_th, variances_nonzero_th, sample_sizes_nonzero_th = [], [], []
 
     for tail in all_tails:
-        # Get counts for this tail, including 0 for heads not present
-        counts = [tail_to_head_counts[tail].get(h, 0) for h in all_heads]
-        
-        if len(counts) > 1:
-            means.append(np.mean(counts))
-            variances.append(np.var(counts))
-            
-            # Non-zero counts
-            counts_nonzero = [c for c in counts if c > 0]
-            if len(counts_nonzero) > 1:
-                means_nonzero.append(np.mean(counts_nonzero))
-                variances_nonzero.append(np.var(counts_nonzero))
+        counts_ht = [tail_to_head_counts[tail].get(h, 0) for h in all_heads]
+        if len(counts_ht) > 1:
+            means_ht.append(np.mean(counts_ht))
+            variances_ht.append(np.var(counts_ht))
+            sample_sizes_ht.append(len(counts_ht))
+            counts_nonzero_ht = [c for c in counts_ht if c > 0]
+            if len(counts_nonzero_ht) > 1:
+                means_nonzero_ht.append(np.mean(counts_nonzero_ht))
+                variances_nonzero_ht.append(np.var(counts_nonzero_ht))
+                sample_sizes_nonzero_ht.append(len(counts_nonzero_ht))
 
-    if not means:
-        print("No data to plot for dispersion.")
+    for head in all_heads:
+        counts_th = [head_to_tail_counts[head].get(t, 0) for t in all_tails]
+        if len(counts_th) > 1:
+            means_th.append(np.mean(counts_th))
+            variances_th.append(np.var(counts_th))
+            sample_sizes_th.append(len(counts_th))
+            counts_nonzero_th = [c for c in counts_th if c > 0]
+            if len(counts_nonzero_th) > 1:
+                means_nonzero_th.append(np.mean(counts_nonzero_th))
+                variances_nonzero_th.append(np.var(counts_nonzero_th))
+                sample_sizes_nonzero_th.append(len(counts_nonzero_th))
+
+    if not means_ht or not means_th:
+        print("No data to plot for entity dispersion.")
         return
 
-    # Create scatter plot
-    plt.figure(figsize=(8, 8))
-    plt.scatter(means, variances, alpha=0.5, color='red', label='Per-Tail Mean vs. Variance (including 0s)')
-    plt.scatter(means_nonzero, variances_nonzero, alpha=0.5, color='blue', label='Per-Tail Mean vs. Variance (excluding 0s)')
-    
-    # Add y=x line for reference
-    max_val = max(max(means + means_nonzero), max(variances + variances_nonzero))
-    plt.plot([0, max_val], [0, max_val], 'k--', label='y=x (Poisson ideal)')
-    
-    plt.xlabel('Mean of Head Counts per Tail')
-    plt.ylabel('Variance of Head Counts per Tail')
-    plt.title('Tail Count Dispersion per Tail')
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
-    plt.xlim(left=0)
-    plt.ylim(bottom=0)
-    # plt.xscale('log')
-    # plt.yscale('log')
-    plt.axis('equal')
-    
-    # Calculate and display overall dispersion indices
-    overall_dispersion = np.mean(variances) / np.mean(means) if np.mean(means) > 0 else float('nan')
-    overall_dispersion_nonzero = np.mean(variances_nonzero) / np.mean(means_nonzero) if np.mean(means_nonzero) > 0 else float('nan')
-    textstr = f'Including 0s: {overall_dispersion:.2f}\nExcluding 0s: {overall_dispersion_nonzero:.2f}'
-    plt.text(0.95, 0.05, textstr, transform=plt.gca().transAxes, fontsize=12,
+    # Compute pooled dispersion indices
+    if variances_ht and sample_sizes_ht:
+        numerator_ht = np.sum([var * (n-1) for var, n in zip(variances_ht, sample_sizes_ht)])
+        denominator_ht = np.sum([mu * (n-1) for mu, n in zip(means_ht, sample_sizes_ht)])
+        pooled_dispersion_ht = numerator_ht / denominator_ht if denominator_ht > 0 else float('nan')
+    else:
+        pooled_dispersion_ht = float('nan')
+
+    if variances_nonzero_ht and sample_sizes_nonzero_ht:
+        numerator_nonzero_ht = np.sum([var * (n-1) for var, n in zip(variances_nonzero_ht, sample_sizes_nonzero_ht)])
+        denominator_nonzero_ht = np.sum([mu * (n-1) for mu, n in zip(means_nonzero_ht, sample_sizes_nonzero_ht)])
+        pooled_dispersion_nonzero_ht = numerator_nonzero_ht / denominator_nonzero_ht if denominator_nonzero_ht > 0 else float('nan')
+    else:
+        pooled_dispersion_nonzero_ht = float('nan')
+
+    if variances_th and sample_sizes_th:
+        numerator_th = np.sum([var * (n-1) for var, n in zip(variances_th, sample_sizes_th)])
+        denominator_th = np.sum([mu * (n-1) for mu, n in zip(means_th, sample_sizes_th)])
+        pooled_dispersion_th = numerator_th / denominator_th if denominator_th > 0 else float('nan')
+    else:
+        pooled_dispersion_th = float('nan')
+
+    if variances_nonzero_th and sample_sizes_nonzero_th:
+        numerator_nonzero_th = np.sum([var * (n-1) for var, n in zip(variances_nonzero_th, sample_sizes_nonzero_th)])
+        denominator_nonzero_th = np.sum([mu * (n-1) for mu, n in zip(means_nonzero_th, sample_sizes_nonzero_th)])
+        pooled_dispersion_nonzero_th = numerator_nonzero_th / denominator_nonzero_th if denominator_nonzero_th > 0 else float('nan')
+    else:
+        pooled_dispersion_nonzero_th = float('nan')
+
+    # Create subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    # First subplot: head counts per tail
+    ax1.scatter(means_ht, variances_ht, alpha=0.5, color='red', label='Including 0s')
+    ax1.scatter(means_nonzero_ht, variances_nonzero_ht, alpha=0.5, color='blue', label='Excluding 0s')
+    max_val_ht = max(max(means_ht + means_nonzero_ht), max(variances_ht + variances_nonzero_ht))
+    ax1.plot([0, max_val_ht], [0, max_val_ht], 'k--', label='y=x (Poisson ideal)')
+    ax1.set_xlabel('Mean Head Count per Tail')
+    ax1.set_ylabel('Variance of Head Count per Tail')
+    ax1.set_title('Dispersion of Head Counts Across Tails')
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+    ax1.axis('equal')
+    ax1.set_xlim(left=0)
+    ax1.set_ylim(bottom=0)
+    textstr_ht = f'Pooled Dispersion Index (Including 0s): {pooled_dispersion_ht:.2f}\nPooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_ht:.2f}'
+    ax1.text(0.95, 0.05, textstr_ht, transform=ax1.transAxes, fontsize=12,
              verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
+    # Second subplot: tail counts per head
+    ax2.scatter(means_th, variances_th, alpha=0.5, color='red', label='Including 0s')
+    ax2.scatter(means_nonzero_th, variances_nonzero_th, alpha=0.5, color='blue', label='Excluding 0s')
+    max_val_th = max(max(means_th + means_nonzero_th), max(variances_th + variances_nonzero_th))
+    ax2.plot([0, max_val_th], [0, max_val_th], 'k--', label='y=x (Poisson ideal)')
+    ax2.set_xlabel('Mean Tail Count per Head')
+    ax2.set_ylabel('Variance of Tail Count per Head')
+    ax2.set_title('Dispersion of Tail Counts Across Heads')
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+    ax2.axis('equal')
+    ax2.set_xlim(left=0)
+    ax2.set_ylim(bottom=0)
+    textstr_th = f'Pooled Dispersion Index (Including 0s): {pooled_dispersion_th:.2f}\nPooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_th:.2f}'
+    ax2.text(0.95, 0.05, textstr_th, transform=ax2.transAxes, fontsize=12,
+             verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
     plt.savefig(os.path.join(save_dir, filename))
     plt.close()
-    print(f"Dispersion plot saved to {os.path.join(save_dir, filename)}")
-    print(f"Including 0s dispersion index: {overall_dispersion:.2f}")
-    print(f"Excluding 0s dispersion index: {overall_dispersion_nonzero:.2f}")
+    print(f"Entity dispersion plot saved to {os.path.join(save_dir, filename)}")
+    print(f"Tails - Pooled Dispersion Index (Including 0s): {pooled_dispersion_ht:.2f}")
+    print(f"Tails - Pooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_ht:.2f}")
+    print(f"Heads - Pooled Dispersion Index (Including 0s): {pooled_dispersion_th:.2f}")
+    print(f"Heads - Pooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_th:.2f}")
 
 
 def create_figures(candidates, test_triples, relation_maps, context_triple_store, save_dir):
