@@ -1142,7 +1142,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
         candidates_test, _ = candidate_generator.generate_candidates(te_tuples_all, te_scores_rp_all, test_set_t.relation_maps, num_groups_test, scores_tp=te_scores_tp_all)
         
         # Compute total coverage on test
-        total_cov, _ = BaseCandidateGenerator.analyze_total_coverage(candidates_test, test_triples, name=f"alpha={alpha}_beta={beta}_temp={temp}", print_results=False)
+        total_cov, pos_density = BaseCandidateGenerator.analyze_total_coverage(candidates_test, test_triples, name=f"alpha={alpha}_beta={beta}_temp={temp}", print_results=False)
         
         # Compute per-group coverage on test (average recall per group)
         # Assuming analyze_coverage_per_group is modified to return the average recall
@@ -1156,7 +1156,7 @@ def grid_search_candidates(candidate_generator: BaseCandidateGenerator, args, tr
             print_results=False
         )
         
-        results.append({'candidate_size': candidates_test.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'alpha': alpha, 'beta': beta, 'temp': temp, 'avg_group_density': avg_group_density})
+        results.append({'candidate_size': candidates_test.size(0), 'avg_group_count': avg_group_count, 'total_cov': total_cov, 'avg_cov_per_group': avg_cov_per_group, 'alpha': alpha, 'beta': beta, 'temp': temp, 'avg_group_density': avg_group_density, 'pos_density': pos_density})
         
         if total_cov > best_total_cov:
             best_total_cov = total_cov
