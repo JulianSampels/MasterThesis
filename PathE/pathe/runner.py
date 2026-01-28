@@ -24,7 +24,7 @@ def main():
 
     parser.add_argument('cmd', choices=['train', 'resume', 'test', 'full_eval'],
                         help='A supported command to execute.')
-    parser.add_argument('model', choices=['pathe', 'patheTuples', 'pathe2Phases'],
+    parser.add_argument('model', choices=['pathe', 'patheTuples', 'SplitJoinPredictPathE'],
                         help='The name of the PathE model to use.')
     parser.add_argument('--path_type', choices=['unrolled'],
                         default='unrolled', help='unrolled')
@@ -165,7 +165,7 @@ def main():
                                  "valid_link_hits1", "valid_link_hits3", "valid_link_hits5", "valid_link_hits10", 
                                  "valid_link_recall5_perGroup", "valid_link_recall10_perGroup"],
                         help='Monitored metric for early stopping and ckpt for triples.')
-    parser.add_argument('--class_weigths', action='store_true', default=False,
+    parser.add_argument('--class_weights', action='store_true', default=False,
                         help='Whether to weight the loss with class frequencies.')
     parser.add_argument('--accumulate_gradient', type=int, default=1,
                         help='No. of batches for gradient accumulation (1==off).')
@@ -185,9 +185,9 @@ def main():
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Whether to run a small-scale experiment.')
     parser.add_argument('--skip_phase1', action='store_true', default=False,
-                        help='Whether to skip training the first phase (triples). Has no effect if model is not pathe2Phases.')
+                        help='Whether to skip training the first phase (triples). Has no effect if model is not SplitJoinPredictPathE.')
     parser.add_argument('--skip_phase2', action='store_true', default=False,
-                        help='Whether to skip training the second phase (candidates). Has no effect if model is not pathe2Phases.')
+                        help='Whether to skip training the second phase (candidates). Has no effect if model is not SplitJoinPredictPathE.')
 
 
     # Parameters for the evaluation data and strategies
@@ -289,13 +289,13 @@ def main():
         if args.val_num_negatives == 0:
             assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
         pathe_trainer.create_and_run_training_exp_tuples(args)
-    elif args.model == "pathe2Phases":
+    elif args.model == "SplitJoinPredictPathE":
         if args.val_num_negatives == 0:
             assert "link" not in args.tuple_monitor, f"Link prediction metric {args.tuple_monitor} cannot be used when val_num_negatives=0"
         assert args.use_manual_optimization, "Two-phase training requires --use_manual_optimization to be set for proper relation prediction in tuples training."
         # assert args.link_head_detached, "Two-phase training requires --link_head_detached to be set for proper relation prediction in tuples training."
         assert not (args.tuple_checkpoint is None and args.skip_phase1), "Cannot skip phase 1 if no tuple_checkpoint is provided."
-        pathe_trainer.create_and_run_training_exp_two_phases(args)
+        pathe_trainer.create_and_run_split_join_predict_experiment(args)
 
 
 

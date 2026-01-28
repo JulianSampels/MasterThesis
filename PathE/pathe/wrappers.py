@@ -1381,18 +1381,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # Create binary labels: 1 if used (count > 0), 0 otherwise
         targets = (relation_count_matrix > 0).float()
 
-        # weights = torch.ones_like(relation_count_matrix)
-        # pos_counts = relation_count_matrix.sum(dim=1)
-        # neg_counts = relation_count_matrix.shape[1] - pos_counts
-        # w_pos = 0.5 / pos_counts.clamp_min(1.0)
-        # w_neg = 0.5 / neg_counts.clamp_min(1.0)
-        # weights = torch.where(relation_count_matrix > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
-        # weights = torch.ones_like(targets)  # uncomment to disable weighting
-
-        # Weights: use the count for positives, 1.0 for negatives
-        # weights = torch.where(targets > 0.5, relation_count_matrix, 1.0)
-
-        # Weights: use the count for positives, and for negatives, distribute the total positive weight equally
+        # Balanced weighting: distribute total weight equally between positives and negatives per sample
         num_pos = targets.sum(dim=1)  # (batch_size,)
         num_neg = (targets <= 0.5).sum(dim=1)  # (batch_size,)
         weight_neg = 1 / num_neg.clamp_min(1.0)  # (batch_size,)
@@ -1415,18 +1404,7 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         # Create binary labels: 1 if used (count > 0), 0 otherwise
         targets = (entity_count_matrix > 0).float()
 
-        # weights = torch.ones_like(targets)
-        # pos_counts = targets.sum(dim=1)
-        # neg_counts = targets.shape[1] - pos_counts
-        # w_pos = 0.5 / pos_counts.clamp_min(1.0)
-        # w_neg = 0.5 / neg_counts.clamp_min(1.0)
-        # tail_weights = torch.where(targets > 0.5, w_pos.unsqueeze(1), w_neg.unsqueeze(1))
-        # tail_weights = torch.ones_like(targets)  # uncomment to disable weighting
-
-        # Weights: use the count for positives, 1.0 for negatives
-        # tail_weights = torch.where(targets > 0.5, entity_count_matrix, 1.0)
-
-        # Weights: use the count for positives, and for negatives, distribute the total positive weight equally
+        # Balanced weighting: distribute total positive weight equally among negatives
         sum_pos = entity_count_matrix.sum(dim=1)  # (batch_size,)
         num_neg = (targets <= 0.5).sum(dim=1)  # (batch_size,)
         weight_neg = sum_pos / num_neg.clamp_min(1.0)  # (batch_size,)
@@ -1449,32 +1427,11 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
 
     def compute_tail_poisson_loss(self, logits_tail: torch.Tensor, entity_count_matrix: torch.Tensor):
         """
-        Compute weighted Poisson NLL loss for tail prediction.
-        Weights are automatically set based on zero vs. non-zero counts for balance.
+        Compute Poisson NLL loss for tail prediction.
         """
         if entity_count_matrix is None:
             raise ValueError("An entity count matrix must be provided for Poisson loss calculation.")
         
-        # Compute per-element Poisson NLL (reduction='none')
-        # loss_per_element = torch.nn.functional.poisson_nll_loss(predictions, entity_count_matrix, log_input=True, reduction='none')
-        
-        # Automatic weighting: balance zeros vs. non-zeros
-        # num_entities = entity_count_matrix.shape[1]
-        # num_zeros = (entity_count_matrix == 0).sum(dim=1)
-        # num_non_zeros = num_entities - num_zeros
-        
-        # Inverse frequency weights (avoid division by zero)
-        # zero_weights = num_entities / num_zeros.clamp_min(1.0)
-        # non_zero_weights = num_entities / num_non_zeros.clamp_min(1.0)
-
-        # weights = torch.where(entity_count_matrix == 0, zero_weights.unsqueeze(1), non_zero_weights.unsqueeze(1))
-        # weights = torch.where(entity_count_matrix == 0, zero_weights, non_zero_weights)
-
-        # Weighted sum, normalized by total weight (ensures scale stability)
-        # weighted_loss = (loss_per_element * weights).sum()
-        # total_weight = weights.sum().clamp_min(1.0)
-        # loss = weighted_loss / total_weight
-
         loss = torch.nn.functional.poisson_nll_loss(logits_tail, entity_count_matrix, log_input=True, full=True, reduction='sum')
         loss /= entity_count_matrix.numel()
         return loss
@@ -1493,7 +1450,6 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             count_loss = masked_loss.sum() / poisson_mask.sum().clamp_min(1.0)
         else:
             count_loss = torch.tensor(0.0, device=self.device)
-        # print(f"hurdle_loss: {hurdle_loss}, count_loss: {count_loss}")
         hurdle_loss /= hurdle_loss.detach().clamp_min(1.0)
         count_loss /= count_loss.detach().clamp_min(1.0)
         return hurdle_loss + count_loss
@@ -1512,7 +1468,6 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
             count_loss =  masked_loss.sum() / poisson_mask.sum().clamp_min(1.0)
         else:
             count_loss = torch.tensor(0.0, device=self.device)
-        # print(f"hurdle_loss: {hurdle_loss}, count_loss: {count_loss}")
         hurdle_loss /= hurdle_loss.detach().clamp_min(1.0)
         count_loss /= count_loss.detach().clamp_min(1.0)
         return hurdle_loss + count_loss
@@ -1714,8 +1669,6 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
         if self.tuple_monitor == "valid_tail_hits5": self.log("valid_tail_hits5", self.val_tailHitsAt5, on_step=False, on_epoch=True)
         if True or self.tuple_monitor == "valid_tail_hits10": self.log("valid_tail_hits10", self.val_tailHitsAt10, on_step=False, on_epoch=True, prog_bar=True)
         
-        print()
-
         # Step schedulers if in manual optimization mode
         if self.use_manual_optimization and self.scheduler == "reduce_on_plateau":
             for scheduler in self.lr_schedulers():
@@ -1761,8 +1714,6 @@ class PathEModelWrapperUniqueHeads(PathEModelWrapperTuples):
     @torch.no_grad()
     def on_test_epoch_end(self):
         # Log relation metrics
-        # Log RMSE metrics for counting functions
-            
         self.log("test_mrr", self.test_relationMRR, on_step=False, on_epoch=True)
         self.log("test_hits1", self.test_relationHitsAt1, on_step=False, on_epoch=True)
         self.log("test_hits3", self.test_relationHitsAt3, on_step=False, on_epoch=True)
