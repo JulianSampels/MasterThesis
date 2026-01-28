@@ -81,25 +81,26 @@ def create_heatmaps(results, save_dir="./figures"):
 
     print(f"Heatmaps and results saved to {save_dir}/")
 
-def create_coverage_vs_size_plot(results, save_dir="./figures"):
+def create_coverage_vs_size_plot(results, save_dir="./figures", relative_divisor=None):
     os.makedirs(save_dir, exist_ok=True)
     results.sort(key=lambda x: x['total_cov'])  # Sort by total coverage
     # Save results to CSV using pandas for simplicity
     df = pd.DataFrame(results)
     df.to_csv(f'{save_dir}/coverage_vs_size_results.csv', index=False)
-    create_coverage_vs_total_size_plot(results, save_dir=save_dir)
-    create_coverage_vs_avg_group_size_plot(results, save_dir=save_dir)
+    create_coverage_vs_total_size_plot(results, save_dir=save_dir, relative_divisor=relative_divisor)
+    create_coverage_vs_avg_group_size_plot(results, save_dir=save_dir, relative_divisor=relative_divisor)
 
 
-def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="coverage_vs_total_size.svg"):
+def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="coverage_vs_total_size.svg", relative_divisor=None):
     """
     Create a line plot showing total coverage, average recall per group, and candidate density vs. candidate size.
     Saves the plot as an SVG file.
 
     Args:
-        results: List of dicts with keys 'candidate_size', 'total_cov', 'avg_cov_per_group', 'pos_density'
+        results: List of dicts with keys 'candidate_size', 'total_cov', 'avg_cov_per_group', 'pos_density', 'avg_group_density'
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
+        relative_divisor: Optional divisor for relative candidate size on second x-axis
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
@@ -109,15 +110,17 @@ def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="
     total_covs = [r['total_cov'] for r in results]
     avg_cov_per_groups = [r['avg_cov_per_group'] for r in results]
     pos_densities = [r['pos_density'] for r in results]
+    avg_group_densities = [r['avg_group_density'] for r in results]
     # avg_group_counts = [r['avg_group_count'] for r in results]
     
     # Create the plot with dual y-axes
+
     fig, ax1 = plt.subplots(figsize=(10, 6))
     
     # Primary axis for coverage metrics
-    ax1.plot(candidate_sizes, total_covs, label='Total Coverage (Micro)', marker='o', linestyle='-', color='darkgreen')
-    ax1.plot(candidate_sizes, avg_cov_per_groups, label='Avg. Coverage per Group (Macro)', marker='s', linestyle='--', color='seagreen')
-    ax1.set_xlabel('Total Candidate Size')
+    ax1.plot(candidate_sizes, total_covs, label='Micro Coverage', marker='o', linestyle='-', color='darkgreen')
+    ax1.plot(candidate_sizes, avg_cov_per_groups, label='Macro Coverage', marker='s', linestyle='--', color='seagreen')
+    ax1.set_xlabel('Absolute Candidate Size')
     ax1.set_ylabel('Coverage')
     ax1.tick_params(axis='y')
     ax1.set_ylim(0, 1)
@@ -125,9 +128,10 @@ def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="
     
     # Secondary axis for density
     ax2 = ax1.twinx()
-    ax2.plot(candidate_sizes, pos_densities, label='Total Positives Density', marker='^', linestyle=':', color='blue')
-    ax2.set_ylabel('Density', color='blue')
-    ax2.tick_params(axis='y', labelcolor='blue')
+    ax2.plot(candidate_sizes, pos_densities, label='Micro Density', marker='^', linestyle=':', color='blue')
+    ax2.plot(candidate_sizes, avg_group_densities, label='Macro Density', marker='v', linestyle='-.', color='dodgerblue')
+    ax2.set_ylabel('Density')
+    ax2.tick_params(axis='y')
     # ax2.set_ylim(0, 1)
     
     # Combined legend
@@ -135,24 +139,38 @@ def create_coverage_vs_total_size_plot(results, save_dir="./figures", filename="
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='center right')
     
-    plt.title('Coverage and Density vs. Candidate Size')
+    plt.title('Coverage and Density vs. Absolute Candidate Size')
+    
+    if relative_divisor is not None:
+        ax3 = ax1.twiny()
+        ax3.set_xlabel('Relative Candidate Size')
+        ticks = ax1.get_xticks()
+        ax3.set_xticks(ticks)
+        ax3.set_xticklabels([f'{tick / relative_divisor:.1f}' for tick in ticks])
+        ax3.set_xlim(ax1.get_xlim())
+        ax3.xaxis.set_ticks_position('bottom')
+        ax3.xaxis.set_label_position('bottom')
+        ax3.spines['bottom'].set_position(('outward', 40))
+        ax1.spines['bottom'].set_position(('outward', 0))
+    
     plt.tight_layout()
     
     # Save the plot
     plt.savefig(f'{save_dir}/{filename}')
     plt.close()
     
-    print(f"Plot and results saved to {save_dir}/")
+    print(f"Plot and results saved to {save_dir}/{filename}")
 
-def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filename="coverage_vs_avg_group_size.svg"):
+def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filename="coverage_vs_avg_group_size.svg", relative_divisor=None):
     """
     Create a line plot showing total coverage, average recall per group, and candidate density vs. avg candidate size per group.
     Saves the plot as an SVG file.
 
     Args:
-        results: List of dicts with keys 'candidate_size', 'total_cov', 'avg_cov_per_group', 'pos_density', 'avg_group_count'
+        results: List of dicts with keys 'candidate_size', 'total_cov', 'avg_cov_per_group', 'pos_density', 'avg_group_density', 'avg_group_count'
         save_dir: Directory to save the SVG file
         filename: Name of the output SVG file
+        relative_divisor: Optional divisor for relative candidate size on second x-axis
     """
     # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
@@ -162,14 +180,15 @@ def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filena
     total_covs = [r['total_cov'] for r in results]
     avg_cov_per_groups = [r['avg_cov_per_group'] for r in results]
     pos_densities = [r['pos_density'] for r in results]
+    avg_group_densities = [r['avg_group_density'] for r in results]
     
     # Create the plot with dual y-axes
     fig, ax1 = plt.subplots(figsize=(10, 6))
     
     # Primary axis for coverage metrics
-    ax1.plot(avg_group_counts, total_covs, label='Total Coverage (Micro)', marker='o', linestyle='-', color='darkgreen')
-    ax1.plot(avg_group_counts, avg_cov_per_groups, label='Avg. Coverage per Group (Macro)', marker='s', linestyle='--', color='seagreen')
-    ax1.set_xlabel('Avg Candidate Size per Group')
+    ax1.plot(avg_group_counts, total_covs, label='Micro Coverage', marker='o', linestyle='-', color='darkgreen')
+    ax1.plot(avg_group_counts, avg_cov_per_groups, label='Macro Coverage', marker='s', linestyle='--', color='seagreen')
+    ax1.set_xlabel('Macro Candidate Size')
     ax1.set_ylabel('Coverage')
     ax1.tick_params(axis='y')
     ax1.set_ylim(0, 1)
@@ -177,7 +196,8 @@ def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filena
     
     # Secondary axis for density
     ax2 = ax1.twinx()
-    ax2.plot(avg_group_counts, pos_densities, label='Total Positives Density', marker='^', linestyle=':', color='blue')
+    ax2.plot(avg_group_counts, pos_densities, label='Micro Density', marker='^', linestyle=':', color='blue')
+    ax2.plot(avg_group_counts, avg_group_densities, label='Macro Density', marker='v', linestyle='-.', color='dodgerblue')
     ax2.set_ylabel('Density', color='blue')
     ax2.tick_params(axis='y', labelcolor='blue')
     # ax2.set_ylim(0, 1)
@@ -187,14 +207,42 @@ def create_coverage_vs_avg_group_size_plot(results, save_dir="./figures", filena
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='center right')
     
-    plt.title('Coverage and Density vs. Avg Candidate Size per Group')
+    plt.title('Coverage and Density vs. Macro Candidate Size')
+    
+    if relative_divisor is not None:
+        ax3 = ax1.twiny()
+        ax3.set_xlabel('Relative Candidate Size')
+        ticks = ax1.get_xticks()
+        ax3.set_xticks(ticks)
+        ax3.set_xticklabels([f'{tick / relative_divisor:.1f}' for tick in ticks])
+        ax3.set_xlim(ax1.get_xlim())
+        ax3.xaxis.set_ticks_position('bottom')
+        ax3.xaxis.set_label_position('bottom')
+        ax3.spines['bottom'].set_position(('outward', 40))
+        ax1.spines['bottom'].set_position(('outward', 0))
+    
     plt.tight_layout()
     
     # Save the plot
     plt.savefig(f'{save_dir}/{filename}')
     plt.close()
     
-    print(f"Plot and results saved to {save_dir}/")
+    print(f"Plot and results saved to {save_dir}/{filename}")
+
+def call_plot_from_csv(csv_path, plot_func, **kwargs):
+    """
+    Reads a CSV file and calls the specified plotting function with the data.
+    
+    Args:
+        csv_path: Path to the CSV file containing results.
+        plot_func: The plotting function to call (e.g., create_coverage_vs_total_size_plot).
+        save_dir: Directory to save the plot (default: "./figures").
+        **kwargs: Additional keyword arguments to pass to the plotting function.
+    """
+    df = pd.read_csv(csv_path)
+    results = df.to_dict('records')
+    plot_func(results, **kwargs)
+p = "./logs/Final/Fb15k237/pathe2Phases/RelationPTailBce/version_0/figures/coverage_vs_size_results.csv"
 
 def create_performance_vs_size_plot(results, save_dir="./figures", filename="performance_vs_size.svg"):
     """
@@ -1008,8 +1056,168 @@ def plot_relation_count_dispersion(triples, save_dir="./figures", filename="rela
     print(f"Tails - Pooled Dispersion Index (Including 0s): {pooled_dispersion_t:.2f}")
     print(f"Tails - Pooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_t:.2f}")
 
+def plot_entity_pair_multiplicity_dispersion(triples, save_dir="./figures", filename="entity_pair_dispersion.svg"):
+    """
+    Analyzes the dispersion of Entity Pair Multiplicity (h, t).
+    Counts how many distinct relation types connect a specific pair of entities.
+    y_{h,t} = |{r \in R | (h, r, t) \in T}|
+    
+    Plots Variance vs Mean for:
+    1. Grouped by Head: For each head h, statistics of y_{h,t} across all tails t.
+    2. Grouped by Tail: For each tail t, statistics of y_{h,t} across all heads h.
 
-def plot_entity_count_dispersion(triples, save_dir="./figures", filename="entity_dispersion.svg"):
+    Args:
+        triples (torch.Tensor): (N, 3) tensor of (head, relation, tail).
+        save_dir (str): Directory to save the figure.
+        filename (str): Name of the output SVG file.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Initialize data structures
+    # head_to_tail_counts[h][t] = count of relations between h and t
+    head_to_tail_counts = defaultdict(lambda: defaultdict(int))
+    # tail_to_head_counts[t][h] = count of relations between h and t
+    tail_to_head_counts = defaultdict(lambda: defaultdict(int))
+    
+    all_heads = set()
+    all_tails = set()
+
+    for h, r, t in triples:
+        h, t = h.item(), t.item()
+        head_to_tail_counts[h][t] += 1
+        tail_to_head_counts[t][h] += 1
+        all_heads.add(h)
+        all_tails.add(t)
+
+    num_heads = len(all_heads)
+    num_tails = len(all_tails)
+    print(f"Total unique heads: {num_heads}, tails: {num_tails}, intersection: {len(all_heads & all_tails)}, union: {len(all_heads | all_tails)}")
+
+    # --- Compute Statistics Grouped by Head ---
+    # For each head, we look at the distribution of counts across all tails
+    means_h, variances_h, sample_sizes_h = [], [], []
+    means_nonzero_h, variances_nonzero_h, sample_sizes_nonzero_h = [], [], []
+
+    for h in all_heads:
+        counts_nonzero = list(head_to_tail_counts[h].values())
+        
+        # Excluding 0s
+        if len(counts_nonzero) > 1:
+            means_nonzero_h.append(np.mean(counts_nonzero))
+            variances_nonzero_h.append(np.var(counts_nonzero))
+            sample_sizes_nonzero_h.append(len(counts_nonzero))
+        
+        # Including 0s (Sparse calculation)
+        # Total population is all_tails
+        sum_x = sum(counts_nonzero)
+        sum_sq_x = sum(c**2 for c in counts_nonzero)
+        
+        mean_all = sum_x / num_tails
+        mean_sq_all = sum_sq_x / num_tails
+        var_all = mean_sq_all - (mean_all ** 2)
+        
+        means_h.append(mean_all)
+        variances_h.append(var_all)
+        sample_sizes_h.append(num_tails)
+
+    # --- Compute Statistics Grouped by Tail ---
+    # For each tail, we look at the distribution of counts across all heads
+    means_t, variances_t, sample_sizes_t = [], [], []
+    means_nonzero_t, variances_nonzero_t, sample_sizes_nonzero_t = [], [], []
+
+    for t in all_tails:
+        counts_nonzero = list(tail_to_head_counts[t].values())
+        
+        # Excluding 0s
+        if len(counts_nonzero) > 1:
+            means_nonzero_t.append(np.mean(counts_nonzero))
+            variances_nonzero_t.append(np.var(counts_nonzero))
+            sample_sizes_nonzero_t.append(len(counts_nonzero))
+            
+        # Including 0s (Sparse calculation)
+        # Total population is all_heads
+        sum_x = sum(counts_nonzero)
+        sum_sq_x = sum(c**2 for c in counts_nonzero)
+        
+        mean_all = sum_x / num_heads
+        mean_sq_all = sum_sq_x / num_heads
+        var_all = mean_sq_all - (mean_all ** 2)
+        
+        means_t.append(mean_all)
+        variances_t.append(var_all)
+        sample_sizes_t.append(num_heads)
+
+    # --- Compute Pooled Dispersion Indices ---
+    def compute_pooled_dispersion(variances, means, sample_sizes):
+        if variances and sample_sizes:
+            numerator = np.sum([var * (n-1) for var, n in zip(variances, sample_sizes)])
+            denominator = np.sum([mu * (n-1) for mu, n in zip(means, sample_sizes)])
+            return numerator / denominator if denominator > 0 else float('nan')
+        return float('nan')
+
+    pooled_dispersion_h = compute_pooled_dispersion(variances_h, means_h, sample_sizes_h)
+    pooled_dispersion_nonzero_h = compute_pooled_dispersion(variances_nonzero_h, means_nonzero_h, sample_sizes_nonzero_h)
+    
+    pooled_dispersion_t = compute_pooled_dispersion(variances_t, means_t, sample_sizes_t)
+    pooled_dispersion_nonzero_t = compute_pooled_dispersion(variances_nonzero_t, means_nonzero_t, sample_sizes_nonzero_t)
+
+    # --- Plotting ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    # Subplot 1: Grouped by Head
+    if means_h:
+        ax1.scatter(means_h, variances_h, alpha=0.5, color='red', label='Including 0s')
+        max_val_h = max(max(means_h), max(variances_h)) if means_h else 1
+        if means_nonzero_h:
+             ax1.scatter(means_nonzero_h, variances_nonzero_h, alpha=0.5, color='blue', label='Excluding 0s')
+             max_val_h = max(max_val_h, max(means_nonzero_h), max(variances_nonzero_h))
+        
+        ax1.plot([0, max_val_h], [0, max_val_h], 'k--', label='y=x (Poisson ideal)')
+        ax1.set_xlabel('Mean Relations per Tail (for a Head)')
+        ax1.set_ylabel('Variance of Relations per Tail (for a Head)')
+        ax1.set_title('Dispersion of Entity Pair Multiplicity (Grouped by Head)')
+        ax1.legend(loc='upper right')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xscale('log')
+        ax1.set_yscale('log')
+        
+        textstr_h = f'Pooled Dispersion Index (Including 0s): {pooled_dispersion_h:.2f}\nPooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_h:.2f}'
+        ax1.text(0.95, 0.05, textstr_h, transform=ax1.transAxes, fontsize=12,
+                 verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # Subplot 2: Grouped by Tail
+    if means_t:
+        ax2.scatter(means_t, variances_t, alpha=0.5, color='red', label='Including 0s')
+        max_val_t = max(max(means_t), max(variances_t)) if means_t else 1
+        if means_nonzero_t:
+            ax2.scatter(means_nonzero_t, variances_nonzero_t, alpha=0.5, color='blue', label='Excluding 0s')
+            max_val_t = max(max_val_t, max(means_nonzero_t), max(variances_nonzero_t))
+
+        ax2.plot([0, max_val_t], [0, max_val_t], 'k--', label='y=x (Poisson ideal)')
+        ax2.set_xlabel('Mean Relations per Head (for a Tail)')
+        ax2.set_ylabel('Variance of Relations per Head (for a Tail)')
+        ax2.set_title('Dispersion of Entity Pair Multiplicity (Grouped by Tail)')
+        ax2.legend(loc='upper right')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xscale('log')
+        ax2.set_yscale('log')
+        
+        textstr_t = f'Pooled Dispersion Index (Including 0s): {pooled_dispersion_t:.2f}\nPooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_t:.2f}'
+        ax2.text(0.95, 0.05, textstr_t, transform=ax2.transAxes, fontsize=12,
+                 verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, filename))
+    plt.close()
+    print(f"Entity pair dispersion plot saved to {os.path.join(save_dir, filename)}")
+    print(f"Grouped by Head - Pooled Dispersion Index (Including 0s): {pooled_dispersion_h:.2f}")
+    print(f"Grouped by Head - Pooled Dispersion Index (Excluding 0s): {pooled_dispersion_nonzero_h:.2f}")
+    print(f"Grouped by Tail - Pooled Dispersion Index (Including 0s): {pooled_dispersion_t:.2f}")
+    print(f"Grouped by Tail - Pooled Dispersion Index (Excluding 0# filepath: /home/juliansampels/Masterarbeit/MasterThesis/PathE/pathe/figures.pys): {pooled_dispersion_nonzero_t:.2f}")
+
+
+
+def plot_entity_degree_dispersion(triples, save_dir="./figures", filename="entity_dispersion.svg"):
     """
     Analyzes the dispersion of entity counts in knowledge graph triples.
     Creates two subplots: one for head counts per tail (in-degree dispersion), and one for tail counts per head (out-degree dispersion).

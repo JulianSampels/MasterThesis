@@ -654,26 +654,72 @@ class CandidateGeneratorGlobal(BaseCandidateGenerator):
         return candidates, scores
 
 class CandidateGeneratorPerHead(BaseCandidateGenerator):
-    def __init__(self, per_group_cap: int, alpha: float):
-        super().__init__()
-        self.per_group_cap = per_group_cap    # number of (r,t) pairs to keep per head entity
-        self.alpha = alpha  # weight for tail vs head logits
+    def __init__(self, per_group_cap: int, alpha: float, beta: float, temperature: float, normalize_mode: str = "per_head", max_num_workers: int | None = None):
+        super().__init__(max_num_workers=max_num_workers)
+        self.per_group_cap = per_group_cap
+        self.alpha = alpha
+        self.beta = beta
+        self.temperature = temperature
+        self.normalize_mode = normalize_mode
         assert self.per_group_cap and self.per_group_cap > 0, "per_group_cap must be > 0"
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
+        assert 0.0 <= self.beta <= 1.0, "beta must be in [0,1]"
+        # assert self.alpha + self.beta <= 1.0, "alpha + beta must be <= 1.0 (gamma = 1 - alpha - beta)"
+        assert self.normalize_mode in ("per_head", "global_joint", "per_relation", "none"), "normalize_mode invalid"
+        assert self.temperature > 0, "temperature must be > 0"
 
-    def _aggregate_logits_per_entity(tuples_2col: torch.Tensor,
-                                     scores_rp: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Aggregate (mean) relation logits for each unique head entity using torch_scatter.
-        Returns:
-            unique_heads: (H,) long tensor of entity ids
-            agg_logits:   (H, R_total) mean logits per head
-        """
-        heads = tuples_2col[:, 0]
-        unique_heads, inverse = heads.unique(return_inverse=True, sorted=False)
-        # scores_rp has shape (num_samples, R_total); inverse maps each row to its head index
-        agg_logits = torch_scatter.scatter_mean(scores_rp, inverse, dim=0)
-        return unique_heads, agg_logits
+    @staticmethod
+    def _process_chunk(
+        head_indices_chunk: np.ndarray,
+        log_p_head_2d: torch.Tensor,
+        log_p_tail_2d: torch.Tensor,
+        log_p_t_given_h_2d: torch.Tensor,
+        entity_ids: torch.Tensor,
+        original_relation_ids: torch.Tensor,
+        k_eff: int,
+        alpha: float,
+        beta: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Worker function for parallel per-head candidate generation with tail prediction."""
+        torch.set_num_threads(1)
+        E_local, R = log_p_head_2d.shape
+        
+        a_h = (1 - beta) * (1 - alpha)
+        a_t_pred = beta
+        a_t_inv = (1 - beta) * alpha
+
+        all_candidates_chunk = []
+        all_log_scores_chunk = []
+
+        for h_idx in head_indices_chunk:
+            log_p_r_h = log_p_head_2d[h_idx]          # (R,)
+            log_p_t_h = log_p_t_given_h_2d[h_idx]      # (E_local,)
+
+            # score(h,r,t) = a_h * logP(r|h) + a_t_inv * logP(r^-1|t) + a_t_pred * logP(t|h)
+            term1 = a_h * log_p_r_h.unsqueeze(1)            # (R, 1) -> broadcasts to (R, E_local)
+            term2 = a_t_inv * log_p_tail_2d                 # (R, E_local)
+            term3 = a_t_pred * log_p_t_h.unsqueeze(0)       # (1, E_local) -> broadcasts to (R, E_local)
+            log_scores = term1 + term2 + term3              # (R, E_local)
+            
+            flat = log_scores.view(-1)
+            
+            topk_log_vals, topk_idx = torch.topk(flat, k=k_eff, largest=True, sorted=True)
+            rel_local = topk_idx // E_local
+            tail_local = topk_idx % E_local
+            
+            # Map to global IDs
+            rel_global = original_relation_ids[rel_local]
+            tail_global = entity_ids[tail_local]
+            head_global = entity_ids[h_idx].expand_as(rel_global)
+            
+            candidates_h = torch.stack([head_global, rel_global, tail_global], dim=1)
+            all_candidates_chunk.append(candidates_h)
+            all_log_scores_chunk.append(topk_log_vals)
+        
+        if not all_candidates_chunk:
+            return torch.empty((0, 3), dtype=torch.long), torch.empty((0,), dtype=torch.float32)
+
+        return torch.cat(all_candidates_chunk, dim=0), torch.cat(all_log_scores_chunk, dim=0)
 
     def generate_candidates(self, 
             tuples_all: torch.Tensor,
@@ -683,75 +729,95 @@ class CandidateGeneratorPerHead(BaseCandidateGenerator):
             scores_tp: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         For each head entity h present in tuples_all:
-           Score (h, r, t) = P(r|h) * P(r^{-1}|t)
+           Score (h, r, t) is a combination of P(r|h), P(r^{-1}|t), and P(t|h).
            Keep top-k (r, t) pairs.
-        Only original relations are considered (relation_maps.original_relation_to_inverse_relation keys).
+        This version parallelizes the generation process over head entities.
         """
-        # 1. Aggregate logits per entity (treat any entity that appears as head)
-        entity_ids, scores_rp_grouped = self._aggregate_logits_per_head(tuples_all, scores_rp_all)  # (E',), (E', R_total)
+        assert scores_rp_all is not None, "scores_rp_all required."
+        assert scores_tp is not None, "scores_tp required for tail prediction."
+
+        # 1. Aggregate logits per entity
+        entity_ids, scores_rp_grouped = self._aggregate_logits_per_head(tuples_all, scores_rp_all)
+        _, scores_tp_grouped = self._aggregate_logits_per_head(tuples_all, scores_tp)
+        E = entity_ids.size(0)
         device = scores_rp_grouped.device
+
+        # Restrict to known entities
+        scores_tp_grouped = scores_tp_grouped[:, entity_ids]
         
         # 2. Prepare relation mappings
-        orig2inv = relation_maps.original_relation_to_inverse_relation
-        if len(orig2inv) == 0:
-            return {}
+        if not relation_maps.original_relation_to_inverse_relation:
+            return tuples_all.new_zeros((0, 3), dtype=torch.long), tuples_all.new_zeros((0,), dtype=torch.float32)
         
         # 3. Resolve original & inverse relation ids
-        original_relation_ids = relation_maps.original_relations_tensor.to(device)  # (R,)
-        inverse_relation_ids  = relation_maps.inverse_relations_tensor.to(device)   # (R,)
+        original_relation_ids = relation_maps.original_relations_tensor.to(device)
+        inverse_relation_ids  = relation_maps.inverse_relations_tensor.to(device)
+        R = original_relation_ids.size(0)
 
-        # 4. Slice logits for originals & inverses then softmax separately
-        logits_orig = scores_rp_grouped[:, original_relation_ids]          # (E', R)
-        logits_inv  = scores_rp_grouped[:, inverse_relation_ids]           # (E', R)
+        # 4. Slice logits for original and inverse relation columns
+        head_logits_subset = scores_rp_grouped[:, original_relation_ids]
+        tail_logits_subset = scores_rp_grouped[:, inverse_relation_ids]
 
-        prob_r_given_h = torch.softmax(logits_orig, dim=1)      # (E', R)
-        prob_rinv_given_t = torch.softmax(logits_inv, dim=1)    # (E', R)
-        prob_rinv_T = prob_rinv_given_t.transpose(0, 1).contiguous()  # (R, E')
+        # 5. Calibrated log-probabilities or raw logits based on normalize_mode
+        if self.normalize_mode == "per_head":
+            log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=1).to(torch.float32)
+            log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=1).to(torch.float32).transpose(0,1)
+            log_p_t_given_h_2d = torch.log_softmax(scores_tp_grouped / self.temperature, dim=1).to(torch.float32)
+        elif self.normalize_mode == "global_joint":
+            z_hr = (head_logits_subset / self.temperature).to(torch.float32)
+            log_p_head_2d = torch.log_softmax(z_hr.reshape(-1), dim=0).reshape(E, R)
+            z_tr = (tail_logits_subset / self.temperature).to(torch.float32).transpose(0,1)
+            log_p_tail_2d = torch.log_softmax(z_tr.reshape(-1), dim=0).reshape(R, E)
+            z_ht = (scores_tp_grouped / self.temperature).to(torch.float32)
+            log_p_t_given_h_2d = torch.log_softmax(z_ht.reshape(-1), dim=0).reshape(E, E)
+        elif self.normalize_mode == "per_relation":
+            log_p_head_2d = torch.log_softmax(head_logits_subset / self.temperature, dim=0).to(torch.float32)
+            log_p_tail_2d = torch.log_softmax(tail_logits_subset / self.temperature, dim=0).to(torch.float32).transpose(0,1)
+            log_p_t_given_h_2d = torch.log_softmax(scores_tp_grouped / self.temperature, dim=1).to(torch.float32)
+        else:  # "none"
+            log_p_head_2d = (head_logits_subset / self.temperature).to(torch.float32)
+            log_p_tail_2d = (tail_logits_subset / self.temperature).to(torch.float32).transpose(0,1)
+            log_p_t_given_h_2d = (scores_tp_grouped / self.temperature).to(torch.float32)
 
-        # Eprime, R = prob_r_given_h.shape
-        # k_eff = min(k, R * Eprime)
-        # head_to_topk: dict[int, torch.Tensor] = {}
-
-        # for h_idx in tqdm(range(Eprime), desc="Generating Top-K per head", leave=False):
-        #     p_r_h = prob_r_given_h[h_idx]              # (R,)
-        #     # (R,E') matrix of scores
-        #     scores = p_r_h.unsqueeze(1) * prob_rinv_T  # (R,E')
-        #     flat = scores.view(-1)                     # (R*E',)
-        #     topk_vals, topk_idx = torch.topk(flat, k=k_eff, largest=True, sorted=True)
-        #     rel_local = topk_idx // Eprime             # (k_eff,)
-        #     tail_local = topk_idx % Eprime             # (k_eff,)
-        #     rel_global = original_relation_ids[rel_local]   # map back to global relation ids
-        #     tail_global = entity_ids[tail_local]       # map local entity index to global entity id
-        #     head_to_topk[int(entity_ids[h_idx].item())] = torch.stack([rel_global, tail_global], dim=1)
-
-        # return head_to_topk
-        E, R = prob_r_given_h.shape
         k_eff = min(self.per_group_cap, R * E)
         
+        # 6. Parallel processing over heads
+        num_workers = min(self.max_num_workers, E if E > 0 else 1)
+
+        # Share tensors for multiprocessing
+        log_p_head_2d.share_memory_()
+        log_p_tail_2d.share_memory_()
+        log_p_t_given_h_2d.share_memory_()
+        entity_ids.share_memory_()
+        original_relation_ids.share_memory_()
+
+        chunks = np.array_split(np.arange(E), num_workers)
+        self.pool = self._get_or_create_pool(num_workers)
+
+        worker_function = partial(
+            self._process_chunk,
+            log_p_head_2d=log_p_head_2d,
+            log_p_tail_2d=log_p_tail_2d,
+            log_p_t_given_h_2d=log_p_t_given_h_2d,
+            entity_ids=entity_ids,
+            original_relation_ids=original_relation_ids,
+            k_eff=k_eff,
+            alpha=self.alpha,
+            beta=self.beta,
+        )
+
         all_candidates = []
-        all_scores = []
+        all_log_scores = []
         
-        for h_idx in tqdm(range(E), desc="Generating Top-K per head", leave=False):
-            p_r_h = prob_r_given_h[h_idx]
-            scores = (p_r_h ** (1 - self.alpha)).unsqueeze(1) * (prob_rinv_T ** self.alpha)  # (R, E)
-            flat = scores.view(-1)
-            
-            topk_vals, topk_idx = torch.topk(flat, k=k_eff, largest=True, sorted=True)
-            rel_local = topk_idx // E
-            tail_local = topk_idx % E
-            
-            # Map to global IDs
-            rel_global = original_relation_ids[rel_local]
-            tail_global = entity_ids[tail_local]
-            head_global = entity_ids[h_idx].expand_as(rel_global)
-            
-            candidates_h = torch.stack([head_global, rel_global, tail_global], dim=1)
-            all_candidates.append(candidates_h)
-            all_scores.append(topk_vals)
-        
-        # Concatenate all candidates and scores
-        candidates = torch.cat(all_candidates, dim=0) if all_candidates else tuples_all.new_zeros((0, 3))
-        scores = torch.cat(all_scores, dim=0) if all_scores else tuples_all.new_zeros((0,), dtype=torch.float32)
+        results_iterator = self.pool.imap_unordered(worker_function, chunks)
+        for candidates_chunk, log_scores_chunk in tqdm(results_iterator, desc="Collecting parallel per-head results", total=len(chunks), leave=False):
+            all_candidates.append(candidates_chunk)
+            all_log_scores.append(log_scores_chunk)
+
+        # 7. Concatenate all results
+        candidates = torch.cat(all_candidates, dim=0) if all_candidates else tuples_all.new_zeros((0, 3), dtype=torch.long)
+        log_scores = torch.cat(all_log_scores, dim=0) if all_log_scores else tuples_all.new_zeros((0,), dtype=torch.float32)
+        scores = torch.exp(log_scores)
         
         return candidates, scores
 
@@ -780,7 +846,7 @@ class CandidateGeneratorGlobalWithTail(BaseCandidateGenerator):
         assert self.temperature > 0, "temperature must be > 0"
         assert 0.0 <= self.alpha <= 1.0, "alpha must be in [0,1]"
         assert 0.0 <= self.beta <= 1.0, "beta must be in [0,1]"
-        assert self.alpha + self.beta <= 1.0, "alpha + beta must be <= 1.0 (gamma = 1 - alpha - beta)"
+        # assert self.alpha + self.beta <= 1.0, "alpha + beta must be <= 1.0 (gamma = 1 - alpha - beta)"
         assert self.normalize_mode in ("per_head", "global_joint", "per_relation", "none"), "normalize_mode invalid"
         if self.p is not None:
             assert 0.0 <= self.p <= 1.0, "p must be in [0,1]"
