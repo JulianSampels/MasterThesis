@@ -266,6 +266,96 @@ For each strategy and each budget, report:
 + Entity Hit@10
 + Entity Recall@10
 
+
+* RQ3: To what extent do entity-level utility measures complement conventional tuple-level metrics when evaluating entity-centric fact suggestion?
+** Example
+Consider an anchor entity $h$ with three gold facts: $\mathcal{G}(h)=\{(r_1,t_1),(r_2,t_2),(r_3,t_3)\}$
+
+Suppose the system returns the following top-5 fact suggestions for $h$:
+$\mathrm{Top}5(h)=\big[(r_1,t_1),(r_9,t_9),(r_8,t_8),(r_2,t_2),(r_7,t_7)\big]$
+
+Here, $(r_1,t_1)$ and $(r_2,t_2)$ are correct suggestions, while the others are incorrect.
+
+From a \emph{tuple-level} perspective, the first gold fact is ranked at position $1$, the second gold fact is ranked at position $4$, and the third gold fact does not appear in the top-5 list. Consequently, standard tuple-level metrics such as MRR and Hits@$K$ may still indicate reasonably good ranking quality.
+
+From an \emph{entity-level} perspective, however, the same output is evaluated as a suggestion list for the anchor entity $h$. In this case:
+$\mathrm{EntityHit@5}(h)=1$
+because at least one correct fact appears in the top-5 suggestions,
+
+$\mathrm{EntityRecall@5}(h)=\frac{2}{3}$
+because two out of the three gold facts associated with $h$ are covered within the top-5 suggestions, and
+
+$\mathrm{Budget\text{-}to\text{-}First\text{-}Hit}(h)=1$
+because the first correct fact appears at rank $1$.
+
+*** Why this matter
+This example highlights the core difference between conventional relation-conditioned link prediction and our entity-centric fact suggestion setting. In conventional link prediction, evaluation focuses on whether a specific missing triple element is ranked highly once the relation is already known. In our setting, however, the system starts only from an anchor entity and must return a short list of plausible complete fact suggestions.
+
+For a user inspecting an entity page, the practical question is not only whether one correct triple can be ranked highly in isolation, but whether the returned suggestion list contains useful facts early enough to support curation or enrichment. This is why entity-level measures such as $\mathrm{EntityHit@K}$, $\mathrm{EntityRecall@K}$, and $\mathrm{Budget\text{-}to\text{-}First\text{-}Hit}$ are important: they capture whether the system is useful as an entity-centric fact suggestion tool, rather than only as a conventional triple-ranking model.
+
+** Tuple-level metrics
+Tuple-level metrics evaluate how highly individual correct facts are ranked in the returned candidate list. Let $q$ denote a query instance and let $\mathcal{G}(q)$ denote its set of gold fact candidates. For a gold fact $(h,r,t) \in \mathcal{G}(q)$, let $\mathrm{rank}(h,r,t)$ denote its rank in the predicted candidate list.
+
+We report the following standard tuple-level metrics:
+
+\begin{equation}
+\mathrm{MRR} = \frac{1}{N} \sum_{i=1}^{N} \frac{1}{\mathrm{rank}_i},
+\end{equation}
+
+
+where $N$ is the number of evaluated gold facts and $\mathrm{rank}_i$ is the rank of the $i$-th gold fact.
+
+\begin{equation}
+\mathrm{Hits@K} = \frac{1}{N} \sum_{i=1}^{N} \mathbf{1}(\mathrm{rank}_i \leq K),
+\end{equation}
+
+where $\mathbf{1}(\cdot)$ is the indicator function.
+
+These metrics are standard in knowledge graph completion and quantify how highly individual correct facts are ranked.
+
+** Entity-level metrics
+In entity-centric fact suggestion, the practical unit of interaction is often not a single fact, but an anchor entity together with a ranked suggestion list. We therefore complement tuple-level evaluation with entity-level utility metrics.
+
+For an anchor entity $h$, let $\mathrm{TopK}(h)$ denote the top-$K$ predicted fact suggestions associated with $h$, and let
+
+\begin{equation}
+\mathcal{G}(h) = \{(r,t) \mid (h,r,t) \text{ is a gold fact}\}
+\end{equation}
+
+denote the set of gold facts associated with $h$.
+
+We define the following entity-level metrics:
+
+\begin{equation}
+\mathrm{EntityHit@K}(h) =
+\begin{cases}
+1, & \text{if } \mathrm{TopK}(h) \cap \mathcal{G}(h) \neq \emptyset, \\
+0, & \text{otherwise,}
+\end{cases}
+\end{equation}
+
+and average this quantity over all evaluated anchor entities.
+
+\begin{equation}
+\mathrm{EntityRecall@K}(h) =
+\frac{|\mathrm{TopK}(h) \cap \mathcal{G}(h)|}{|\mathcal{G}(h)|},
+\end{equation}
+
+which measures how many of the gold facts associated with entity $h$ are covered within the top-$K$ suggestions. Again, we report the average over all anchor entities.
+
+Finally, we define the budget required to retrieve the first correct fact suggestion for an entity as
+
+\begin{equation}
+\mathrm{Budget\text{-}to\text{-}First\text{-}Hit}(h)
+=
+\min \{k \mid \mathrm{Top}k(h) \cap \mathcal{G}(h) \neq \emptyset \},
+\end{equation}
+
+whenever such a $k$ exists. We report the average budget-to-first-hit over all entities for which at least one correct fact is retrieved.
+
+** Interpretation
+Tuple-level metrics evaluate the ranking quality of individual correct facts, while entity-level metrics evaluate whether the returned suggestion list is useful for a given anchor entity. The latter is particularly relevant for enrichment-oriented workflows such as entity-page completion and human-in-the-loop knowledge graph curation, where a user typically inspects only a small number of suggestions for a given entity.
+
 * Ablation and Analysis
 These experiments are still important, but they should no longer be presented as the main research question. They should support the interpretation of RQ2.
 
@@ -276,3 +366,10 @@ These experiments are still important, but they should no longer be presented as
 +  Sparse vs Dense entity analysis
 + Candidate budget sensitivity
 + Error analysis
+* Real World Applications
++ [[https://www.wikidata.org/wiki/Wikidata%3ARecoin][Wikidata Recoin]]
++ [[https://github.com/Wikidata-lib/PropertySuggester][Wikidata’s property suggester]]
++ [[https://www.linkedin.com/blog/engineering/knowledge/completing-a-member-knowledge-graph-with-graph-neural-networks][LinkedIn member KG completion]]
+  - given a user/member profile,
+  - infer missing information or likely structured links,
+  - use the graph to enrich sparse profiles
