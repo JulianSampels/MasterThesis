@@ -201,3 +201,7 @@ cuda_11.8*
 cuda-repo-wsl*
 
 /logs/*
+
+.DS_Store
+memory
+papers
