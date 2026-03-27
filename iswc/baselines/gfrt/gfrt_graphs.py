@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class MVFGraph:
+class GFRTGraph:
     """
     Heterogeneous graph (either head-relation or tail-relation).
 
@@ -83,7 +83,7 @@ def build_head_relation_graph(
     num_relations: int,
     top_k1: int = 100,
     top_k2: int = 30,
-) -> MVFGraph:
+) -> GFRTGraph:
     """
     Build the head-relation graph G_H.
 
@@ -106,7 +106,7 @@ def build_head_relation_graph(
         h_to_rels[int(h)].add(int(r))
         r_to_heads[int(r)].add(int(h))
 
-    graph = MVFGraph(num_entities=num_entities, num_relations=num_relations)
+    graph = GFRTGraph(num_entities=num_entities, num_relations=num_relations)
 
     # ------ Entity-entity edges ------
     logger.info("Building head-rel entity-entity edges…")
@@ -156,7 +156,7 @@ def build_tail_relation_graph(
     num_relations: int,
     top_k1: int = 100,
     top_k2: int = 30,
-) -> MVFGraph:
+) -> GFRTGraph:
     """
     Build the tail-relation graph G_T.
 
@@ -174,7 +174,7 @@ def build_tail_relation_graph(
         t_to_rels[int(t)].add(int(r))
         r_to_tails[int(r)].add(int(t))
 
-    graph = MVFGraph(num_entities=num_entities, num_relations=num_relations)
+    graph = GFRTGraph(num_entities=num_entities, num_relations=num_relations)
 
     # ------ Entity-entity edges ------
     logger.info("Building tail-rel entity-entity edges…")

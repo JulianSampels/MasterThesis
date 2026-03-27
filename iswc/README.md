@@ -115,12 +115,12 @@ iswc/
 
 ## Key Differences vs Prior Work
 
-| Aspect | RETA (WWW'21) | MVF/GFRT (BDR'23) | **Ours (SJP)** |
-|--------|--------------|-------------------|----------------|
-| Entity types required | **Yes** (RETA-Filter fails without types) | No | **No** |
-| Graph views | Single KG schema tensor | Head-rel + tail-rel (2 GNNs) | Single graph + inverse relations (1 encoder) |
-| Candidate generation | Per-entity schema match | Per-entity local score | **Global** joint score (dataset-wide) |
-| Inductive (unseen entities) | No | No | **Yes** (relational context only) |
-| Count-aware objectives | No | No | **Yes** (Poisson, NB, Hurdle) |
-| Entity-level metrics | Not reported | Not reported | **Yes** (EntityHit, EntityRecall, B2FH) |
-| Benchmarks | JF17k, FB15k, HumanWiki | JF17k, FB15K237, UMLS | FB15k-237, WN18RR, JF17k |
+| Aspect                      | RETA (WWW'21)                             | MVF/GFRT (BDR'23)            | **Ours (SJP)**                               |
+|-----------------------------|-------------------------------------------|------------------------------|----------------------------------------------|
+| Entity types required       | **Yes** (RETA-Filter fails without types) | No                           | **No**                                       |
+| Graph views                 | Single KG schema tensor                   | Head-rel + tail-rel (2 GNNs) | Single graph + inverse relations (1 encoder) |
+| Candidate generation        | Per-entity schema match                   | Per-entity local score       | **Global** joint score (dataset-wide)        |
+| Inductive (unseen entities) | No                                        | No                           | **Yes** (relational context only)            |
+| Count-aware objectives      | No                                        | No                           | **Yes** (Poisson, NB, Hurdle)                |
+| Entity-level metrics        | Not reported                              | Not reported                 | **Yes** (EntityHit, EntityRecall, B2FH)      |
+| Benchmarks                  | JF17k, FB15k, HumanWiki                   | JF17k, FB15K237, UMLS        | FB15k-237, WN18RR, JF17k                     |

@@ -9,7 +9,7 @@ Reproduced from:
 End-to-end usage:
   1. Build the two graphs with mvf_graphs.py.
   2. Train GFRTModel with this trainer.
-  3. Use MVFFilter.generate_candidates() to generate and score (r, t) pairs
+  3. Use GFRTFilter.generate_candidates() to generate and score (r, t) pairs
      for a given head entity h.
 """
 
@@ -23,8 +23,8 @@ import torch
 import torch.optim as optim
 from torch import Tensor
 
-from .mvf_graphs import MVFGraph, build_head_relation_graph, build_tail_relation_graph, find_aligned_entities
-from .mvf_model import GFRTModel
+from .gfrt_graphs import GFRTGraph, build_head_relation_graph, build_tail_relation_graph, find_aligned_entities
+from .gfrt_model import GFRTModel
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # MVF Trainer
 # ---------------------------------------------------------------------------
 
-class MVFTrainer:
+class GFRTTrainer:
     """
     Trainer for the GFRT model.
 
@@ -48,8 +48,8 @@ class MVFTrainer:
     def __init__(
         self,
         model: GFRTModel,
-        graph_H: MVFGraph,
-        graph_T: MVFGraph,
+        graph_H: GFRTGraph,
+        graph_T: GFRTGraph,
         train_triples: Tensor,
         device: torch.device = torch.device("cpu"),
         lr_intra: float = 0.01,
@@ -150,7 +150,7 @@ class MVFTrainer:
 # MVF Filter: candidate generation + scoring
 # ---------------------------------------------------------------------------
 
-class MVFFilter:
+class GFRTFilter:
     """
     Given trained GFRT embeddings, generate and rank (r, t) candidates for a head entity h.
 
@@ -260,7 +260,7 @@ class MVFFilter:
 # Convenience: build full MVF pipeline from scratch
 # ---------------------------------------------------------------------------
 
-def build_mvf_pipeline(
+def build_gfrt_pipeline(
     train_triples: Tensor,
     num_entities: int,
     num_relations: int,
@@ -269,7 +269,7 @@ def build_mvf_pipeline(
     top_k1: int = 100,
     top_k2: int = 30,
     device: torch.device = torch.device("cpu"),
-) -> Tuple[GFRTModel, MVFGraph, MVFGraph]:
+) -> Tuple[GFRTModel, GFRTGraph, GFRTGraph]:
     """
     Convenience function: build both graphs and the GFRT model.
 

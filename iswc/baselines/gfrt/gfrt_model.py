@@ -33,7 +33,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from .mvf_graphs import MVFGraph
+from .gfrt_graphs import GFRTGraph
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class IntraViewGNN(nn.Module):
 
     def forward(
         self,
-        graph: MVFGraph,
+        graph: GFRTGraph,
         device: torch.device = torch.device("cpu"),
     ) -> Tensor:
         """
@@ -190,8 +190,8 @@ class GFRTModel(nn.Module):
 
     def forward(
         self,
-        graph_H: MVFGraph,
-        graph_T: MVFGraph,
+        graph_H: GFRTGraph,
+        graph_T: GFRTGraph,
         device: torch.device = torch.device("cpu"),
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """

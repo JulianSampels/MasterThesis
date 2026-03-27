@@ -189,12 +189,12 @@ fact suggestion quality; conventional metrics alone are insufficient to evaluate
 
 ## Additional Related Literature (not yet cited in thesis)
 
-| Paper | Venue | Relevance |
-|-------|-------|-----------|
-| Zangerle et al., "Evaluating of property recommender systems for Wikidata" | ISWC'16 | Motivates entity-centric property suggestion task |
-| Lajus & Suchanek, "Are all people married?" | WWW'18 | Obligatory relation detection (RQ1 context) |
-| Balaraman et al., "Recoin: relative completeness in Wikidata" | WWW'18 | Direct application motivation |
-| Cao et al., OKELE | WWW'20 | Open-world tuple prediction baseline |
-| Yao et al., "KG-BERT" | arXiv'19 | Triple classification baseline |
-| Zhu et al., "Neural Bellman-Ford Networks" | NeurIPS'21 | Inductive KGC (comparison point) |
-| Galkin et al., "ULTRA" | NeurIPS'23 | Foundation model for KGC (broader context) |
+| Paper                                                                      | Venue      | Relevance                                         |
+|----------------------------------------------------------------------------|------------|---------------------------------------------------|
+| Zangerle et al., "Evaluating of property recommender systems for Wikidata" | ISWC'16    | Motivates entity-centric property suggestion task |
+| Lajus & Suchanek, "Are all people married?"                                | WWW'18     | Obligatory relation detection (RQ1 context)       |
+| Balaraman et al., "Recoin: relative completeness in Wikidata"              | WWW'18     | Direct application motivation                     |
+| Cao et al., OKELE                                                          | WWW'20     | Open-world tuple prediction baseline              |
+| Yao et al., "KG-BERT"                                                      | arXiv'19   | Triple classification baseline                    |
+| Zhu et al., "Neural Bellman-Ford Networks"                                 | NeurIPS'21 | Inductive KGC (comparison point)                  |
+| Galkin et al., "ULTRA"                                                     | NeurIPS'23 | Foundation model for KGC (broader context)        |

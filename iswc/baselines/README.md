@@ -40,25 +40,25 @@ metrics = evaluate_filter_coverage(candidates, test_triples)
 print(f"Coverage: {metrics['coverage']:.4f}, Avg size: {metrics['avg_size']:.1f}")
 ```
 
-### MVF/GFRT
+### GFRT
 
 ```python
-from iswc.baselines.mvf import build_mvf_pipeline, MVFTrainer, MVFFilter
+from iswc.baselines.gfrt import build_gfrt_pipeline, GFRTTrainer, GFRTFilter
 
 # Build graphs + model
-model, graph_H, graph_T = build_mvf_pipeline(
+model, graph_H, graph_T = build_gfrt_pipeline(
     train_triples, num_entities, num_relations, embed_dim=64
 )
 
 # Train
-trainer = MVFTrainer(model, graph_H, graph_T, train_triples, device=device)
+trainer = GFRTTrainer(model, graph_H, graph_T, train_triples, device=device)
 for epoch in range(100):
     losses = trainer.train_epoch(batch_size=256)
 
 # Generate candidates
 h_emb, rH_emb, t_emb, rT_emb = trainer.get_embeddings()
-mvf_filter = MVFFilter(h_emb, rH_emb, t_emb, rT_emb, model, train_triples)
-candidates = mvf_filter.generate_candidates_batch(test_head_ids, candidate_budget=500)
+gfrt_filter = GFRTFilter(h_emb, rH_emb, t_emb, rT_emb, model, train_triples)
+candidates = gfrt_filter.generate_candidates_batch(test_head_ids, candidate_budget=500)
 ```
 
 ### Adapted baselines (RQ1)
